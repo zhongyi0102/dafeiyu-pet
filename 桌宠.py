@@ -61,7 +61,8 @@ from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa:
                             _default_reminders, _default_usage,
                             _excepthook, _html_escape_text, _is_number,
                             _merge_remind_extras, _migrate_legacy_features,
-                            _setup_logging, _thread_excepthook, _valid_hhmm)
+                            _setup_logging, _thread_excepthook, _valid_hhmm,
+                            _user_data_dir, _extract_bundled_sprites)
 
 
 # ===== 宠物窗口（已拆分到 petcore.pet_window）=====

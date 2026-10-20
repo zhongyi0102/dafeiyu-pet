@@ -20,33 +20,29 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 ---
 
-## 安装（三种方式，选一种）
+## 安装
 
-### 方式 A：一键安装脚本（推荐，最简单）
+### 方式 A：下载一个 exe 就能用（最简单，推荐）
+
+**只需要下载 1 个文件**：
+
+👉 [**大肥鱼桌宠.exe**](https://github.com/zhongyi0102/dafeiyu-pet/releases/latest)（约 351 MB）
+
+双击即可运行，**无需安装 Python、无需下载素材**。
+
+- 首次启动会花约 8 秒把内置素材解压到 `%LOCALAPPDATA%\DaFeiYuPet\sprites`
+- 之后每次启动**只要 0.3 秒**
+- 配置和聊天记录写在 exe 同目录
+
+> exe 未做代码签名，Windows 可能提示"未知发布者"。点「更多信息」→「仍要运行」即可。
+
+### 方式 B：一键安装脚本（想改代码时用）
 
 1. 下载本仓库（`Code` → `Download ZIP`，或 `git clone`）
 2. **双击 `安装.bat`**
-3. 等它自动完成：检查 Python → 建虚拟环境 → 装依赖 → 下载素材（310MB）→ 启动
+3. 自动完成：检查 Python → 建虚拟环境 → 装依赖 → 下载素材 → 启动
 
-之后每次双击 `启动桌宠.bat` 即可。
-
-> 如果自动下载素材失败（网络问题），脚本会提示手动下载地址。
-
-### 方式 B：下载 exe（无需 Python）
-
-1. 到 [Releases](https://github.com/zhongyi0102/dafeiyu-pet/releases/latest) 下载：
-   - `大肥鱼桌宠.exe`（约 50 MB）
-   - `dafeiyu-sprites.zip`（素材，约 301 MB）
-2. 把两个文件放**同一个文件夹**，解压素材包（会得到 `sprites/` 目录）
-3. 双击 `大肥鱼桌宠.exe`
-
-```text
-任意文件夹/
-├── 大肥鱼桌宠.exe
-└── sprites/
-    ├── icon.png
-    └── anim/     ← 86 个动作
-```
+之后每次双击 `启动桌宠.bat`。
 
 ### 方式 C：手动安装（开发者）
 
@@ -55,11 +51,25 @@ git clone https://github.com/zhongyi0102/dafeiyu-pet.git
 cd dafeiyu-pet
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-# 手动下载 dafeiyu-sprites.zip 解压到当前目录
+# 下载 dafeiyu-sprites.zip 解压到当前目录
 .venv\Scripts\python 桌宠.py
 ```
 
 ---
+
+## 自己打包 exe
+
+```bash
+# 1. 准备素材包（把 sprites/ 打成 zip，供 exe 内置）
+.venv\Scripts\python -c "import os,zipfile; root=os.getcwd(); z=zipfile.ZipFile('sprites.zip','w',zipfile.ZIP_STORED,allowZip64=True); [z.write(os.path.join(dp,f), os.path.relpath(os.path.join(dp,f),root).replace(chr(92),'/')) for dp,_,fs in os.walk('sprites') for f in fs]; z.close()"
+
+# 2. 打包
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python -m PyInstaller 桌宠.spec --noconfirm
+
+# 产物：dist\大肥鱼桌宠.exe（约 351 MB，单文件含素材）
+```
+
 
 ## 首次使用
 

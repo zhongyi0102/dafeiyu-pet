@@ -1,14 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""大肥鱼桌宠 —— PyInstaller 打包配置
+"""大肥鱼桌宠 —— PyInstaller 打包配置（单文件，含素材）
 
-拆分后（petcore 包）的打包方式：
-  - 代码全部打进 exe（桌宠.py + petcore/）
-  - **素材不打进 exe**（310MB 太大），放在 exe 同目录的 sprites/ 下
-  - 单文件模式（onefile）：双击即用
+产物：dist/大肥鱼桌宠.exe（约 370MB）
+  用户**只下载这一个 exe** 就能跑：
+    - 代码 + 素材都在 exe 里
+    - 首次启动把内置 sprites.zip 解压到
+      %LOCALAPPDATA%\\DaFeiYuPet\\sprites（只解一次，之后秒启动）
 
 用法：
   .venv\\Scripts\\python.exe -m PyInstaller 桌宠.spec --noconfirm
-  产物：dist/大肥鱼桌宠.exe
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -26,8 +26,11 @@ for pkg in ("psutil", "requests", "pynvml"):
 # 收集 petcore 子模块（PyInstaller 不会自动发现动态 import）
 hiddenimports += collect_submodules("petcore")
 
-# 只打 icon（素材走外部）
-datas += [("icon.ico", ".")]
+# 图标 + **素材包**（单文件核心）
+datas += [
+    ("icon.ico", "."),
+    ("sprites.zip", "."),
+]
 
 a = Analysis(
     ["桌宠.py"],

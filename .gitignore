@@ -44,3 +44,6 @@ sprites/*.gif
 
 # 素材预览 GIF（体积大，非必需）
 tools/preview/
+
+# 打包用的素材包（318MB，构建时临时生成，不入库）
+sprites.zip

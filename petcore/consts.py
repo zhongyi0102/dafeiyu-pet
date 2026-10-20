@@ -137,19 +137,70 @@ def persona_from_cfg(cfg):
 # 兼容旧引用：默认风格下的完整 system
 DS_SYSTEM = build_system_prompt(REPLY_STYLE_DEFAULT)
 
+def _user_data_dir():
+    """用户数据目录：LOCALAPPDATA/DaFeiYuPet（exe 单文件模式的素材缓存）"""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "DaFeiYuPet")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _extract_bundled_sprites(target_dir):
+    """把 exe 内置的 sprites.zip 解压到 target_dir（首次启动只做一次）。"""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return False
+    zpath = os.path.join(meipass, "sprites.zip")
+    if not os.path.isfile(zpath):
+        return False
+    try:
+        import zipfile
+        parent = os.path.dirname(target_dir)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception:
+            pass
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(parent)
+        anim = os.path.join(target_dir, "anim")
+        return os.path.isdir(anim) and bool(os.listdir(anim))
+    except Exception as ex:
+        try:
+            log("解压内置素材失败: %s" % ex, logging.ERROR)
+        except Exception:
+            pass
+        return False
+
+
 if getattr(sys, "frozen", False):
-    # 打包成 exe 后：
-    #   APP_DIR   = exe 所在目录（配置/聊天记录/日志写这里，用户可见）
-    #   BUNDLE_DIR= exe 所在目录（**素材放 exe 旁边**，不放临时目录，方便替换）
+    # ===== 打包成 exe（单文件，含素材）=====
+    #   APP_DIR = exe 所在目录（配置/聊天/日志写这里）
+    #   素材    = 首次启动从 exe 内置的 sprites.zip 解压到
+    #             LOCALAPPDATA/DaFeiYuPet/sprites（只解一次，之后秒启动）
     APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
     BUNDLE_DIR = APP_DIR
     PYTHONW = sys.executable
+    _sprite_root = os.path.join(_user_data_dir(), "sprites")
+    if not os.path.isdir(os.path.join(_sprite_root, "anim")):
+        _extract_bundled_sprites(_sprite_root)
+    if os.path.isdir(os.path.join(_sprite_root, "anim")):
+        SPRITE_DIR = _sprite_root
+    else:
+        # 回退：兼容「素材放 exe 旁边」的旧布局
+        _beside = os.path.join(APP_DIR, "sprites")
+        if os.path.isdir(os.path.join(_beside, "anim")):
+            SPRITE_DIR = _beside
+        else:
+            SPRITE_DIR = os.path.join(getattr(sys, "_MEIPASS", BUNDLE_DIR), "sprites")
 else:
-    # 本模块在 petcore/ 下，项目根是它的上一级
+    # 源码运行：本模块在 petcore/ 下，项目根是它的上一级
     APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     BUNDLE_DIR = APP_DIR
     PYTHONW = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
-SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
+    SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 CHAT_PATH = os.path.join(APP_DIR, "chats.json")
 MEMORY_PATH = os.path.join(APP_DIR, "memory.json")
