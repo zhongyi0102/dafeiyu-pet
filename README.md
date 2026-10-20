@@ -20,28 +20,65 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 ---
 
-## 先下载素材（必须）
+## 安装（三种方式，选一种）
 
-动画素材（86 个动作，约 310 MB）**不在仓库内**，请先下载并解压：
+### 方式 A：一键安装脚本（推荐，最简单）
 
-1. 打开 [Releases](https://github.com/zhongyi0102/dafeiyu-pet/releases/latest)
-2. 下载 `dafeiyu-sprites.zip`
-3. 解压到项目根目录，确认存在 `sprites/anim/idle_breath/0001.png` 这样的路径
+1. 下载本仓库（`Code` → `Download ZIP`，或 `git clone`）
+2. **双击 `安装.bat`**
+3. 等它自动完成：检查 Python → 建虚拟环境 → 装依赖 → 下载素材（310MB）→ 启动
+
+之后每次双击 `启动桌宠.bat` 即可。
+
+> 如果自动下载素材失败（网络问题），脚本会提示手动下载地址。
+
+### 方式 B：下载 exe（无需 Python）
+
+1. 到 [Releases](https://github.com/zhongyi0102/dafeiyu-pet/releases/latest) 下载：
+   - `大肥鱼桌宠.exe`（约 50 MB）
+   - `dafeiyu-sprites.zip`（素材，约 301 MB）
+2. 把两个文件放**同一个文件夹**，解压素材包（会得到 `sprites/` 目录）
+3. 双击 `大肥鱼桌宠.exe`
 
 ```text
-dafeiyu-pet/
-├── 桌宠.py
-├── sprites/
-│   ├── icon.png
-│   └── anim/          ← 解压到这里
-│       ├── idle_breath/
-│       └── ...（86 个动作）
-└── tools/
+任意文件夹/
+├── 大肥鱼桌宠.exe
+└── sprites/
+    ├── icon.png
+    └── anim/     ← 86 个动作
 ```
 
-> 没放素材也能启动，但宠物会显示成占位图、动作不可用。
+### 方式 C：手动安装（开发者）
+
+```bash
+git clone https://github.com/zhongyi0102/dafeiyu-pet.git
+cd dafeiyu-pet
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+# 手动下载 dafeiyu-sprites.zip 解压到当前目录
+.venv\Scripts\python 桌宠.py
+```
 
 ---
+
+## 首次使用
+
+启动后在**系统托盘**（右下角）找大肥鱼图标。右键宠物 →「设置」→ 填入 DeepSeek API Key。
+
+> 没填 Key 也能用，只是 AI 聊天/看看屏幕/余额查询不可用；动作、提醒、特效都正常。
+
+---
+
+## 自己打包 exe
+
+```bash
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python -m PyInstaller 桌宠.spec --noconfirm
+# 产物：dist\大肥鱼桌宠.exe（约 50MB，不含素材）
+```
+
+素材不打进 exe，放在 exe 同目录的 `sprites/` 下即可。
+
 
 ## 快速开始
 

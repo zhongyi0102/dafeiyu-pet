@@ -138,8 +138,11 @@ def persona_from_cfg(cfg):
 DS_SYSTEM = build_system_prompt(REPLY_STYLE_DEFAULT)
 
 if getattr(sys, "frozen", False):
-    APP_DIR = os.path.dirname(sys.executable)
-    BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+    # 打包成 exe 后：
+    #   APP_DIR   = exe 所在目录（配置/聊天记录/日志写这里，用户可见）
+    #   BUNDLE_DIR= exe 所在目录（**素材放 exe 旁边**，不放临时目录，方便替换）
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    BUNDLE_DIR = APP_DIR
     PYTHONW = sys.executable
 else:
     # 本模块在 petcore/ 下，项目根是它的上一级
