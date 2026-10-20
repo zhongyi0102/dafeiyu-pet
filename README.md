@@ -20,6 +20,29 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 ---
 
+## 先下载素材（必须）
+
+动画素材（86 个动作，约 310 MB）**不在仓库内**，请先下载并解压：
+
+1. 打开 [Releases](https://github.com/zhongyi0102/dafeiyu-pet/releases/latest)
+2. 下载 `dafeiyu-sprites.zip`
+3. 解压到项目根目录，确认存在 `sprites/anim/idle_breath/0001.png` 这样的路径
+
+```text
+dafeiyu-pet/
+├── 桌宠.py
+├── sprites/
+│   ├── icon.png
+│   └── anim/          ← 解压到这里
+│       ├── idle_breath/
+│       └── ...（86 个动作）
+└── tools/
+```
+
+> 没放素材也能启动，但宠物会显示成占位图、动作不可用。
+
+---
+
 ## 快速开始
 
 需要 **Python 3.11+**
