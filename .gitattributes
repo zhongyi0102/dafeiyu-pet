@@ -1,0 +1,14 @@
+# ============================================================
+#  本项目素材不入库（310 MB，走 GitHub Release 附件）
+#  这里只保留文本换行约定与语言统计规则
+# ============================================================
+
+*.py     text eol=crlf
+*.md     text eol=crlf
+*.json   text eol=crlf
+*.bat    text eol=crlf
+*.txt    text eol=crlf
+*.spec   text eol=crlf
+
+# 素材目录不参与语言统计
+sprites/**  linguist-vendored

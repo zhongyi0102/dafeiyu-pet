@@ -1,0 +1,47 @@
+# 运行时生成
+config.json
+config.json.bak
+chats.json
+chats.json.bak
+memory.json
+error.log
+error.log.*
+
+# 虚拟环境
+.venv/
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 备份目录（重转素材时的临时备份，不入库）
+sprites/_bak_anims/
+sprites/anim/_bak_*/
+sprites/anim/_bak_*
+
+# 测试脚本临时文件
+_*.py
+test_*.py
+!test_physics.py
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ============================================================
+#  素材不入库（310MB / 9352 张 PNG，走 GitHub Release 附件）
+#  下载：https://github.com/zhongyi0102/dafeiyu-pet/releases
+#  解压后放到 sprites/ 目录即可
+# ============================================================
+sprites/anim/
+sprites/*.png
+sprites/*.gif
+
+# 素材预览 GIF（体积大，非必需）
+tools/preview/
