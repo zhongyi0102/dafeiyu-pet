@@ -47,3 +47,7 @@ tools/preview/
 
 # 打包用的素材包（318MB，构建时临时生成，不入库）
 sprites.zip
+
+# 测试用配置备份（含真实 Key，绝不入库）
+config.testbak
+config*.bak
