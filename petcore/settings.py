@@ -1218,10 +1218,10 @@ class SettingsWindow(QDialog):
                     "支持 DeepSeek 与智谱 GLM；档位按「满额基准」折算已用百分比。")
         bc = self.app._balance_cfg()
         self._balance_provider_combo = self._combo_row(
-            lay, "余额来源",
-            [("自动（有智谱 Key 就用智谱）", "auto"),
-             ("DeepSeek", "deepseek"),
-             ("智谱 GLM", "zhipu")],
+            lay, "查询范围",
+            [("两家同时查（推荐）", "auto"),
+             ("只查 DeepSeek", "deepseek"),
+             ("只查智谱 GLM", "zhipu")],
             bc.get("provider", "auto"),
             lambda v: self._set_balance_provider(str(v)))
         self._balance_provider_hint = QLabel("")
@@ -1269,15 +1269,17 @@ class SettingsWindow(QDialog):
         self._refresh_balance_provider_hint()
 
     def _refresh_balance_provider_hint(self):
+        """说明当前会查哪几家、各自的 Key 是否就绪。"""
         try:
-            prov = self.app._balance_provider()
-            key = self.app._balance_key(prov)
-            label = "智谱 GLM" if prov == "zhipu" else "DeepSeek"
-            if not key:
-                self._balance_provider_hint.setText(
-                    "当前会查 %s，但还没填对应的 Key" % label)
-            else:
-                self._balance_provider_hint.setText("当前会查：%s" % label)
+            dk = (self.app._balance_key("deepseek") or "").strip()
+            zk = (self.app._balance_key("zhipu") or "").strip()
+            scope = (self.app._balance_cfg().get("provider") or "auto")
+            bits = []
+            if scope in ("auto", "deepseek"):
+                bits.append("DeepSeek %s" % ("✓" if dk else "未填 Key"))
+            if scope in ("auto", "zhipu"):
+                bits.append("智谱 %s" % ("✓" if zk else "未填 Key"))
+            self._balance_provider_hint.setText("会查询：" + "，".join(bits))
         except Exception:
             pass
 

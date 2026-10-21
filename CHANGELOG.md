@@ -196,6 +196,20 @@
 - **设置页展示反幻觉规则**：`LOOK_SCREEN_ANTI_HALLUCINATION_HELP`
   五条规则以灰底小字显示在「看看屏幕」区域顶部，让用户知道识别时会遵守什么
 
+### 变更（Changed）
+
+- **余额改为两家同时查询、同时显示**
+  - `query_balance()` 并行启动 DeepSeek 与智谱两个 `BalanceWorker`
+  - 两边的结果都回来后合并成**一条**播报：
+    `DeepSeek ¥8.80 / 智谱 ¥4.97（充值 5.00 / 已花 0.03），合计 ¥13.77`
+  - 只填了一家的 Key 时自动只查那家（不报错）
+  - 档位动画按**合计**金额判断
+  - 新增 `_on_one_balance()`（单家结果暂存）与 `_report_balances()`（合并播报）
+  - `self.balance_worker` → `self.balance_workers`（列表）+ `_balance_results` / `_balance_pending`
+  - 设置 →「余额」的「余额来源」改为「查询范围」：
+    两家同时查（推荐）/ 只查 DeepSeek / 只查智谱 GLM
+  - 提示文字显示两家 Key 的就绪状态
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。

@@ -744,7 +744,9 @@ class PetApp(QObject):
         self._t = 0
         self.last_system_check = 0
         # 余额查询 / 时节特效状态
-        self.balance_worker = None
+        self.balance_workers = []      # 同时查询多个服务商
+        self._balance_results = {}     # provider -> (ok, amount/meta/err)
+        self._balance_pending = 0
         self.settings_window = None
         self._work_state = "idle"
         self._work_hold_timer = QTimer()
@@ -1944,49 +1946,97 @@ class PetApp(QObject):
         self.save_cfg()
 
     def query_balance(self, manual=True):
-        """查询余额：后台线程，结果用气泡播报。支持 DeepSeek / 智谱。"""
-        if self.balance_worker is not None and self.balance_worker.isRunning():
+        """查询余额：**同时**查 DeepSeek 与智谱，两边都回来后一起播报。"""
+        running = [w for w in self.balance_workers if w is not None and w.isRunning()]
+        if running:
             if manual:
                 self.say_main("正在查余额，稍等一下…")
             return
-        provider = self._balance_provider()
-        key = self._balance_key(provider)
-        if not key:
-            if provider == "zhipu":
-                self.say_main("还没填智谱 Key：设置 →「聊天」→「看看屏幕」填一下")
-            else:
-                self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」")
+        # 收集要查的服务商（有 Key 的才查）
+        targets = []
+        scope = (self._balance_cfg().get("provider") or "auto")
+        if scope == "deepseek":
+            order = ("deepseek",)
+        elif scope == "zhipu":
+            order = ("zhipu",)
+        else:
+            order = ("deepseek", "zhipu")   # 两家同时查
+        for prov in order:
+            key = self._balance_key(prov)
+            if key:
+                targets.append((prov, key))
+        if not targets:
+            self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」"
+                          "（智谱 Key 在 设置 →「聊天」→「看看屏幕」）")
             return
-        self.balance_worker = BalanceWorker(key, provider=provider)
-        self.balance_worker.done.connect(self._on_balance_ok)
-        self.balance_worker.failed.connect(self._on_balance_failed)
-        self.balance_worker.start()
 
+        self.balance_workers = []
+        self._balance_results = {}
+        self._balance_pending = len(targets)
+        for prov, key in targets:
+            w = BalanceWorker(key, provider=prov)
+            w.done.connect(lambda amt, meta, pv=prov: self._on_one_balance(pv, True, amt, meta))
+            w.failed.connect(lambda msg, pv=prov: self._on_one_balance(pv, False, None, msg))
+            self.balance_workers.append(w)
+            w.start()
 
-    def _on_balance_ok(self, amount, meta):
-        sign = (meta or {}).get("sign", "¥")
-        prov = (meta or {}).get("provider", "deepseek")
-        label = "智谱" if prov == "zhipu" else "DeepSeek"
-        self._save_balance_cfg({"last_value": float(amount),
-                                "last_time": time.time(),
-                                "last_provider": prov})
-        # 智谱可附带充值/赠送/已花
-        extra = ""
-        if prov == "zhipu":
-            r = (meta or {}).get("recharge")
-            g = (meta or {}).get("give")
-            sp = (meta or {}).get("spent")
-            parts = []
-            if r:
-                parts.append("充值 %.2f" % r)
-            if g:
-                parts.append("赠送 %.2f" % g)
-            if sp:
-                parts.append("已花 %.2f" % sp)
-            if parts:
-                extra = "（%s）" % " / ".join(parts)
-        self.say_main("%s余额 %s%.2f%s" % (label, sign, amount, extra))
-        tier = self._balance_tier(amount)
+    def _on_one_balance(self, provider, ok, amount, payload):
+        """单家结果回来：先存着，等全部回来再统一播报。"""
+        self._balance_results[provider] = (ok, amount, payload)
+        self._balance_pending = max(0, self._balance_pending - 1)
+        if self._balance_pending > 0:
+            return
+        self._report_balances()
+
+    def _report_balances(self):
+        """把两家的余额合并成一条播报。"""
+        results = self._balance_results or {}
+        if not results:
+            return
+        lines_out = []
+        total = 0.0
+        got_any = False
+        for prov in ("deepseek", "zhipu"):
+            if prov not in results:
+                continue
+            ok, amount, payload = results[prov]
+            label = "智谱" if prov == "zhipu" else "DeepSeek"
+            if not ok:
+                lines_out.append("%s 查询失败（%s）" % (label, str(payload)[:40]))
+                continue
+            got_any = True
+            try:
+                total += float(amount)
+            except Exception:
+                pass
+            sign = "¥"
+            extra = ""
+            if prov == "zhipu" and isinstance(payload, dict):
+                r = payload.get("recharge")
+                sp = payload.get("spent")
+                bits = []
+                if r:
+                    bits.append("充值 %.2f" % r)
+                if sp:
+                    bits.append("已花 %.2f" % sp)
+                if bits:
+                    extra = "（%s）" % " / ".join(bits)
+            lines_out.append("%s %s%.2f%s" % (label, sign, amount, extra))
+
+        if not got_any:
+            self.say_main("余额查询失败：" + "；".join(lines_out))
+            return
+
+        # 播报：单家时直接说，两家时带合计
+        if len(lines_out) == 1:
+            text = "余额 " + lines_out[0]
+        else:
+            text = " / ".join(lines_out) + "，合计 ¥%.2f" % total
+        self._save_balance_cfg({"last_value": float(total),
+                                "last_time": time.time()})
+        self.say_main(text)
+        # 档位动画按合计判断
+        tier = self._balance_tier(total)
         pet = self.main_pet
         if pet is not None and tier is not None:
             name = tier[2]
@@ -1995,12 +2045,8 @@ class PetApp(QObject):
             elif name in CLICK_RESPONSES:
                 pet._play_temp(name, total=CLICK_RESPONSES[name]["duration"], squash=True)
             line = self._pick_line(tier[3], "balance_" + tier[1])
-            QTimer.singleShot(2600, lambda t=line: self.say_main(t))
+            QTimer.singleShot(3200, lambda t=line: self.say_main(t))
 
-
-    def _on_balance_failed(self, msg):
-        log("余额查询失败: %s" % msg, logging.WARNING)
-        self.say_main("余额查询失败：" + msg)
 
     def _balance_tier(self, amount):
         """按已用百分比（满额按 ¥20 折算）分 6 档。"""
