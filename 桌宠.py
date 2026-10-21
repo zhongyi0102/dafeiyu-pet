@@ -2672,7 +2672,8 @@ class PetApp(QObject):
         buf.close()
         image = None
 
-        prompt = "请描述这张截图的内容。" + suffix
+        prompt = ("描述这张屏幕截图。" + "\n\n" + LOOK_SCREEN_ANTI_HALLUCINATION
+                  + "\n" + suffix)
 
 
         def run():
@@ -2865,7 +2866,7 @@ class PetApp(QObject):
 
     def _look_screen_to_chat_desc(self, desc):
         """把视觉描述交给聊天模型，用大肥鱼人设回一句（并同步聊天）。"""
-        line = "[屏幕观察] " + desc
+        line = ("[屏幕观察] 以下是我看到的画面内容（仅此而已，不是剧情、不是某部作品）。你就当作我也在看着主人的屏幕，用你的口吻说一句关于这画面的话：" + chr(10) + desc)
         # 用聊天模型按人设回应
         try:
             self._ask_chat_for_look(line, desc)
