@@ -119,6 +119,25 @@
   聊天模型不可用（未配置/401/网络错误）时，把视觉描述用人设口吻
   「唔……我看到了：…」直接显示，而不是抛「API Key 无效」。
 
+### 新增（Added）
+
+- **视觉解析结果写进聊天**：框选后聊天里依次出现三条
+  - `[屏幕解析] …`（视觉模型看到的内容，让你知道它到底看到了什么）
+  - `[看看屏幕] (框选)`
+  - 宠物按人设的回复
+  无论聊天窗口开没开都会写入（不开则落 `chats.json`，下次打开可见）。
+
+### 修复（Fixed）
+
+- **跨线程操作 UI 导致气泡不显示**：worker 线程里直接调
+  `cw.append_external()` 创建 Qt 控件，报
+  `QObject::setParent: Cannot set parent, new parent is in a different thread`，
+  界面不刷新。新增 `PetApp.look_to_chat` Signal，worker 只 emit，
+  主线程 `_on_look_to_chat()` 真正写界面与文件。
+- **首次使用时 `chats.json` 不存在导致写入失败**：
+  `_append_pairs_to_chat_file()` 现在会自动创建目录结构与会话，
+  不再直接返回 False。
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。

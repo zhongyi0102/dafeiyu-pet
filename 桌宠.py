@@ -649,6 +649,9 @@ from petcore.settings import SettingsWindow   # noqa: F401
 class PetApp(QObject):
     # 宠物显示状态变化（pet_id, state, reason）——设置窗口监听后刷新列表
     pet_state_changed = Signal(str, str, str)
+
+    # 看看屏幕 → 聊天窗口（跨线程安全：worker 线程只 emit）
+    look_to_chat = Signal(str, str, str)
     """全局唯一的东西：配置、托盘、菜单、聊天、记忆、提醒、节日、截屏守卫、
     系统监控、小游戏、用量。持有 1~N 个 PetWindow。"""
 
@@ -656,6 +659,8 @@ class PetApp(QObject):
         self.cfg, migrated = load_config_safe()
         super().__init__()
         self.pets = []
+        # 看看屏幕结果回主线程写聊天（worker 线程只 emit）
+        self.look_to_chat.connect(self._on_look_to_chat)
         self.main_pet = None
         self.chat_window = None
         self.memory_dialog = None
@@ -2732,27 +2737,97 @@ class PetApp(QObject):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _look_screen_to_chat(self, title, text, ok=True):
-        """把「看看屏幕」的结果写进当前聊天会话（可继续追问）。
+    def _look_screen_to_chat(self, title, text, ok=True, desc=None):
+        """把「看看屏幕」的结果写进聊天（**线程安全入口**）。
 
-        窗口没打开也要写（下次打开聊天能看到）；
-        已打开时额外立刻显示气泡。
+        可能在 worker 线程被调用，因此只 emit 信号；
+        真正的 UI/落盘在 _on_look_to_chat 里（主线程执行）。
         """
         try:
-            user_line = "[看看屏幕] %s" % title
+            self.look_to_chat.emit(str(title or ""), str(text or ""),
+                                   str(desc or ""))
+            return True
+        except Exception as ex:
+            log("[看看屏幕] 发信号失败: %s" % ex, logging.WARNING)
+            return False
+
+    def _on_look_to_chat(self, title, text, desc):
+        """主线程：把解析与回复写进聊天窗口/文件。"""
+        try:
+            user_line = "[看看屏幕] %s" % (title or "框选")
+            pairs = []
+            if desc:
+                pairs.append(("user", "[屏幕解析] " + desc))
+            pairs.append(("user", user_line))
+            pairs.append(("assistant", text))
+
             cw = self.chat_window
             if cw is not None:
-                cw.append_external("user", user_line)
-                cw.append_external("assistant", text)
-                log("[看看屏幕] 已同步到聊天会话（窗口已开）")
-                return True
-            if self._append_to_chat_file(user_line, text):
-                log("[看看屏幕] 已写入聊天记录（窗口未开，下次可见）")
-                return True
-            return False
+                for role, content in pairs:
+                    cw.append_external(role, content)
+                log("[看看屏幕] 已同步到聊天（含解析）")
+                return
+            if self._append_pairs_to_chat_file(pairs):
+                log("[看看屏幕] 已写入聊天记录（含解析）")
         except Exception as ex:
-            log("[看看屏幕] 同步到聊天失败: %s" % ex, logging.WARNING)
+            log("[看看屏幕] 写聊天失败: %s" % ex, logging.WARNING)
+
+
+    def _append_pairs_to_chat_file(self, pairs):
+        """不开聊天窗口，把多条 (role, content) 追加到 chats.json 当前会话。
+
+        文件不存在时自动创建（首次使用也能看到记录）。
+        """
+        try:
+            data = None
+            if os.path.exists(CHAT_PATH):
+                try:
+                    with open(CHAT_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = None
+            if not isinstance(data, dict):
+                data = {"sessions": [], "current": None}
+            sessions = data.get("sessions")
+            if not isinstance(sessions, list):
+                sessions = []
+                data["sessions"] = sessions
+            # 没有会话就建一个
+            if not sessions:
+                sid = time.strftime("%Y%m%d%H%M%S") + "000"
+                sessions.append({
+                    "id": sid, "title": "看看屏幕", "messages": [],
+                    "summary": "", "summarized_upto": 0,
+                    "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                })
+                data["current"] = sid
+            cur = data.get("current")
+            sess = None
+            for s in sessions:
+                if s.get("id") == cur:
+                    sess = s
+                    break
+            if sess is None:
+                sess = max(sessions, key=lambda x: x.get("updated") or "")
+                data["current"] = sess.get("id")
+            msgs = sess.setdefault("messages", [])
+            for role, content in pairs:
+                content = (content or "").strip()
+                if content:
+                    msgs.append({"role": role, "content": content})
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            sess["updated"] = stamp
+            data["updated"] = stamp
+            tmp = CHAT_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CHAT_PATH)
+            return True
+        except Exception as ex:
+            log("[看看屏幕] 写聊天记录失败: %s" % ex, logging.WARNING)
             return False
+
 
     def _append_to_chat_file(self, user_text, assistant_text):
         """不开聊天窗口，直接把两条消息追加到 chats.json 的当前会话。"""
@@ -2847,7 +2922,7 @@ class PetApp(QObject):
                 log("[看看屏幕] 聊天请求失败（%s），降级显示视觉描述" % why)
             if text:
                 self.say_main(text)
-                self._look_screen_to_chat("(框选)", text, ok=True)
+                self._look_screen_to_chat("(框选)", text, ok=True, desc=desc)
             else:
                 self._look_fallback(desc, why)
 
@@ -2861,7 +2936,7 @@ class PetApp(QObject):
         if len(text) > 120:
             text = text[:118] + "…"
         self.say_main(text)
-        self._look_screen_to_chat("(框选)", text, ok=True)
+        self._look_screen_to_chat("(框选)", text, ok=True, desc=desc)
 
 
     def _get_weather(self, pet=None):
