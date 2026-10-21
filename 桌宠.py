@@ -2651,6 +2651,8 @@ class PetApp(QObject):
 
     def _run_look_screen(self, image):
         """两步流程：视觉模型描述 → 交给聊天模型按人设回复。"""
+        # 截图数据容器：闭包可读，线程结束统一释放
+        holder = {"jpg": None}
         base, key, model = self._vision_cfg()
         suffix, vis_tokens = self._vision_style_cfg()
         speaker = self.main_pet
@@ -2661,16 +2663,17 @@ class PetApp(QObject):
         buf = QBuffer()
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
         image.save(buf, "JPEG", LOOK_SCREEN_JPEG_Q)
-        jpg = bytes(buf.data())
+        holder["jpg"] = bytes(buf.data())
         buf.close()
         image = None
 
         prompt = "请描述这张截图的内容。" + suffix
 
+
         def run():
             desc = ""
             try:
-                b64 = base64.b64encode(jpg).decode("ascii")
+                b64 = base64.b64encode(holder["jpg"]).decode("ascii")
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": [
@@ -2725,13 +2728,65 @@ class PetApp(QObject):
                 log("[看看屏幕] 失败: %s" % ex, logging.WARNING)
                 self.say_main("瞧不清呢……%s" % str(ex)[:30])
             finally:
-                jpg = None
-                image_holder.clear()
+                holder["jpg"] = None   # 释放截图数据
 
-        # 用一个容器持有 jpg，便于 finally 释放
-        image_holder = {"data": jpg}
-        jpg = image_holder["data"]
         threading.Thread(target=run, daemon=True).start()
+
+    def _look_screen_to_chat(self, title, text, ok=True):
+        """把「看看屏幕」的结果写进当前聊天会话（可继续追问）。
+
+        窗口没打开也要写（下次打开聊天能看到）；
+        已打开时额外立刻显示气泡。
+        """
+        try:
+            user_line = "[看看屏幕] %s" % title
+            cw = self.chat_window
+            if cw is not None:
+                cw.append_external("user", user_line)
+                cw.append_external("assistant", text)
+                log("[看看屏幕] 已同步到聊天会话（窗口已开）")
+                return True
+            if self._append_to_chat_file(user_line, text):
+                log("[看看屏幕] 已写入聊天记录（窗口未开，下次可见）")
+                return True
+            return False
+        except Exception as ex:
+            log("[看看屏幕] 同步到聊天失败: %s" % ex, logging.WARNING)
+            return False
+
+    def _append_to_chat_file(self, user_text, assistant_text):
+        """不开聊天窗口，直接把两条消息追加到 chats.json 的当前会话。"""
+        try:
+            if not os.path.exists(CHAT_PATH):
+                return False
+            with open(CHAT_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            sessions = data.get("sessions") or []
+            if not sessions:
+                return False
+            cur = data.get("current")
+            sess = None
+            for s in sessions:
+                if s.get("id") == cur:
+                    sess = s
+                    break
+            if sess is None:
+                sess = max(sessions, key=lambda x: x.get("updated") or "")
+            msgs = sess.setdefault("messages", [])
+            msgs.append({"role": "user", "content": user_text})
+            msgs.append({"role": "assistant", "content": assistant_text})
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            sess["updated"] = stamp
+            data["updated"] = stamp
+            tmp = CHAT_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CHAT_PATH)
+            return True
+        except Exception as ex:
+            log("[看看屏幕] 写聊天记录失败: %s" % ex, logging.WARNING)
+            return False
+
 
     def _look_screen_to_chat_desc(self, desc):
         """把视觉描述交给聊天模型，用大肥鱼人设回一句（并同步聊天）。"""
@@ -2744,12 +2799,14 @@ class PetApp(QObject):
             self.say_main(desc[:80])
 
     def _ask_chat_for_look(self, line, desc):
-        """开一个轻量线程：把 [屏幕观察] 交给聊天模型，回复用气泡显示。"""
+        """把 [屏幕观察] 交给聊天模型，用大肥鱼人设回一句。
+
+        聊天 Key 不可用（未配置/失效/网络错误）时降级：
+        直接把视觉描述包成一句人设口吻的话显示，而不是报错。
+        """
         key = (self.cfg.get("ds_api_key") or "").strip()
         if not key:
-            # 没有聊天 Key：直接显示视觉描述
-            self.say_main(desc[:80])
-            self._look_screen_to_chat("(框选)", desc, ok=True)
+            self._look_fallback(desc, "未配置聊天 Key")
             return
         style = self.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.cfg)
@@ -2768,6 +2825,7 @@ class PetApp(QObject):
 
         def run():
             text = ""
+            why = ""
             try:
                 r = requests.post(
                     base_url.rstrip("/") + "/chat/completions",
@@ -2782,16 +2840,29 @@ class PetApp(QObject):
                     except Exception:
                         text = ""
                 else:
-                    text = _http_error_message(r.status_code, r.text)
+                    why = "HTTP %s" % r.status_code
+                    log("[看看屏幕] 聊天模型不可用（%s），降级显示视觉描述" % why)
             except Exception as ex:
-                log("[看看屏幕] 聊天请求失败: %s" % ex, logging.WARNING)
-                text = desc[:80]
-            if not text:
-                text = desc[:80]
-            self.say_main(text)
-            self._look_screen_to_chat("(框选)", text, ok=True)
+                why = str(ex)[:40]
+                log("[看看屏幕] 聊天请求失败（%s），降级显示视觉描述" % why)
+            if text:
+                self.say_main(text)
+                self._look_screen_to_chat("(框选)", text, ok=True)
+            else:
+                self._look_fallback(desc, why)
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _look_fallback(self, desc, why=""):
+        """聊天模型不可用时：把视觉描述用人设口吻显示（不报错）。"""
+        if why:
+            log("[看看屏幕] 降级原因：%s" % why)
+        text = "唔……我看到了：" + (desc or "（看不清）")
+        if len(text) > 120:
+            text = text[:118] + "…"
+        self.say_main(text)
+        self._look_screen_to_chat("(框选)", text, ok=True)
+
 
     def _get_weather(self, pet=None):
         speaker = pet or self.main_pet

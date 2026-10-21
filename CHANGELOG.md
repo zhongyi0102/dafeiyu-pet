@@ -106,6 +106,19 @@
 - **`_on_vision_test_done` 引用未定义变量**：`self._vision_cfg()` 是
   `PetApp` 的方法，`SettingsWindow` 上没有 → 改为 `self.app._vision_cfg()`
 
+### 修复（Fixed）
+
+- **`_run_look_screen` 报 `UnboundLocalError: cannot access local variable 'jpg'`**：
+  `run()` 内 `finally: jpg = None` 让 `jpg` 变成局部变量，
+  遮蔽了外层闭包值。改用 `holder = {"jpg": None}` 字典承载，
+  并在 `run()` 定义**之前**创建（原先在之后创建，闭包捕获不到）。
+- **`_look_screen_to_chat` / `_append_to_chat_file` 两个方法丢失**：
+  之前的大段替换把它们挤掉了，导致视觉成功后同步聊天时报
+  `'PetApp' object has no attribute '_look_screen_to_chat'`。已重新实现。
+- **聊天 Key 失效时整条流程报错**：新增 `_look_fallback()` 降级——
+  聊天模型不可用（未配置/401/网络错误）时，把视觉描述用人设口吻
+  「唔……我看到了：…」直接显示，而不是抛「API Key 无效」。
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。
