@@ -16,7 +16,99 @@
 
 ---
 
-## [未发布]
+## [1.1.0] — 2026-10-21
+
+### 新增（Added）
+
+- **视觉模型独立 API 配置**：设置 →「聊天」→「看看屏幕」新增三个输入框
+  - **视觉模型** — 留空则用内置默认 `deepseek-v4-flash-vision-exp`
+  - **接口地址** — 留空则用 `https://api.deepseek.com/v1`
+  - **视觉 Key** — 留空则复用聊天 Key（密码模式显示）
+- **「测试」按钮**：造一张纯色图发给配置的模型，实测能否读图。
+  结果用颜色标注：绿色 ✓ 成功 / 橙色 ⚠ 有读图能力但 token 不足 / 红色 ✗ 失败
+- **「恢复默认」按钮**：一键清空三项配置，回到内置默认
+
+
+
+- **「看看屏幕」改为用户框选截图**（不再自动截全屏）
+  - 点击后先隐藏桌宠，等 150ms 再截底图（保证拍不到桌宠）
+  - 全屏无边框遮罩：底图压暗 + 十字光标 + 选区保持原亮度 + 显示尺寸
+  - 左键拖拽框选，松开确认；Esc / 右键取消；选区任一边 < 20px 视为取消
+  - 兼容多显示器与高 DPI：按鼠标所在屏幕截图，选区坐标 × 设备像素比
+  - 新增 `petcore/region_select.py`（`RegionSelectOverlay`）
+- **两步流程**：视觉模型先描述选区 → 描述以「[屏幕观察] …」交给聊天模型按人设回复
+- 视觉请求用「描述风格」的长度句与视觉「单次上限」；等待期间气泡显示「看看中…」
+
+
+- **视觉解析结果写进聊天**：框选后聊天里依次出现三条
+  - `[屏幕解析] …`（视觉模型看到的内容，让你知道它到底看到了什么）
+  - `[看看屏幕] (框选)`
+  - 宠物按人设的回复
+  无论聊天窗口开没开都会写入（不开则落 `chats.json`，下次打开可见）。
+
+
+- **余额查询支持智谱 GLM**（原来只有 DeepSeek）
+  - 端点：`GET https://open.bigmodel.cn/api/biz/account/query-customer-account-report`
+  - 返回 `data.availableBalance`，附带 `rechargeAmount` / `giveAmount` / `totalSpendAmount`
+  - 播报格式：`智谱余额 ¥4.97（充值 5.00 / 已花 0.03）`
+  - `BalanceWorker` 增加 `provider` 参数，拆出 `_query_deepseek()` / `_query_zhipu()`
+  - 设置 →「余额」页新增「余额来源」下拉：自动 / DeepSeek / 智谱 GLM
+  - `auto` 模式下：有智谱 Key 就用智谱，否则用 DeepSeek
+  - 配置字段 `balance.provider`（默认 `auto`），带校验
+
+
+- **视觉请求限制可视化并可调**（设置 →「聊天」→「看看屏幕」，与描述风格/单次上限同表）
+  - **图片最长边**：滑块+数字框，512~2048px，步长 64（默认 1024）
+    替换原先写死的 1024
+  - **图片质量**：滑块+数字框，60~95（默认 70），用于 JPEG 压缩
+  - **请求超时**：数字框，10~120 秒（默认 60），替换写死的 120
+  - 每项下方灰色小字说明作用；全部写入配置 `look_screen.max_side/quality/timeout`
+  - 「清空」按钮只清 Key/地址/模型，不重置这三项
+  - 测试成功后状态行显示实际数据：`✓ 识别完成。试拍输出 48 字（耗时 4.3s，输入 42 / 输出 161 tokens）`
+
+
+- **视觉模型有默认值且可手填**
+  - 新增 `VISION_DEFAULT_MODELS`（智谱 `glm-5.3-flash` / DeepSeek
+    `deepseek-v4-flash-vision-exp`）与兜底 `VISION_DEFAULT_MODEL_FALLBACK`
+  - 默认配置 `look_screen.vision_model` 不再是空串
+  - 下拉框设为可编辑：既能从识别结果选，也能直接手输模型名
+  - 手输后立即保存（`editTextChanged`）
+  - 下方灰字显示「默认模型：xxx」或「自定义模型：xxx（默认是 yyy）」
+  - `_vision_cfg()` 在模型为空时按地址回落对应服务商的默认模型
+- **设置页展示反幻觉规则**：`LOOK_SCREEN_ANTI_HALLUCINATION_HELP`
+  五条规则以灰底小字显示在「看看屏幕」区域顶部，让用户知道识别时会遵守什么
+
+### 变更（Changed）
+
+- **设置页「聊天」页界面微调**
+  - 「看看屏幕」五项（视觉 Key / 接口地址 / 视觉模型 / 描述风格 / 单次上限）
+    收进同一个 `QFormLayout`：标签列右对齐同宽，控件列左对齐
+  - 聊天区「单次输出上限」改成滑块 + 数字框，范围 100~2000
+  - `system` 摘要移到「人设」区下方，文案改为「聊天 system = …」
+  - 删除重复的「填入视觉 Key 后点测试自动识别」提示（只留顶部一句）
+  - 去掉「聊天」标题下多余的分隔线
+  - 删除视觉 Key 旁的「粘贴」按钮及相关代码
+- **「看看屏幕」不再自动截全屏**：内容由用户框选决定，
+  因此移除「窗口黑名单确认」与「只截活动窗口」的设计
+
+
+- **余额改为两家同时查询、同时显示**
+  - `query_balance()` 并行启动 DeepSeek 与智谱两个 `BalanceWorker`
+  - 两边的结果都回来后合并成**一条**播报，只显示「模型 + 金额」：
+    `DeepSeek ¥8.80 / 智谱 ¥4.97`
+  - 只填了一家的 Key 时自动只查那家（不报错）
+  - 档位动画按**合计**金额判断
+  - 新增 `_on_one_balance()`（单家结果暂存）与 `_report_balances()`（合并播报）
+  - `self.balance_worker` → `self.balance_workers`（列表）+ `_balance_results` / `_balance_pending`
+  - 设置 →「余额」的「余额来源」改为「查询范围」：
+    两家同时查（推荐）/ 只查 DeepSeek / 只查智谱 GLM
+  - 提示文字显示两家 Key 的就绪状态
+
+### 移除（Removed）
+
+- `LOOK_SCREEN_MAX_SIDE`（全屏截图长边限制，框选后不再需要）
+- `LOOK_SCREEN_MAX_TOKENS` / `LOOK_SCREEN_TOKEN_RETRY`（改用视觉「单次上限」配置）
+- `SettingsWindow._paste_vision_key()`（粘贴按钮已删）
 
 ### 修复（Fixed）
 
@@ -35,51 +127,6 @@
   并提示"可在设置里换个视觉模型"，而不是只说"没看出啥"
 - **模型名可留空**：留空时回落内置默认，不再报"未配置视觉模型"
 
-### 新增（Added）
-
-- **视觉模型独立 API 配置**：设置 →「聊天」→「看看屏幕」新增三个输入框
-  - **视觉模型** — 留空则用内置默认 `deepseek-v4-flash-vision-exp`
-  - **接口地址** — 留空则用 `https://api.deepseek.com/v1`
-  - **视觉 Key** — 留空则复用聊天 Key（密码模式显示）
-- **「测试」按钮**：造一张纯色图发给配置的模型，实测能否读图。
-  结果用颜色标注：绿色 ✓ 成功 / 橙色 ⚠ 有读图能力但 token 不足 / 红色 ✗ 失败
-- **「恢复默认」按钮**：一键清空三项配置，回到内置默认
-
----
-
-## [未发布]
-
-### 新增（Added）
-
-- **「看看屏幕」改为用户框选截图**（不再自动截全屏）
-  - 点击后先隐藏桌宠，等 150ms 再截底图（保证拍不到桌宠）
-  - 全屏无边框遮罩：底图压暗 + 十字光标 + 选区保持原亮度 + 显示尺寸
-  - 左键拖拽框选，松开确认；Esc / 右键取消；选区任一边 < 20px 视为取消
-  - 兼容多显示器与高 DPI：按鼠标所在屏幕截图，选区坐标 × 设备像素比
-  - 新增 `petcore/region_select.py`（`RegionSelectOverlay`）
-- **两步流程**：视觉模型先描述选区 → 描述以「[屏幕观察] …」交给聊天模型按人设回复
-- 视觉请求用「描述风格」的长度句与视觉「单次上限」；等待期间气泡显示「看看中…」
-
-### 变更（Changed）
-
-- **设置页「聊天」页界面微调**
-  - 「看看屏幕」五项（视觉 Key / 接口地址 / 视觉模型 / 描述风格 / 单次上限）
-    收进同一个 `QFormLayout`：标签列右对齐同宽，控件列左对齐
-  - 聊天区「单次输出上限」改成滑块 + 数字框，范围 100~2000
-  - `system` 摘要移到「人设」区下方，文案改为「聊天 system = …」
-  - 删除重复的「填入视觉 Key 后点测试自动识别」提示（只留顶部一句）
-  - 去掉「聊天」标题下多余的分隔线
-  - 删除视觉 Key 旁的「粘贴」按钮及相关代码
-- **「看看屏幕」不再自动截全屏**：内容由用户框选决定，
-  因此移除「窗口黑名单确认」与「只截活动窗口」的设计
-
-### 移除（Removed）
-
-- `LOOK_SCREEN_MAX_SIDE`（全屏截图长边限制，框选后不再需要）
-- `LOOK_SCREEN_MAX_TOKENS` / `LOOK_SCREEN_TOKEN_RETRY`（改用视觉「单次上限」配置）
-- `SettingsWindow._paste_vision_key()`（粘贴按钮已删）
-
-### 修复（Fixed）
 
 - **服务商识别被 401 中断**：原逻辑遇到第一个 401 就中止，
   导致智谱 Key 在 DeepSeek 那步就被判死，永远认不出智谱
@@ -95,7 +142,6 @@
 
 ---
 
-### 修复（Fixed）
 
 - **「测试」永久卡在识别中**（致命）：worker 线程里用
   `QTimer.singleShot(0, ...)` 回主线程更新 UI，但该线程没有 Qt 事件循环，
@@ -106,7 +152,6 @@
 - **`_on_vision_test_done` 引用未定义变量**：`self._vision_cfg()` 是
   `PetApp` 的方法，`SettingsWindow` 上没有 → 改为 `self.app._vision_cfg()`
 
-### 修复（Fixed）
 
 - **`_run_look_screen` 报 `UnboundLocalError: cannot access local variable 'jpg'`**：
   `run()` 内 `finally: jpg = None` 让 `jpg` 变成局部变量，
@@ -119,15 +164,6 @@
   聊天模型不可用（未配置/401/网络错误）时，把视觉描述用人设口吻
   「唔……我看到了：…」直接显示，而不是抛「API Key 无效」。
 
-### 新增（Added）
-
-- **视觉解析结果写进聊天**：框选后聊天里依次出现三条
-  - `[屏幕解析] …`（视觉模型看到的内容，让你知道它到底看到了什么）
-  - `[看看屏幕] (框选)`
-  - 宠物按人设的回复
-  无论聊天窗口开没开都会写入（不开则落 `chats.json`，下次打开可见）。
-
-### 修复（Fixed）
 
 - **跨线程操作 UI 导致气泡不显示**：worker 线程里直接调
   `cw.append_external()` 创建 Qt 控件，报
@@ -138,7 +174,6 @@
   `_append_pairs_to_chat_file()` 现在会自动创建目录结构与会话，
   不再直接返回 False。
 
-### 修复（Fixed）
 
 - **视觉模型瞎编内容**（幻觉）：看动漫截图时编出「牧神记第180集」
   这类画面里根本不存在的作品与剧情。
@@ -150,29 +185,6 @@
     （「仅此而已，不是剧情、不是某部作品」）
   - 实测：编造性解读消失，画面里真实存在的文字正常转述
 
-### 新增（Added）
-
-- **余额查询支持智谱 GLM**（原来只有 DeepSeek）
-  - 端点：`GET https://open.bigmodel.cn/api/biz/account/query-customer-account-report`
-  - 返回 `data.availableBalance`，附带 `rechargeAmount` / `giveAmount` / `totalSpendAmount`
-  - 播报格式：`智谱余额 ¥4.97（充值 5.00 / 已花 0.03）`
-  - `BalanceWorker` 增加 `provider` 参数，拆出 `_query_deepseek()` / `_query_zhipu()`
-  - 设置 →「余额」页新增「余额来源」下拉：自动 / DeepSeek / 智谱 GLM
-  - `auto` 模式下：有智谱 Key 就用智谱，否则用 DeepSeek
-  - 配置字段 `balance.provider`（默认 `auto`），带校验
-
-### 新增（Added）
-
-- **视觉请求限制可视化并可调**（设置 →「聊天」→「看看屏幕」，与描述风格/单次上限同表）
-  - **图片最长边**：滑块+数字框，512~2048px，步长 64（默认 1024）
-    替换原先写死的 1024
-  - **图片质量**：滑块+数字框，60~95（默认 70），用于 JPEG 压缩
-  - **请求超时**：数字框，10~120 秒（默认 60），替换写死的 120
-  - 每项下方灰色小字说明作用；全部写入配置 `look_screen.max_side/quality/timeout`
-  - 「清空」按钮只清 Key/地址/模型，不重置这三项
-  - 测试成功后状态行显示实际数据：`✓ 识别完成。试拍输出 48 字（耗时 4.3s，输入 42 / 输出 161 tokens）`
-
-### 修复（Fixed）
 
 - **视觉模型排序未生效**：并行验证的到达顺序是随机的，
   导致 `glm-5.3-flash` 排在 `glm-4.5v` 之后。
@@ -182,33 +194,6 @@
 - **试拍结果被丢弃**：`_on_vision_test_done` 里 `_reset_vision_test_ui()`
   会把 `_vision_token` +1，导致紧接着的试拍 `stale()` 立刻为真。
   试拍改用独立 `_vision_rtoken`
-
-### 新增（Added）
-
-- **视觉模型有默认值且可手填**
-  - 新增 `VISION_DEFAULT_MODELS`（智谱 `glm-5.3-flash` / DeepSeek
-    `deepseek-v4-flash-vision-exp`）与兜底 `VISION_DEFAULT_MODEL_FALLBACK`
-  - 默认配置 `look_screen.vision_model` 不再是空串
-  - 下拉框设为可编辑：既能从识别结果选，也能直接手输模型名
-  - 手输后立即保存（`editTextChanged`）
-  - 下方灰字显示「默认模型：xxx」或「自定义模型：xxx（默认是 yyy）」
-  - `_vision_cfg()` 在模型为空时按地址回落对应服务商的默认模型
-- **设置页展示反幻觉规则**：`LOOK_SCREEN_ANTI_HALLUCINATION_HELP`
-  五条规则以灰底小字显示在「看看屏幕」区域顶部，让用户知道识别时会遵守什么
-
-### 变更（Changed）
-
-- **余额改为两家同时查询、同时显示**
-  - `query_balance()` 并行启动 DeepSeek 与智谱两个 `BalanceWorker`
-  - 两边的结果都回来后合并成**一条**播报，只显示「模型 + 金额」：
-    `DeepSeek ¥8.80 / 智谱 ¥4.97`
-  - 只填了一家的 Key 时自动只查那家（不报错）
-  - 档位动画按**合计**金额判断
-  - 新增 `_on_one_balance()`（单家结果暂存）与 `_report_balances()`（合并播报）
-  - `self.balance_worker` → `self.balance_workers`（列表）+ `_balance_results` / `_balance_pending`
-  - 设置 →「余额」的「余额来源」改为「查询范围」：
-    两家同时查（推荐）/ 只查 DeepSeek / 只查智谱 GLM
-  - 提示文字显示两家 Key 的就绪状态
 
 ## [1.0.0] — 2026-10-20
 
