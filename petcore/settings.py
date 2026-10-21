@@ -1378,6 +1378,15 @@ class SettingsWindow(QDialog):
         self._title(lay, "看看屏幕",
                     "填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
 
+        # 反幻觉规则（展示给用户看，说明识别时会遵守什么）
+        _anti = QLabel(LOOK_SCREEN_ANTI_HALLUCINATION_HELP)
+        _anti.setWordWrap(True)
+        _anti.setStyleSheet(
+            "color:#5a6070;font-size:11px;margin-left:22px;margin-top:4px;"
+            "background:#f5f7fb;border-radius:6px;padding:8px;")
+        lay.addWidget(_anti)
+
+
         # 全部字段放进同一个 QFormLayout（标签右对齐、同宽；控件左对齐）
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1417,9 +1426,18 @@ class SettingsWindow(QDialog):
 
         # 3) 视觉模型
         self.vision_model = QComboBox()
+        self.vision_model.setEditable(True)   # 允许手填模型名
+        self.vision_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.vision_model.setFixedHeight(_rowh)
         self.vision_model.currentIndexChanged.connect(self._on_vision_model_changed)
+        # 可编辑：手输模型名时也要立即保存
+        self.vision_model.editTextChanged.connect(self._on_vision_model_changed)
         form.addRow("视觉模型", self.vision_model)
+        self._vision_model_hint = QLabel("")
+        self._vision_model_hint.setWordWrap(True)
+        self._vision_model_hint.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._vision_model_hint)
 
         # 4) 描述风格
         self.vision_style = QComboBox()
@@ -1522,6 +1540,31 @@ class SettingsWindow(QDialog):
         self._refresh_chat_hint()
 
     # ---------- 看看屏幕：视觉配置 ----------
+    def _vision_provider_name(self):
+        """从当前地址判断服务商名（用于选默认模型）。"""
+        base = (self.vision_base.text() or "").strip().lower()
+        if "bigmodel" in base or "z.ai" in base:
+            return "智谱"
+        if "deepseek" in base:
+            return "DeepSeek"
+        return ""
+
+
+    def _current_vision_model(self):
+        """当前下拉/手填的模型名；空则回落该服务商的默认模型。"""
+        try:
+            m = (self.vision_model.currentText() or "").strip()
+        except Exception:
+            m = ""
+        if m:
+            return m
+        try:
+            prov = self.app._vision_provider_name()
+        except Exception:
+            prov = ""
+        return VISION_DEFAULT_MODELS.get(prov) or VISION_DEFAULT_MODEL_FALLBACK
+
+
     def _vision_cfg_dict(self):
         """取 look_screen 配置（缺失时补空）。"""
         ls = self.app.cfg.get("look_screen")
@@ -1592,6 +1635,25 @@ class SettingsWindow(QDialog):
             v = VISION_TOKENS_DEFAULT
         return max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, v))
 
+    def _refresh_vision_model_hint(self):
+        """灰字：说明当前模型是默认还是自定义。"""
+        try:
+            cur = (self.vision_model.currentText() or "").strip()
+            prov = self._vision_provider_name()
+            dft = VISION_DEFAULT_MODELS.get(prov) or VISION_DEFAULT_MODEL_FALLBACK
+            if not cur:
+                self._vision_model_hint.setText(
+                    "默认模型：%s（可下拉选择或直接手填）" % dft)
+            elif cur == dft:
+                self._vision_model_hint.setText(
+                    "默认模型：%s（可下拉选择或直接手填）" % dft)
+            else:
+                self._vision_model_hint.setText(
+                    "自定义模型：%s（默认是 %s，可改回）" % (cur, dft))
+        except Exception:
+            pass
+
+
     def _refresh_vision_style_hint(self):
         """风格行下方灰字：显示当前追加句（和聊天页写法一致）。"""
         try:
@@ -1626,8 +1688,12 @@ class SettingsWindow(QDialog):
         self.vision_base.setText(ls["vision_base"])
         for w in (self.vision_key, self.vision_base):
             w.blockSignals(False)
-        models = [ls["vision_model"]] if ls["vision_model"] else []
-        self._fill_vision_models(models, keep=ls["vision_model"] or None)
+        # 模型为空时用默认值填充（下拉框要能看到默认模型）
+        _prov = self._vision_provider_name()
+        _dft = VISION_DEFAULT_MODELS.get(_prov) or VISION_DEFAULT_MODEL_FALLBACK
+        _cur_model = ls["vision_model"] or _dft
+        models = [_cur_model]
+        self._fill_vision_models(models, keep=_cur_model)
         # 描述风格与单次上限：独立于聊天页，各自填
         _st = self._vision_style_value()
         self.vision_style.blockSignals(True)
@@ -1662,6 +1728,8 @@ class SettingsWindow(QDialog):
         self.vision_timeout_spin.blockSignals(False)
         self._refresh_vision_style_hint()
         self._restore_vision_status()
+
+        self._refresh_vision_model_hint()
 
     def _toggle_vision_key(self):
         """显示 / 隐藏 Key。"""
@@ -1707,23 +1775,28 @@ class SettingsWindow(QDialog):
         self._save_vision_extra()
 
 
-    def _on_vision_model_changed(self, _idx=None):
-        """切换模型后立即保存（前提：Key 与地址都已就绪）。"""
+    def _on_vision_model_changed(self, *_a):
+        """切换/手填模型后立即保存，并刷新默认/自定义提示。"""
         if getattr(self, "_vision_filling", False):
             return
         if getattr(self, "_vision_testing", False):
             return
+        model = (self.vision_model.currentText() or "").strip()
         key = (self.vision_key.text() or "").strip()
         base = (self.vision_base.text() or "").strip()
-        model = (self.vision_model.currentText() or "").strip()
-        if key and base and model:
+        # 有模型名就存（不强制要求 base/key 已就绪，方便先选模型）
+        if model:
             ls = self._vision_cfg_dict()
-            ls["vision_key"] = key[:300]
-            ls["vision_base"] = base[:300]
             ls["vision_model"] = model[:200]
+            if key:
+                ls["vision_key"] = key[:300]
+            if base:
+                ls["vision_base"] = base[:300]
             self.app.cfg["look_screen"] = ls
             self.app.save_cfg()
-            self._set_vision_status("✓ 已保存：%s" % model, "ok")
+            self._set_vision_status("✓ 模型已保存：%s" % model, "ok")
+        self._refresh_vision_model_hint()
+
 
     def _restore_vision_status(self):
         """按已保存配置显示状态（不动网络）。"""

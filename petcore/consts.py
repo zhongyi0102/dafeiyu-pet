@@ -385,6 +385,14 @@ VISION_KNOWN_MODELS = {
     "DeepSeek": ("deepseek-v4-flash-vision-exp",),
 }
 
+# 各服务商的「默认视觉模型」（识别不出或用户没选时用这个）
+VISION_DEFAULT_MODELS = {
+    "智谱": "glm-5.3-flash",
+    "DeepSeek": "deepseek-v4-flash-vision-exp",
+}
+# 兜底：连服务商都不知道时的默认模型
+VISION_DEFAULT_MODEL_FALLBACK = "glm-5.3-flash"
+
 VISION_MAX_VERIFY = 12      # 最多真实验证多少个候选模型
 VISION_VERIFY_WORKERS = 4   # 并行验证线程数
 VISION_VERIFY_TIMEOUT = 40  # 单个验证请求超时（秒）
@@ -398,6 +406,17 @@ LOOK_SCREEN_ANTI_HALLUCINATION = (
     "3. 禁止编造画面外的剧情、前后文、角色关系。\n"
     "4. 画面里有什么字就抄什么字（可作转述），没有的字不要发明。\n"
     "5. 不确定的部分直接说「不确定」或跳过，宁少勿编。\n"
+)
+
+# 设置页展示用的反幻觉说明（多行，与上面同义但面向用户阅读）
+LOOK_SCREEN_ANTI_HALLUCINATION_HELP = (
+    "识别时严格遵守以下规则，避免瞎编：\n"
+    "  1. 只描述画面里真实可见的内容，一个字都不推测。\n"
+    "  2. 不说出任何作品名、游戏名、动画名、人物名、门派名、地名——"
+    "认不出来就是认不出来。\n"
+    "  3. 不编造画面外的剧情、前后文、角色关系。\n"
+    "  4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
+    "  5. 不确定的部分直接跳过，宁少勿编。"
 )
 # 视觉描述请求：只描述可见内容（两步流程第一步用）
 LOOK_SCREEN_PROMPT = (
@@ -2058,7 +2077,7 @@ def default_config():
             "daily_max": 8,        # 每天最多几次（1~50）
         },
         # 「看看屏幕」配置
-        "look_screen": {"vision_model": "", "vision_base": "", "vision_key": "",
+        "look_screen": {"vision_model": VISION_DEFAULT_MODEL_FALLBACK, "vision_base": "", "vision_key": "",
                         "style": VISION_STYLE_DEFAULT,
                         "style": VISION_STYLE_DEFAULT,
                         "max_tokens": VISION_TOKENS_DEFAULT,

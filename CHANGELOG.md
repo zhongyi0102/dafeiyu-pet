@@ -183,6 +183,19 @@
   会把 `_vision_token` +1，导致紧接着的试拍 `stale()` 立刻为真。
   试拍改用独立 `_vision_rtoken`
 
+### 新增（Added）
+
+- **视觉模型有默认值且可手填**
+  - 新增 `VISION_DEFAULT_MODELS`（智谱 `glm-5.3-flash` / DeepSeek
+    `deepseek-v4-flash-vision-exp`）与兜底 `VISION_DEFAULT_MODEL_FALLBACK`
+  - 默认配置 `look_screen.vision_model` 不再是空串
+  - 下拉框设为可编辑：既能从识别结果选，也能直接手输模型名
+  - 手输后立即保存（`editTextChanged`）
+  - 下方灰字显示「默认模型：xxx」或「自定义模型：xxx（默认是 yyy）」
+  - `_vision_cfg()` 在模型为空时按地址回落对应服务商的默认模型
+- **设置页展示反幻觉规则**：`LOOK_SCREEN_ANTI_HALLUCINATION_HELP`
+  五条规则以灰底小字显示在「看看屏幕」区域顶部，让用户知道识别时会遵守什么
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。

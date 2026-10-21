@@ -2574,15 +2574,24 @@ class PetApp(QObject):
 
     # ---------- 看看屏幕：框选截图 ----------
     def _vision_cfg(self):
-        """视觉配置（独立于聊天 Key）：设置页「测试」自动识别的结果。
+        """视觉配置（独立于聊天 Key）：返回 (base_url, api_key, model_name)。
 
-        返回 (base_url, api_key, model_name)；没配置时三项为空。
+        模型名留空时回落该服务商的默认模型（VISION_DEFAULT_MODELS）。
         """
         ls = self.cfg.get("look_screen") or {}
         base = (ls.get("vision_base") or "").strip()
         key = (ls.get("vision_key") or "").strip()
         model = (ls.get("vision_model") or "").strip()
+        if not model:
+            bl = base.lower()
+            if "bigmodel" in bl or "z.ai" in bl:
+                model = VISION_DEFAULT_MODELS.get("智谱", "")
+            elif "deepseek" in bl:
+                model = VISION_DEFAULT_MODELS.get("DeepSeek", "")
+            if not model:
+                model = VISION_DEFAULT_MODEL_FALLBACK
         return base, key, model
+
 
     def _vision_style_cfg(self):
         """描述风格与单次上限（独立于聊天页）。返回 (后缀句, max_tokens)。"""
