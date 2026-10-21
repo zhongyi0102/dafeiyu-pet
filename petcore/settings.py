@@ -40,6 +40,25 @@ from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa:
                             _merge_remind_extras, _migrate_legacy_features,
                             _setup_logging, _thread_excepthook, _valid_hhmm)
 
+class _VisionBus(QObject):
+    """视觉识别 → UI 的跨线程信号总线。
+
+    worker 线程只 emit；Qt 自动把这些调用排队到主线程执行，
+    因此不依赖「该线程有自己的事件循环」（QTimer.singleShot 就会失效）。
+    """
+    base_found = Signal(str, str, object)      # base, provider, stale
+    model_found = Signal(str, object)          # model, stale
+    progress = Signal(int, object)             # 候选数, stale
+    test_done = Signal(object, bool, str, str, list, object)   # stale,ok,err,base,found,total
+    real_done = Signal(object, bool, str, str, int, int, object, str)
+    # real_done: stale, ok, err, text, used, mt, finish, reason
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+
+
+
 class SettingsWindow(QDialog):
     """统一设置窗口：左侧分页，右侧内容。所有入口都从这里进（右键「设置…」/ 托盘）。"""
 
@@ -64,6 +83,13 @@ class SettingsWindow(QDialog):
         self.setMinimumSize(760, 560)
         self.resize(820, 600)
         self._build_ui()
+        # 视觉识别的跨线程信号（替代在线程里用 QTimer.singleShot）
+        self._vbus = _VisionBus(self)
+        self._vbus.base_found.connect(self._on_vision_base_found)
+        self._vbus.model_found.connect(self._on_vision_model_found)
+        self._vbus.progress.connect(self._on_vision_progress)
+        self._vbus.test_done.connect(self._on_vision_test_done)
+        self._vbus.real_done.connect(self._vision_real_test_done)
         if page:
             self._select_page(page)
         self.reload()
@@ -1682,7 +1708,7 @@ class SettingsWindow(QDialog):
         def on_found(model):
             if stale():
                 return
-            QTimer.singleShot(0, lambda m=model: self._on_vision_model_found(m, stale))
+            self._vbus.model_found.emit(model, stale)
 
         def work():
             from petcore import vision as V
@@ -1692,11 +1718,9 @@ class SettingsWindow(QDialog):
                 log("识别已作废，丢弃结果（服务商阶段）")
                 return
             if not base:
-                QTimer.singleShot(0, lambda: self._on_vision_test_done(
-                    stale, False, err, "", []))
+                self._vbus.test_done.emit(stale, False, err, "", [], None)
                 return
-            QTimer.singleShot(0, lambda b=base, pv=provider: self._on_vision_base_found(
-                b, pv, stale))
+            self._vbus.base_found.emit(base, provider, stale)
             ok, models, err2 = V.list_models(base, key)
             if stale():
                 log("识别已作废，丢弃结果（模型列表阶段）")
@@ -1712,19 +1736,19 @@ class SettingsWindow(QDialog):
                 log("（/models 无可用视觉模型，改用内置已知列表：%s）" % provider)
             log("候选 %d 个（列出 %d）：%s" % (len(ranked), len(models), ", ".join(ranked[:8])))
             if not ranked:
-                QTimer.singleShot(0, lambda b=base, e=err2: self._on_vision_test_done(
+                self._vbus.test_done.emit(
                     stale, False,
-                    "没有可验证的视觉模型（%s）" % (e or "列表为空"), b, []))
+                    "没有可验证的视觉模型（%s）" % (err2 or "列表为空"),
+                    base, [], None)
                 return
-            QTimer.singleShot(0, lambda n=len(ranked): self._on_vision_progress(n, stale))
+            self._vbus.progress.emit(len(ranked), stale)
             found, _stopped = V.verify_all(base, key, ranked,
                                            on_found=on_found, log=log,
                                            should_stop=stale)
             if stale():
                 log("识别已作废，丢弃结果（验证阶段）")
                 return
-            QTimer.singleShot(0, lambda b=base, f=found, total=len(ranked):
-                              self._on_vision_test_done(stale, True, "", b, f, total))
+            self._vbus.test_done.emit(stale, True, "", base, found, len(ranked))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1786,7 +1810,7 @@ class SettingsWindow(QDialog):
         self._save_vision_cfg()
         # 识别完成后，用「当前描述风格 + 单次上限」做一次真实试拍，
         # 报告实际输出字数，方便调参（不阻塞界面）
-        self._vision_real_test(base, key, chosen, stale)
+        _vb, _vk, _vm = self.app._vision_cfg()
 
 
         log("===== 视觉识别完成：%d 个可用，已选 %s =====" % (n, chosen))
@@ -1823,8 +1847,9 @@ class SettingsWindow(QDialog):
                                       "Content-Type": "application/json"},
                              json=payload, timeout=120)
                 if r.status_code != 200:
-                    QTimer.singleShot(0, lambda: self._vision_real_test_done(
-                        stale, False, "HTTP %s" % r.status_code, "", 0, mt))
+                    self._vbus.real_done.emit(
+                        stale, False, "HTTP %s" % r.status_code,
+                        "", 0, mt, None, "")
                     return
                 d = r.json()
                 ch = d["choices"][0]
@@ -1833,12 +1858,11 @@ class SettingsWindow(QDialog):
                 reason = (msg.get("reasoning_content") or "").strip()
                 finish = ch.get("finish_reason")
                 used = d.get("usage", {}).get("completion_tokens", 0)
-                QTimer.singleShot(0, lambda t=text, f=finish, u=used, rr=reason:
-                                  self._vision_real_test_done(
-                                      stale, True, "", t, u, mt, f, rr))
+                self._vbus.real_done.emit(
+                    stale, True, "", text, used, mt, finish, reason)
             except Exception as ex:
-                QTimer.singleShot(0, lambda e=ex: self._vision_real_test_done(
-                    stale, False, str(e)[:80], "", 0, mt))
+                self._vbus.real_done.emit(
+                    stale, False, str(ex)[:80], "", 0, mt, None, "")
 
         threading.Thread(target=work, daemon=True).start()
 

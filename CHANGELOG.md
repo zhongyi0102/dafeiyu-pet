@@ -95,6 +95,17 @@
 
 ---
 
+### 修复（Fixed）
+
+- **「测试」永久卡在识别中**（致命）：worker 线程里用
+  `QTimer.singleShot(0, ...)` 回主线程更新 UI，但该线程没有 Qt 事件循环，
+  **回调永不执行** → UI 一直停在「识别中…」，地址与模型永远填不上。
+  实测 81.7 秒仍无结果。
+  改用 `_VisionBus(QObject)` 的 Signal 跨线程 emit（Qt 自动排队到主线程），
+  9 处 `QTimer.singleShot` 全部替换。修复后 **2.2 秒**完成识别。
+- **`_on_vision_test_done` 引用未定义变量**：`self._vision_cfg()` 是
+  `PetApp` 的方法，`SettingsWindow` 上没有 → 改为 `self.app._vision_cfg()`
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。
