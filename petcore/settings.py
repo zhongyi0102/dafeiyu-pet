@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QLabel, QScrollArea, QTextEdit, QListWidget,
                                QListWidgetItem, QSizePolicy, QComboBox, QCheckBox,
                                QSlider, QSpinBox, QDoubleSpinBox, QStackedWidget,
-                               QAbstractItemView)
+                               QAbstractItemView, QFormLayout)
 
 from petcore.consts import *          # noqa: F401,F403
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
@@ -220,6 +220,56 @@ class SettingsWindow(QDialog):
         s.valueChanged.connect(from_slider)
         box.valueChanged.connect(from_box)
         return s, box
+
+    def _tokens_field(self, value, lo, hi, step, on_change, suffix="tokens"):
+        """滑块 + 数字框 + 单位，装进一个 QWidget（供 QFormLayout 用）。
+
+        返回 (容器 widget, 滑块, 数字框)。
+        """
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+
+        s = QSlider(Qt.Orientation.Horizontal)
+        s.setRange(lo, hi)
+        s.setSingleStep(step)
+        s.setPageStep(step * 5)
+        s.setValue(int(value))
+        s.setMinimumWidth(200)
+        h.addWidget(s, 1)
+
+        box = QDoubleSpinBox()
+        box.setRange(lo, hi)
+        box.setSingleStep(step)
+        box.setDecimals(0)
+        box.setValue(float(value))
+        box.setFixedWidth(96)
+        h.addWidget(box)
+
+        unit = QLabel(suffix)
+        unit.setStyleSheet("color:#8a8f9c;")
+        h.addWidget(unit)
+
+        def from_slider(v):
+            if abs(box.value() - v) > 1e-9:
+                box.blockSignals(True)
+                box.setValue(float(v))
+                box.blockSignals(False)
+            on_change(float(v))
+
+        def from_box(v):
+            iv = int(round(v))
+            if s.value() != iv:
+                s.blockSignals(True)
+                s.setValue(iv)
+                s.blockSignals(False)
+            on_change(float(v))
+
+        s.valueChanged.connect(from_slider)
+        box.valueChanged.connect(from_box)
+        return w, s, box
+
 
     def _combo_row(self, lay, label, items, current, on_change):
         row = QHBoxLayout()
@@ -1187,22 +1237,7 @@ class SettingsWindow(QDialog):
         self._style_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
         lay.addWidget(self._style_hint)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line)
-
-        self._max_tokens_row = self._slider_row(
-            lay, "单次上限", self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT),
-            MAX_TOKENS_MIN, MAX_TOKENS_MAX, 50, None,
-            lambda v: self._set_max_tokens(int(v)), "tokens")
-
-        hint2 = QLabel("max_tokens 是模型单次最多输出多少 token（中文约 1.5 字/token）。"
-                       "回复风格决定「说多长」，这个值决定「最多能说多长」。")
-        hint2.setWordWrap(True)
-        hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(hint2)
-
-        # ---- 人设编辑 ----
+        # ---- 人设 ----
         line2 = QFrame()
         line2.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line2)
@@ -1236,28 +1271,7 @@ class SettingsWindow(QDialog):
         self._persona_hint.setStyleSheet("color:#d08a00;font-size:11px;margin-left:2px;")
         lay.addWidget(self._persona_hint)
 
-        # ---- 看看屏幕：视觉模型 ----
-        line_v = QFrame()
-        line_v.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line_v)
-        self._title(lay, "看看屏幕",
-                    "右键菜单「看看屏幕」用这个视觉模型。留空则复用聊天配置"
-                    "（DeepSeek 请填支持视觉的模型名）。")
-        ls = self.app.cfg.get("look_screen") or {}
-        vrow = QHBoxLayout()
-        vrow.addSpacing(22)
-        vrow.addWidget(QLabel("视觉模型"))
-        self.vision_model = QLineEdit(ls.get("vision_model", ""))
-        self.vision_model.setPlaceholderText("如 deepseek-vl2 / gpt-4o-mini")
-        vrow.addWidget(self.vision_model, 1)
-        vbtn = QPushButton("保存")
-        vbtn.clicked.connect(self._save_vision_cfg)
-        vrow.addWidget(vbtn)
-        lay.addLayout(vrow)
-        self._vision_hint = QLabel("")
-        self._vision_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._vision_hint)
-        self._refresh_vision_hint()
+        # 聊天 system 摘要（放在人设区下方）
         self._chat_preview = QLabel("")
         self._chat_preview.setWordWrap(True)
         self._chat_preview.setStyleSheet(
@@ -1265,31 +1279,605 @@ class SettingsWindow(QDialog):
             "background:#f5f7fb;border-radius:6px;padding:8px;")
         lay.addWidget(self._chat_preview)
 
+        # ---- 单次输出上限（滑块 + 数字框）----
+        self._max_tokens_field, self.max_tokens_slider, self.max_tokens_spin = \
+            self._tokens_field(
+                int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT)),
+                MAX_TOKENS_MIN, MAX_TOKENS_MAX, 50,
+                lambda v: self._set_max_tokens(int(v)), "tokens")
+        _mt_row = QHBoxLayout()
+        _mt_row.addWidget(QLabel("单次输出上限"))
+        _mt_row.addWidget(self._max_tokens_field, 1)
+        _mt_row.addStretch(0)
+        lay.addLayout(_mt_row)
+        hint2 = QLabel("模型单次最多输出多少 token（中文约 1.5 字/token）。"
+                       "「回复风格」决定说多长，这个值决定最多能说多长。")
+        hint2.setWordWrap(True)
+        hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
+        lay.addWidget(hint2)
+
+        # ---- 看看屏幕 ----
+        line_v = QFrame()
+        line_v.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(line_v)
+        self._title(lay, "看看屏幕",
+                    "填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
+
+        # 全部字段放进同一个 QFormLayout（标签右对齐、同宽；控件左对齐）
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(6)
+        form.setContentsMargins(22, 0, 0, 0)
+
+        _rowh = 30
+
+        # 1) 视觉 Key（占满整行，右侧只留「显示/隐藏」）
+        self.vision_key = QLineEdit()
+        self.vision_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.vision_key.setFixedHeight(_rowh)
+        self.vision_key.textChanged.connect(self._on_vision_key_changed)
+
+        _keywrap = QWidget()
+        _kh = QHBoxLayout(_keywrap)
+        _kh.setContentsMargins(0, 0, 0, 0)
+        _kh.setSpacing(6)
+        _kh.addWidget(self.vision_key, 1)
+        self._eye_btn = QPushButton("显示")
+        self._eye_btn.setFixedSize(52, _rowh)
+        self._eye_btn.setToolTip("显示 / 隐藏 Key")
+        self._eye_btn.clicked.connect(self._toggle_vision_key)
+        _kh.addWidget(self._eye_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        form.addRow("视觉 Key", _keywrap)
+
+        # 2) 接口地址（只读）
+        self.vision_base = QLineEdit()
+        self.vision_base.setReadOnly(True)
+        self.vision_base.setFixedHeight(_rowh)
+        self.vision_base.setStyleSheet(
+            "QLineEdit{background:#f2f4f8;color:#5a6070;}")
+        form.addRow("接口地址", self.vision_base)
+
+        # 3) 视觉模型
+        self.vision_model = QComboBox()
+        self.vision_model.setFixedHeight(_rowh)
+        self.vision_model.currentIndexChanged.connect(self._on_vision_model_changed)
+        form.addRow("视觉模型", self.vision_model)
+
+        # 4) 描述风格
+        self.vision_style = QComboBox()
+        self.vision_style.setFixedHeight(_rowh)
+        for _txt, _val in VISION_STYLE_CHOICES:
+            self.vision_style.addItem(_txt, _val)
+        self.vision_style.currentIndexChanged.connect(self._on_vision_style_changed)
+        form.addRow("描述风格", self.vision_style)
+
+        # 5) 单次上限
+        self._vision_tokens_field, self.vision_tokens_slider, self.vision_tokens_spin = \
+            self._tokens_field(
+                int(self.app.cfg.get("look_screen", {}).get("max_tokens")
+                    or VISION_TOKENS_DEFAULT),
+                VISION_TOKENS_MIN, VISION_TOKENS_MAX, 50,
+                lambda v: self._on_vision_tokens_changed(int(v)), "tokens")
+        form.addRow("单次上限", self._vision_tokens_field)
+        lay.addLayout(form)
+
+        # 风格灰字（当前追加句）
+        self._vision_style_hint = QLabel("")
+        self._vision_style_hint.setWordWrap(True)
+        self._vision_style_hint.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._vision_style_hint)
+
+        # 视觉上限说明
+        _vt_hint = QLabel(
+            "视觉模型单次最多输出多少 token。描述风格决定「说多长」，"
+            "这个值决定「最多能说多长」。若所选模型带思考过程，请调大。")
+        _vt_hint.setWordWrap(True)
+        _vt_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(_vt_hint)
+
+        # 按钮：保存 / 测试 / 取消 / 清空
+        vbtn_row = QHBoxLayout()
+        vbtn_row.addSpacing(22)
+        self._vision_save_btn = QPushButton("保存")
+        self._vision_save_btn.clicked.connect(self._save_vision_cfg)
+        vbtn_row.addWidget(self._vision_save_btn)
+        self._vision_test_btn = QPushButton("测试")
+        self._vision_test_btn.setToolTip("识别服务商并验证可用的视觉模型")
+        self._vision_test_btn.clicked.connect(self._test_vision)
+        vbtn_row.addWidget(self._vision_test_btn)
+        self._vision_cancel_btn = QPushButton("取消")
+        self._vision_cancel_btn.setToolTip("停止识别（已发出的请求无法中断，结果会被丢弃）")
+        self._vision_cancel_btn.clicked.connect(self._cancel_vision_test)
+        self._vision_cancel_btn.hide()
+        vbtn_row.addWidget(self._vision_cancel_btn)
+        self._vision_clear_btn = QPushButton("清空")
+        self._vision_clear_btn.setToolTip("清掉 Key、地址、模型")
+        self._vision_clear_btn.clicked.connect(self._clear_vision_cfg)
+        vbtn_row.addWidget(self._vision_clear_btn)
+        vbtn_row.addStretch(1)
+        lay.addLayout(vbtn_row)
+
+        # 状态栏
+        self._vision_hint = QLabel("")
+        self._vision_hint.setWordWrap(True)
+        self._vision_hint.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._vision_hint)
+        self._vision_fill_from_cfg()
+
         lay.addStretch(1)
         self._refresh_chat_hint()
 
-    def _save_vision_cfg(self):
+    # ---------- 看看屏幕：视觉配置 ----------
+    def _vision_cfg_dict(self):
+        """取 look_screen 配置（缺失时补空）。"""
         ls = self.app.cfg.get("look_screen")
         if not isinstance(ls, dict):
-            ls = {"vision_model": "", "vision_base": "", "vision_key": ""}
-        ls["vision_model"] = (self.vision_model.text() or "").strip()[:200]
-        self.app.cfg["look_screen"] = ls
-        self.app.save_cfg()
-        self._refresh_vision_hint()
-        self.app.say_main("视觉模型已保存")
+            ls = {}
+        for k in ("vision_key", "vision_base", "vision_model"):
+            if not isinstance(ls.get(k), str):
+                ls[k] = ""
+        return ls
 
-    def _refresh_vision_hint(self):
+
+    def _style_from_widget(self):
+        """从下拉框读当前风格 key（保存时用这个，不能用配置里的旧值）。"""
         try:
-            base, key, model = self.app._vision_cfg()
-            if not model:
-                self._vision_hint.setText("未配置视觉模型，「看看屏幕」暂不可用")
-            elif not key:
-                self._vision_hint.setText("缺少 API Key，「看看屏幕」暂不可用")
-            else:
-                self._vision_hint.setText("就绪：%s @ %s" % (model, base))
+            v = self.vision_style.currentData()
+            if v in VISION_STYLE_SUFFIXES:
+                return v
+        except Exception:
+            pass
+        return self._vision_style_value()
+
+    def _tokens_from_widget(self):
+        """从滑块/数字框读当前上限（保存时用这个）。"""
+        try:
+            _s, box = self.vision_tokens_slider, self.vision_tokens_spin
+            v = int(round(box.value()))
+            return max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, v))
+        except Exception:
+            return self._vision_tokens_value()
+
+
+    def _vision_style_value(self):
+        """当前配置里的描述风格 key。"""
+        ls = self._vision_cfg_dict()
+        s = ls.get("style") or VISION_STYLE_DEFAULT
+        return s if s in VISION_STYLE_SUFFIXES else VISION_STYLE_DEFAULT
+
+    def _vision_tokens_value(self):
+        """当前配置里的视觉单次上限。"""
+        ls = self._vision_cfg_dict()
+        try:
+            v = int(ls.get("max_tokens") or VISION_TOKENS_DEFAULT)
+        except Exception:
+            v = VISION_TOKENS_DEFAULT
+        return max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, v))
+
+    def _refresh_vision_style_hint(self):
+        """风格行下方灰字：显示当前追加句（和聊天页写法一致）。"""
+        try:
+            suffix = vision_style_suffix(self._style_from_widget())
+            self._vision_style_hint.setText(
+                "当前风格下，视觉请求 system 末尾会追加：「%s」" % suffix)
         except Exception:
             pass
 
+    def _save_vision_extra(self):
+        """把描述风格与单次上限写进配置（独立于聊天页）。"""
+        ls = self._vision_cfg_dict()
+        ls["style"] = self._style_from_widget()
+        ls["max_tokens"] = self._tokens_from_widget()
+        ls["vision_key"] = (self.vision_key.text() or "").strip()[:300]
+        ls["vision_base"] = (self.vision_base.text() or "").strip()[:300]
+        ls["vision_model"] = (self.vision_model.currentText() or "").strip()[:200]
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+
+
+    def _vision_fill_from_cfg(self):
+        """从配置把 Key / 地址 / 模型填进控件（不触发识别、不触发保存）。"""
+        ls = self._vision_cfg_dict()
+        for w in (self.vision_key, self.vision_base):
+            w.blockSignals(True)
+        self.vision_key.setText(ls["vision_key"])
+        self.vision_base.setText(ls["vision_base"])
+        for w in (self.vision_key, self.vision_base):
+            w.blockSignals(False)
+        models = [ls["vision_model"]] if ls["vision_model"] else []
+        self._fill_vision_models(models, keep=ls["vision_model"] or None)
+        # 描述风格与单次上限：独立于聊天页，各自填
+        _st = self._vision_style_value()
+        self.vision_style.blockSignals(True)
+        for _k in range(self.vision_style.count()):
+            if self.vision_style.itemData(_k) == _st:
+                self.vision_style.setCurrentIndex(_k)
+                break
+        self.vision_style.blockSignals(False)
+        _vs, _vb = (self.vision_tokens_slider, self.vision_tokens_spin)
+        _vs.blockSignals(True)
+        _vb.blockSignals(True)
+        _vs.setValue(int(self._vision_tokens_value()))
+        _vb.setValue(float(self._vision_tokens_value()))
+        _vs.blockSignals(False)
+        _vb.blockSignals(False)
+        self._refresh_vision_style_hint()
+        self._restore_vision_status()
+
+    def _toggle_vision_key(self):
+        """显示 / 隐藏 Key。"""
+        if self.vision_key.echoMode() == QLineEdit.EchoMode.Password:
+            self.vision_key.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._eye_btn.setText("隐藏")
+        else:
+            self.vision_key.setEchoMode(QLineEdit.EchoMode.Password)
+            self._eye_btn.setText("显示")
+
+    def _on_vision_key_changed(self, _txt=None):
+        """Key 变化：只清空地址与模型，不自动识别。"""
+        if getattr(self, "_vision_filling", False):
+            return
+        self.vision_base.clear()
+        self._fill_vision_models([])
+        self._set_vision_status("Key 已改，点「测试」重新识别", "info")
+
+    def _fill_vision_models(self, models, keep=None):
+        """把模型填进下拉框；keep 在列表里就选中它。不触发保存。"""
+        self.vision_model.blockSignals(True)
+        self.vision_model.clear()
+        for m in models or []:
+            if m:
+                self.vision_model.addItem(m)
+        if keep and keep in (models or []):
+            self.vision_model.setCurrentText(keep)
+        elif models:
+            self.vision_model.setCurrentIndex(0)
+        self.vision_model.blockSignals(False)
+
+    def _on_vision_style_changed(self, _idx=None):
+        """切换描述风格：立即保存并刷新灰字。"""
+        if getattr(self, "_vision_filling", False):
+            return
+        self._save_vision_extra()
+        self._refresh_vision_style_hint()
+
+    def _on_vision_tokens_changed(self, value):
+        """改单次上限：立即保存。"""
+        if getattr(self, "_vision_filling", False):
+            return
+        self._save_vision_extra()
+
+
+    def _on_vision_model_changed(self, _idx=None):
+        """切换模型后立即保存（前提：Key 与地址都已就绪）。"""
+        if getattr(self, "_vision_filling", False):
+            return
+        if getattr(self, "_vision_testing", False):
+            return
+        key = (self.vision_key.text() or "").strip()
+        base = (self.vision_base.text() or "").strip()
+        model = (self.vision_model.currentText() or "").strip()
+        if key and base and model:
+            ls = self._vision_cfg_dict()
+            ls["vision_key"] = key[:300]
+            ls["vision_base"] = base[:300]
+            ls["vision_model"] = model[:200]
+            self.app.cfg["look_screen"] = ls
+            self.app.save_cfg()
+            self._set_vision_status("✓ 已保存：%s" % model, "ok")
+
+    def _restore_vision_status(self):
+        """按已保存配置显示状态（不动网络）。"""
+        ls = self._vision_cfg_dict()
+        key, base, model = ls["vision_key"], ls["vision_base"], ls["vision_model"]
+        if not key:
+            self._set_vision_status("填入视觉 Key 后点「测试」自动识别", "info")
+        elif not (base and model):
+            self._set_vision_status("已填 Key，点「测试」识别服务商与模型", "info")
+        else:
+            self._set_vision_status("已配置：%s @ %s" % (model, base), "ok")
+
+    def _set_vision_status(self, text, kind="info"):
+        """状态栏文字 + 颜色。kind: info(灰) / ok(绿) / err(红)"""
+        colors = {
+            "info": "color:#8a8f9c;font-size:11px;margin-left:22px;",
+            "ok": "color:#1a7f37;font-size:11px;margin-left:22px;",
+            "err": "color:#c0392b;font-size:11px;margin-left:22px;",
+        }
+        self._vision_hint.setText(text)
+        self._vision_hint.setStyleSheet(colors.get(kind, colors["info"]))
+
+    def _save_vision_cfg(self):
+        """保存 Key + 地址 + 模型；地址或模型为空时提示先点测试。"""
+        if getattr(self, "_vision_testing", False):
+            self._set_vision_status("识别中…，请等结束或点「取消」", "info")
+            return False
+        key = (self.vision_key.text() or "").strip()
+        base = (self.vision_base.text() or "").strip()
+        model = (self.vision_model.currentText() or "").strip()
+        if not key:
+            self._set_vision_status("✗ 请先填写视觉 Key", "err")
+            return False
+        if not base or not model:
+            self._set_vision_status("✗ 请先点「测试」完成识别", "err")
+            return False
+        ls = self._vision_cfg_dict()
+        ls["vision_key"] = key[:300]
+        ls["vision_base"] = base[:300]
+        ls["vision_model"] = model[:200]
+        ls["style"] = self._style_from_widget()
+        ls["max_tokens"] = self._tokens_from_widget()
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        self._set_vision_status("✓ 已保存：%s @ %s" % (model, base), "ok")
+        self.app.say_main("视觉配置已保存")
+        return True
+
+    def _reset_vision_test_ui(self):
+        """复位识别中的界面状态（完成/失败/取消/隐藏/关闭都走这里）。"""
+        self._vision_testing = False
+        self._vision_token = getattr(self, "_vision_token", 0) + 1
+        try:
+            self._vision_test_btn.setEnabled(True)
+            self._vision_cancel_btn.hide()
+        except Exception:
+            pass
+
+    def _cancel_vision_test(self):
+        """取消识别：立刻复位，旧线程结果会被丢弃。"""
+        self._reset_vision_test_ui()
+        self._set_vision_status("已取消识别", "info")
+
+    def _clear_vision_cfg(self):
+        """清空 Key、地址、模型。"""
+        if getattr(self, "_vision_testing", False):
+            self._reset_vision_test_ui()
+        self._vision_filling = True
+        self.vision_key.clear()
+        self.vision_base.clear()
+        self._fill_vision_models([])
+        self._vision_filling = False
+        self.app.cfg["look_screen"] = {
+            "vision_key": "", "vision_base": "", "vision_model": "",
+            # 描述风格与单次上限**不重置**（与聊天页独立）
+            "style": self._style_from_widget(),
+            "max_tokens": self._tokens_from_widget(),
+        }
+        self.app.save_cfg()
+        self._set_vision_status("已清空，填入新 Key 后点「测试」", "info")
+
+    # ---------- 自动识别（仅由「测试」按钮触发）----------
+    def _test_vision(self):
+        """识别：服务商 → 模型列表 → 真实图片验证（全程后台线程）。"""
+        if getattr(self, "_vision_testing", False):
+            return
+        key = (self.vision_key.text() or "").strip()
+        if not key:
+            self._set_vision_status("✗ 请先填写视觉 Key", "err")
+            return
+
+        # 记住用户当前选择，识别后若仍在可用列表里就保持
+        keep = (self.vision_model.currentText() or "").strip()
+        self._vision_testing = True
+        self._vision_token = getattr(self, "_vision_token", 0) + 1
+        token = self._vision_token
+        self._vision_test_btn.setEnabled(False)
+        self._vision_cancel_btn.show()
+        self.vision_base.clear()
+        self._fill_vision_models([])
+        self._set_vision_status("识别中…（正在试探服务商）", "info")
+        self._vision_models_found = []
+
+        import threading
+
+        def stale():
+            """本批是否已作废（取消 / 关闭 / 重新测试）"""
+            return getattr(self, "_vision_token", 0) != token
+
+        def on_found(model):
+            if stale():
+                return
+            QTimer.singleShot(0, lambda m=model: self._on_vision_model_found(m, stale))
+
+        def work():
+            from petcore import vision as V
+            log("===== 视觉识别开始（token=%s）=====" % token)
+            base, provider, err = V.detect_provider(key, log=log)
+            if stale():
+                log("识别已作废，丢弃结果（服务商阶段）")
+                return
+            if not base:
+                QTimer.singleShot(0, lambda: self._on_vision_test_done(
+                    stale, False, err, "", []))
+                return
+            QTimer.singleShot(0, lambda b=base, pv=provider: self._on_vision_base_found(
+                b, pv, stale))
+            ok, models, err2 = V.list_models(base, key)
+            if stale():
+                log("识别已作废，丢弃结果（模型列表阶段）")
+                return
+            if not ok:
+                # 有些服务商（如智谱）/models 不可用或不列出视觉模型：
+                # 不直接失败，改用内置已知列表继续验证
+                log("/models 不可用（%s），尝试内置已知列表" % err2)
+                models = []
+            ranked, from_known = V.suggest_models(provider, models)
+            ranked = ranked[:VISION_MAX_VERIFY]
+            if from_known:
+                log("（/models 无可用视觉模型，改用内置已知列表：%s）" % provider)
+            log("候选 %d 个（列出 %d）：%s" % (len(ranked), len(models), ", ".join(ranked[:8])))
+            if not ranked:
+                QTimer.singleShot(0, lambda b=base, e=err2: self._on_vision_test_done(
+                    stale, False,
+                    "没有可验证的视觉模型（%s）" % (e or "列表为空"), b, []))
+                return
+            QTimer.singleShot(0, lambda n=len(ranked): self._on_vision_progress(n, stale))
+            found, _stopped = V.verify_all(base, key, ranked,
+                                           on_found=on_found, log=log,
+                                           should_stop=stale)
+            if stale():
+                log("识别已作废，丢弃结果（验证阶段）")
+                return
+            QTimer.singleShot(0, lambda b=base, f=found, total=len(ranked):
+                              self._on_vision_test_done(stale, True, "", b, f, total))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_vision_progress(self, n, stale):
+        if stale():
+            return
+        self._set_vision_status("识别中…（正在验证 %d 个候选模型）" % n, "info")
+
+    def _on_vision_base_found(self, base, provider, stale):
+        if stale():
+            return
+        self.vision_base.setText(base)
+        self._set_vision_status("识别中…（服务商：%s，正在取模型列表）" % provider, "info")
+
+    def _on_vision_model_found(self, model, stale):
+        if stale():
+            return
+        cur = [self.vision_model.itemText(i) for i in range(self.vision_model.count())]
+        if model not in cur:
+            self._vision_filling = True
+            self.vision_model.blockSignals(True)
+            self.vision_model.addItem(model)
+            self.vision_model.blockSignals(False)
+            self._vision_filling = False
+            self._vision_models_found.append(model)
+        n = len(getattr(self, "_vision_models_found", []))
+        self._set_vision_status("识别中…（已验证可用 %d 个）" % n, "info")
+
+    def _on_vision_test_done(self, stale, ok, err, base, found, total=None):
+        """识别结束：复位 UI、恢复选择、按规则自动保存。"""
+        if stale():
+            log("识别已作废，忽略结果")
+            return
+        self._reset_vision_test_ui()
+        if not ok:
+            self._set_vision_status("✗ " + (err or "识别失败"), "err")
+            log("===== 视觉识别失败：%s =====" % err)
+            return
+        n = len(found or [])
+        if n == 0:
+            self._set_vision_status(
+                "✗ 这个 Key 下没有可用的视觉模型（已试 %s 个）" % (total or 0), "err")
+            return
+        # 恢复选择：原选择仍在列表里就用它，否则选第一个
+        cur = (self.vision_model.currentText() or "").strip()
+        if cur and cur in found:
+            chosen = cur
+        else:
+            chosen = found[0]
+        self._vision_filling = True
+        if self.vision_model.count() != n:
+            self._fill_vision_models(found, keep=chosen)
+        else:
+            self.vision_model.setCurrentText(chosen)
+        self._vision_filling = False
+        tip = "，可在上方选择" if n > 1 else ""
+        self._set_vision_status("✓ 找到 %d 个可用视觉模型%s" % (n, tip), "ok")
+        # 自动保存（不管几个）
+        self._save_vision_cfg()
+        # 识别完成后，用「当前描述风格 + 单次上限」做一次真实试拍，
+        # 报告实际输出字数，方便调参（不阻塞界面）
+        self._vision_real_test(base, key, chosen, stale)
+
+
+        log("===== 视觉识别完成：%d 个可用，已选 %s =====" % (n, chosen))
+
+    def _vision_real_test(self, base, key, model, stale):
+        """用当前描述风格与单次上限发一次真实请求，报告实际输出字数。"""
+        import threading
+
+        suffix = vision_style_suffix(self._vision_style_value())
+        mt = self._tokens_from_widget()
+        prompt = ("这是一张测试图。请按下面的要求描述它。\n" + suffix)
+        self._set_vision_status(
+            "识别完成，正在用当前风格试拍（上限 %d tokens）…" % mt, "info")
+
+        def work():
+            from petcore import vision as V
+            from petcore.consts import vision_join
+            import requests as _rq
+            import base64 as _b64
+            try:
+                png = V.make_test_png(64)
+                b64 = _b64.b64encode(png).decode("ascii")
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/png;base64," + b64}},
+                    ]}],
+                    "max_tokens": mt,
+                }
+                r = _rq.post(vision_join(base, "chat/completions"),
+                             headers={"Authorization": "Bearer " + key,
+                                      "Content-Type": "application/json"},
+                             json=payload, timeout=120)
+                if r.status_code != 200:
+                    QTimer.singleShot(0, lambda: self._vision_real_test_done(
+                        stale, False, "HTTP %s" % r.status_code, "", 0, mt))
+                    return
+                d = r.json()
+                ch = d["choices"][0]
+                msg = ch.get("message") or {}
+                text = (msg.get("content") or "").strip()
+                reason = (msg.get("reasoning_content") or "").strip()
+                finish = ch.get("finish_reason")
+                used = d.get("usage", {}).get("completion_tokens", 0)
+                QTimer.singleShot(0, lambda t=text, f=finish, u=used, rr=reason:
+                                  self._vision_real_test_done(
+                                      stale, True, "", t, u, mt, f, rr))
+            except Exception as ex:
+                QTimer.singleShot(0, lambda e=ex: self._vision_real_test_done(
+                    stale, False, str(e)[:80], "", 0, mt))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _vision_real_test_done(self, stale, ok, err, text, used, mt,
+                               finish=None, reason=""):
+        """真实试拍结果：报告字数（方便调描述风格与上限）。"""
+        if stale():
+            return
+        if not ok:
+            self._set_vision_status("✗ 试拍失败：%s" % (err or "未知"), "err")
+            return
+        n = len(text or "")
+        if n == 0 and finish == "length":
+            self._set_vision_status(
+                "⚠ 模型只输出了思考过程（用 %d tokens），没给出正文。"
+                "请把「单次上限」调大后重试。" % used, "err")
+            return
+        if n == 0:
+            self._set_vision_status(
+                "⚠ 模型没返回内容（用 %d tokens）。可换模型或调大上限。" % used, "err")
+            return
+        # 目标字数（从风格句里取）
+        target = ""
+        try:
+            m = re.search(r"(\d+)\s*字", vision_style_suffix(self._vision_style_value()))
+            target = m.group(1) if m else ""
+        except Exception:
+            pass
+        over = ""
+        if target and target.isdigit() and n > int(target):
+            over = "（超出目标 %s 字）" % target
+        self._set_vision_status(
+            "✓ 识别完成。试拍：输出 %d 字，用 %d/%d tokens%s"
+            % (n, used, mt, over), "ok")
+
+
+    def _refresh_vision_hint(self):
+        """兼容旧调用点。"""
+        self._restore_vision_status()
 
     def _save_persona(self):
         """保存人设到 config.json。留空/与默认一致时存空串（用内置默认）。"""
@@ -1332,6 +1920,7 @@ class SettingsWindow(QDialog):
         self._refresh_chat_hint()
 
     def _refresh_chat_hint(self):
+        """刷新聊天页提示：风格句 + system 一行摘要。"""
         try:
             style = self.app.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
             suffix = reply_style_suffix(style)
@@ -1339,17 +1928,25 @@ class SettingsWindow(QDialog):
             self._style_hint.setText(
                 "当前风格下，system 末尾会追加：%s"
                 % (("「" + suffix + "」") if suffix else "（不追加，不限长度）"))
-            _persona = persona_from_cfg(self.app.cfg)
-            self._persona_state.setText("自定义" if (self.app.cfg.get("persona") or "").strip()
-                                        else "默认")
+            persona_txt = persona_from_cfg(self.app.cfg)
+            self._persona_state.setText(
+                "自定义" if (self.app.cfg.get("persona") or "").strip() else "默认")
+            try:
+                mem_n = len(self.app.memory.items)
+            except Exception:
+                mem_n = 0
+            # 一行小字：不重复人设正文，只说明拼了什么
+            if suffix:
+                m = re.search(r"控制在\s*(\d+)\s*字", suffix)
+                length_txt = "当前 %s 字以内" % (m.group(1) if m else "限")
+            else:
+                length_txt = "不限长度"
             self._chat_preview.setText(
-                "完整 system 正文：" + build_system_prompt(style, _persona)
-                + "\n\n单次输出上限：%d tokens（约 %d 字）" % (mt, int(mt * 1.5)))
+                "system = 人设 + 回复长度句（%s）+ %d 条长期记忆"
+                % (length_txt, mem_n))
         except Exception:
             pass
 
-
-    # ---------- 通用页 ----------
     def _build_general_page(self, lay):
         self._title(lay, "通用", "Key、生日、城市、窗口行为与开机自启。")
         row = QHBoxLayout()
@@ -1457,6 +2054,24 @@ class SettingsWindow(QDialog):
             pass
         self._refresh_balance_hint()
 
+        # 视觉字段：复用窗口时重新填，避免输入框变空
+        try:
+            if not getattr(self, "_vision_testing", False):
+                self._vision_filling = True
+                self._vision_fill_from_cfg()
+                self._vision_filling = False
+        except Exception:
+            pass
+        # 单次输出上限跟着配置走
+        try:
+            mt = int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
+            self.max_tokens_spin.blockSignals(True)
+            self.max_tokens_spin.setValue(mt)
+            self.max_tokens_spin.blockSignals(False)
+        except Exception:
+            pass
+        self._refresh_chat_hint()
+
     def show_page(self, page=None):
         if page:
             self._select_page(page)
@@ -1464,3 +2079,23 @@ class SettingsWindow(QDialog):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    # ---------- 生命周期：识别状态必须复位 ----------
+    def hideEvent(self, e):
+        """隐藏（含关闭）时取消识别，避免下次打开卡在「识别中」。"""
+        try:
+            if getattr(self, "_vision_testing", False):
+                self._reset_vision_test_ui()
+                self._set_vision_status("已取消识别（窗口已关闭）", "info")
+        except Exception:
+            pass
+        super().hideEvent(e)
+
+    def closeEvent(self, e):
+        """关闭时同样复位。"""
+        try:
+            if getattr(self, "_vision_testing", False):
+                self._reset_vision_test_ui()
+        except Exception:
+            pass
+        super().closeEvent(e)

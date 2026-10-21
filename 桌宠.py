@@ -35,7 +35,7 @@ import requests
 import physics as PHYS
 from physics import (SpringFollower, VelocityTracker, PhysicsBody, WobbleSpring,
                      step_body, screen_at, sanitize_physics, DEFAULT_PHYSICS)
-from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QThread, Signal,
+from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QRectF, QThread, Signal,
                           QEvent, QObject, QBuffer, QIODevice)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
                            QPolygonF, QPalette, QPainterPath, QPen, QImage,
@@ -2460,121 +2460,336 @@ class PetApp(QObject):
             log("取前台窗口失败: %s" % ex, logging.DEBUG)
             return ""
 
-    def _grab_screen_jpeg(self):
-        """截当前屏幕（含多显示器）→ 压缩 JPEG → 返回 bytes。"""
-        try:
-            screen = QApplication.primaryScreen()
-            if screen is None:
-                return None
-            # 多显示器：拼所有屏幕
-            screens = QApplication.screens() or [screen]
-            geo = screens[0].geometry()
-            for sc in screens[1:]:
-                geo = geo.united(sc.geometry())
-            pix = None
-            for sc in screens:
-                g = sc.geometry()
-                shot = sc.grabWindow(0, 0, 0, g.width(), g.height())
-                if pix is None:
-                    pix = QPixmap(geo.width(), geo.height())
-                    pix.fill(Qt.GlobalColor.black)
-                painter = QPainter(pix)
-                painter.drawPixmap(g.x() - geo.x(), g.y() - geo.y(), shot)
-                painter.end()
-            if pix is None or pix.isNull():
-                return None
-            img = pix.toImage()
-            # 等比缩到最长边 LOOK_SCREEN_MAX_SIDE
-            w, h = img.width(), img.height()
-            m = max(w, h)
-            if m > LOOK_SCREEN_MAX_SIDE:
-                k = LOOK_SCREEN_MAX_SIDE / float(m)
-                img = img.scaled(max(1, int(w * k)), max(1, int(h * k)),
-                                 Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-            # 转 JPEG（内存中，不落盘）
-            buf = QBuffer()
-            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-            img.save(buf, "JPEG", LOOK_SCREEN_JPEG_Q)
-            data = bytes(buf.data())
-            buf.close()
-            return data
-        except Exception as ex:
-            log("[看看屏幕] 截图失败: %s" % ex, logging.WARNING)
-            return None
-
+    # ---------- 看看屏幕：框选截图 ----------
     def _vision_cfg(self):
-        """视觉模型配置：look_screen 里填了就用，否则复用聊天配置。"""
+        """视觉配置（独立于聊天 Key）：设置页「测试」自动识别的结果。
+
+        返回 (base_url, api_key, model_name)；没配置时三项为空。
+        """
         ls = self.cfg.get("look_screen") or {}
-        base = (ls.get("vision_base") or "").strip() or DS_BASE_URL
-        key = (ls.get("vision_key") or "").strip() or (self.cfg.get("ds_api_key") or "").strip()
+        base = (ls.get("vision_base") or "").strip()
+        key = (ls.get("vision_key") or "").strip()
         model = (ls.get("vision_model") or "").strip()
         return base, key, model
 
-    def look_screen(self, pet=None):
-        """截屏 → 视觉模型 → 用人设回一句（气泡显示）。"""
+    def _vision_style_cfg(self):
+        """描述风格与单次上限（独立于聊天页）。返回 (后缀句, max_tokens)。"""
+        ls = self.cfg.get("look_screen") or {}
+        style = ls.get("style") or VISION_STYLE_DEFAULT
+        suffix = vision_style_suffix(style)
+        try:
+            mt = int(ls.get("max_tokens") or VISION_TOKENS_DEFAULT)
+        except Exception:
+            mt = VISION_TOKENS_DEFAULT
+        mt = max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, mt))
+        return suffix, mt
+
+
+    def _vision_ready_check(self):
+        """进入框选前的检查：三项任一为空就不进入。
+
+        返回 (ok, 提示文字)。
+        """
+        base, key, model = self._vision_cfg()
+        if not key:
+            return False, "还没填视觉 Key 呢，笨蛋主人——去「设置 → 聊天 → 看看屏幕」填一个吧。"
+        if not base or not model:
+            return False, ("只有 Key 还不行哦，得在「设置 → 聊天 → 看看屏幕」里"
+                           "点一下「测试」，让我认出服务商和模型。")
+        return True, ""
+
+    def _screen_under_cursor(self):
+        """返回鼠标所在屏幕（没有则用主屏）。"""
+        try:
+            pos = QCursor.pos()
+            sc = QApplication.screenAt(pos)
+            if sc is not None:
+                return sc
+        except Exception:
+            pass
+        return QApplication.primaryScreen()
+
+    def _grab_screen_pixmap(self, screen):
+        """截指定屏幕，返回 (QPixmap, 设备像素比)。只在内存里。"""
+        try:
+            if screen is None:
+                return None, 1.0
+            geo = screen.geometry()          # 逻辑像素
+            dpr = float(screen.devicePixelRatio() or 1.0)
+            # 按物理尺寸截，避免高 DPI 模糊
+            pw = int(round(geo.width() * dpr))
+            ph = int(round(geo.height() * dpr))
+            shot = screen.grabWindow(0, 0, 0, pw, ph)
+            if shot is None or shot.isNull():
+                return None, dpr
+            return shot, dpr
+        except Exception as ex:
+            log("[看看屏幕] 截图失败: %s" % ex, logging.WARNING)
+            return None, 1.0
+
+    def _begin_region_select(self, pet=None):
+        """右键「看看屏幕」入口：检查 → 隐藏 → 框选 → 后续流程。"""
         speaker = pet or self.main_pet
+        ok, tip = self._vision_ready_check()
+        if not ok:
+            self.say_main(tip)
+            return
+
+        # 冷却（防止连点反复弹遮罩）
         now = time.time()
         if now - getattr(self, "_look_last", 0.0) < LOOK_SCREEN_COOLDOWN:
             self.say_main("别急，%d 秒后再看～" % int(LOOK_SCREEN_COOLDOWN))
             return
         self._look_last = now
 
-        base, key, model = self._vision_cfg()
-        if not key:
-            self.say_main("还没设 Key，看不了屏幕啦……先去设置里填一个")
-            return
-        if not model:
-            self.say_main("还没配视觉模型呢，设置 →「聊天」里填一下")
-            return
+        # 记住原本可见的宠物，稍后恢复
+        self._look_was_visible = [w for w in self.pets if w.isVisible()]
+        for w in self._look_was_visible:
+            self.set_visible(w.pet_id, False, "capture")
 
+        # 等窗口真正消失后再截底图（否则会拍到桌宠）
+        QTimer.singleShot(150, lambda: self._do_region_select())
+
+    def _do_region_select(self):
+        """截底图 → 弹遮罩。"""
+        try:
+            screen = self._screen_under_cursor()
+            pix, dpr = self._grab_screen_pixmap(screen)
+            if pix is None or pix.isNull():
+                self._restore_after_select()
+                self.say_main("截图失败了……")
+                return
+            geo = screen.geometry()
+            # 底图缩到逻辑尺寸显示，选区坐标即逻辑像素
+            disp = pix.scaled(geo.width(), geo.height(),
+                              Qt.AspectRatioMode.IgnoreAspectRatio,
+                              Qt.TransformationMode.SmoothTransformation)
+            from petcore.region_select import RegionSelectOverlay
+            ov = RegionSelectOverlay(disp, geo)
+            ov.selected.connect(lambda r, d=dpr, p=pix: self._on_region_selected(r, d, p))
+            ov.cancelled.connect(self._on_region_cancelled)
+            # 保留引用，防止被 GC
+            self._region_overlay = ov
+            ov.showFullScreen()
+            ov.activateWindow()
+            ov.setFocus()
+        except Exception as ex:
+            log("[看看屏幕] 打开框选失败: %s" % ex, logging.WARNING)
+            self._restore_after_select()
+            self.say_main("框选打不开呢……")
+
+    def _restore_after_select(self):
+        """框选结束后恢复桌宠显示。"""
+        for w in getattr(self, "_look_was_visible", []) or []:
+            try:
+                self.set_visible(w.pet_id, True, "capture")
+            except Exception:
+                pass
+        self._look_was_visible = []
+
+    def _release_region_overlay(self):
+        """释放遮罩与截图（不落盘）。"""
+        ov = getattr(self, "_region_overlay", None)
+        if ov is not None:
+            try:
+                ov._base = None
+                ov.hide()
+                ov.deleteLater()
+            except Exception:
+                pass
+        self._region_overlay = None
+
+    def _on_region_cancelled(self):
+        """取消：不发请求，用口吻回一句。"""
+        self._release_region_overlay()
+        self._restore_after_select()
+        pool = ["不看了吗？", "哼，不看就不看。", "……那你叫我看干嘛。",
+                "笨蛋主人，耍我玩呢？", "不看啦？那我自己玩去了。"]
+        self.say_main(self._pick_line(pool, "look_cancel") or "不看了吗？")
+
+    def _on_region_selected(self, rect, dpr, base_pix):
+        """框选完成：裁剪 → 缩放 → 走视觉 + 聊天两步流程。"""
+        try:
+            region = None
+            try:
+                # 逻辑坐标 × dpr = 物理像素
+                x = int(round(rect.x() * dpr))
+                y = int(round(rect.y() * dpr))
+                w = int(round(rect.width() * dpr))
+                h = int(round(rect.height() * dpr))
+                if w < LOOK_SCREEN_MIN_SELECTION or h < LOOK_SCREEN_MIN_SELECTION:
+                    self._on_region_cancelled()
+                    return
+                img = base_pix.toImage()
+                region = img.copy(QRect(x, y, w, h))
+                if region.isNull():
+                    self._on_region_cancelled()
+                    return
+                # 缩放到长边 ≤ 1024
+                rw, rh = region.width(), region.height()
+                mx = max(rw, rh)
+                if mx > LOOK_SCREEN_REGION_MAX_SIDE:
+                    k = LOOK_SCREEN_REGION_MAX_SIDE / float(mx)
+                    region = region.scaled(max(1, int(rw * k)), max(1, int(rh * k)),
+                                           Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation)
+                log("[看看屏幕] 发送了一张 %d×%d 的截图" % (region.width(), region.height()))
+            finally:
+                # 无论成功与否，立刻释放底图
+                base_pix = None
+            self._release_region_overlay()
+            self._restore_after_select()
+            if region is None or region.isNull():
+                self.say_main("选区怪怪的，再试一次吧")
+                return
+            self._run_look_screen(region)
+        except Exception as ex:
+            log("[看看屏幕] 处理选区失败: %s" % ex, logging.WARNING)
+            self._release_region_overlay()
+            self._restore_after_select()
+            self.say_main("瞧不清呢……")
+
+    def _run_look_screen(self, image):
+        """两步流程：视觉模型描述 → 交给聊天模型按人设回复。"""
+        base, key, model = self._vision_cfg()
+        suffix, vis_tokens = self._vision_style_cfg()
+        speaker = self.main_pet
         if speaker is not None:
-            speaker.say("让我看看……")
-        jpg = self._grab_screen_jpeg()
-        if not jpg:
-            self.say_main("截图失败了……")
-            return
-        title = self._foreground_title() or "未知"
-        prompt = LOOK_SCREEN_PROMPT.replace("{title}", title)
+            speaker.say("看看中…")
+
+        # 转 JPEG 只在内存里
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buf, "JPEG", LOOK_SCREEN_JPEG_Q)
+        jpg = bytes(buf.data())
+        buf.close()
+        image = None
+
+        prompt = "请描述这张截图的内容。" + suffix
 
         def run():
+            desc = ""
             try:
                 b64 = base64.b64encode(jpg).decode("ascii")
                 payload = {
                     "model": model,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url",
-                             "image_url": {"url": "data:image/jpeg;base64," + b64}},
-                        ],
-                    }],
-                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/jpeg;base64," + b64}},
+                    ]}],
+                    "max_tokens": vis_tokens,
                 }
                 r = requests.post(
-                    base.rstrip("/") + "/chat/completions",
+                    vision_join(base, "chat/completions"),
                     headers={"Authorization": "Bearer " + key,
                              "Content-Type": "application/json"},
-                    json=payload, timeout=60)
+                    json=payload, timeout=120)
                 if r.status_code != 200:
-                    self.say_main(_http_error_message(r.status_code, r.text))
+                    msg = _http_error_message(r.status_code, r.text)
+                    self.say_main(msg)
+                    self._look_screen_to_chat("(框选)", msg, ok=False)
                     return
                 data = r.json()
-                text = ""
                 try:
-                    text = data["choices"][0]["message"]["content"] or ""
+                    ch = data["choices"][0]
+                    m = ch.get("message") or {}
+                    desc = (m.get("content") or "").strip()
+                    reason = (m.get("reasoning_content") or "").strip()
+                    fin = ch.get("finish_reason")
                 except Exception:
-                    text = ""
-                text = text.strip()
-                if not text:
-                    self.say_main("我看了半天，没看出啥……")
+                    desc, reason, fin = "", "", None
+                if not desc and fin == "length":
+                    payload["max_tokens"] = min(VISION_TOKENS_MAX, vis_tokens * 2)
+                    log("[看看屏幕] 视觉 token 不足，加大到 %d 重试" % payload["max_tokens"])
+                    r2 = requests.post(
+                        vision_join(base, "chat/completions"),
+                        headers={"Authorization": "Bearer " + key,
+                                 "Content-Type": "application/json"},
+                        json=payload, timeout=120)
+                    if r2.status_code == 200:
+                        try:
+                            m2 = r2.json()["choices"][0].get("message") or {}
+                            desc = (m2.get("content") or "").strip()
+                        except Exception:
+                            pass
+                if not desc and reason:
+                    desc = reason.strip().split("\n")[-1].strip()[:80]
+                if not desc:
+                    msg = "我看了半天，没看出啥……"
+                    self.say_main(msg)
                     return
-                self.say_main(text)
-                log("[看看屏幕] 前台=%s 回复=%s" % (title, text[:40]))
+                # ---- 第二步：交给聊天模型按人设回复 ----
+                self._look_screen_to_chat_desc(desc)
             except Exception as ex:
                 log("[看看屏幕] 失败: %s" % ex, logging.WARNING)
                 self.say_main("瞧不清呢……%s" % str(ex)[:30])
+            finally:
+                jpg = None
+                image_holder.clear()
+
+        # 用一个容器持有 jpg，便于 finally 释放
+        image_holder = {"data": jpg}
+        jpg = image_holder["data"]
+        threading.Thread(target=run, daemon=True).start()
+
+    def _look_screen_to_chat_desc(self, desc):
+        """把视觉描述交给聊天模型，用大肥鱼人设回一句（并同步聊天）。"""
+        line = "[屏幕观察] " + desc
+        # 用聊天模型按人设回应
+        try:
+            self._ask_chat_for_look(line, desc)
+        except Exception as ex:
+            log("[看看屏幕] 交给聊天失败: %s" % ex, logging.WARNING)
+            self.say_main(desc[:80])
+
+    def _ask_chat_for_look(self, line, desc):
+        """开一个轻量线程：把 [屏幕观察] 交给聊天模型，回复用气泡显示。"""
+        key = (self.cfg.get("ds_api_key") or "").strip()
+        if not key:
+            # 没有聊天 Key：直接显示视觉描述
+            self.say_main(desc[:80])
+            self._look_screen_to_chat("(框选)", desc, ok=True)
+            return
+        style = self.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
+        persona = persona_from_cfg(self.cfg)
+        sys_text = build_system_prompt(style, persona)
+        try:
+            sys_text = self.memory.system_content(sys_text)
+        except Exception:
+            pass
+        messages = [
+            {"role": "system", "content": sys_text},
+            {"role": "user", "content": line},
+        ]
+        max_tokens = int(self.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
+        base_url = DS_BASE_URL
+        model = DS_MODEL
+
+        def run():
+            text = ""
+            try:
+                r = requests.post(
+                    base_url.rstrip("/") + "/chat/completions",
+                    headers={"Authorization": "Bearer " + key,
+                             "Content-Type": "application/json"},
+                    json={"model": model, "messages": messages,
+                          "max_tokens": max_tokens},
+                    timeout=120)
+                if r.status_code == 200:
+                    try:
+                        text = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                    except Exception:
+                        text = ""
+                else:
+                    text = _http_error_message(r.status_code, r.text)
+            except Exception as ex:
+                log("[看看屏幕] 聊天请求失败: %s" % ex, logging.WARNING)
+                text = desc[:80]
+            if not text:
+                text = desc[:80]
+            self.say_main(text)
+            self._look_screen_to_chat("(框选)", text, ok=True)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -2649,7 +2864,7 @@ class PetApp(QObject):
         gm.addAction("猜拳", self._open_rps)
         gm.addAction("接食物（30 秒）", self._open_catch)
 
-        m.addAction("看看屏幕", lambda: self.look_screen(pet))
+        m.addAction("看看屏幕", lambda: self._begin_region_select(pet))
         m.addAction("查看天气", lambda: self._get_weather(pet))
         m.addAction("查看余额", lambda: self.query_balance(True))
 

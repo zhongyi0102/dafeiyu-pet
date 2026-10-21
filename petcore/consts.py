@@ -43,6 +43,18 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
 APP_DIR = os.environ.get("DFY_APP_DIR", os.path.dirname(os.path.abspath(__file__)))
 BUNDLE_DIR = os.environ.get("DFY_BUNDLE_DIR", APP_DIR)
 SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
+# ===== 环境变量优先（可覆盖上面所有推导）：测试/多实例隔离配置目录 =====
+_ENV_APP = os.environ.get("DFY_APP_DIR")
+if _ENV_APP:
+    APP_DIR = os.path.abspath(_ENV_APP)
+    BUNDLE_DIR = os.environ.get("DFY_BUNDLE_DIR") or APP_DIR
+    SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
+    PYTHONW = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+    except Exception:
+        pass
+
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 CHAT_PATH = os.path.join(APP_DIR, "chats.json")
 MEMORY_PATH = os.path.join(APP_DIR, "memory.json")
@@ -175,7 +187,7 @@ def _extract_bundled_sprites(target_dir):
         return False
 
 
-if getattr(sys, "frozen", False):
+if not _ENV_APP and getattr(sys, "frozen", False):
     # ===== 打包成 exe（单文件，含素材）=====
     #   APP_DIR = exe 所在目录（配置/聊天/日志写这里）
     #   素材    = 首次启动从 exe 内置的 sprites.zip 解压到
@@ -195,7 +207,7 @@ if getattr(sys, "frozen", False):
             SPRITE_DIR = _beside
         else:
             SPRITE_DIR = os.path.join(getattr(sys, "_MEIPASS", BUNDLE_DIR), "sprites")
-else:
+elif not _ENV_APP:
     # 源码运行：本模块在 petcore/ 下，项目根是它的上一级
     APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     BUNDLE_DIR = APP_DIR
@@ -279,9 +291,87 @@ SMASH_SPIN_MAX_DEG = 26.0          # 最大旋转角
 SMASH_SPIN_MIN_SPEED = 900.0       # 触发所需速度（px/s）
 SMASH_SETTLE_SEC = 5.0             # 落地停稳后多久解除
 # 「看看屏幕」：截图压缩参数
-LOOK_SCREEN_MAX_SIDE = 768          # 最长边
 LOOK_SCREEN_JPEG_Q = 70             # JPEG 质量
 LOOK_SCREEN_COOLDOWN = 4.0          # 冷却秒数（防连点）
+LOOK_SCREEN_MIN_SELECTION = 20     # 框选最小边长（像素），小于视为取消
+LOOK_SCREEN_REGION_MAX_SIDE = 1024  # 框选截图长边上限（超过则等比缩小）
+# 视觉模型多为推理模型，思考过程也消耗 token；太小会导致 content 为空
+# ===== 描述风格与单次上限（与聊天页完全独立，各自保存）=====
+VISION_STYLE_CHOICES = (
+    ("简短（100 字）", "brief"),
+    ("适中（200 字）", "normal"),
+    ("详细（400 字）", "detail"),
+)
+VISION_STYLE_DEFAULT = "normal"
+# 只追加在视觉请求 system 末尾的固定句（前面内容不变 → 缓存稳定）
+VISION_STYLE_SUFFIXES = {
+    "brief": "用 100 字以内描述。",
+    "normal": "用 200 字以内描述。",
+    "detail": "用 400 字以内描述。",
+}
+VISION_TOKENS_MIN = 100
+VISION_TOKENS_MAX = 2000
+VISION_TOKENS_DEFAULT = 1200
+
+
+def vision_style_suffix(style):
+    """返回该风格要追加在视觉 system 末尾的固定句。"""
+    return VISION_STYLE_SUFFIXES.get(
+        style or VISION_STYLE_DEFAULT,
+        VISION_STYLE_SUFFIXES[VISION_STYLE_DEFAULT])
+
+# ===== 视觉 Key 识别（本版只支持 DeepSeek 与智谱）=====
+# Key 格式 → 服务商（正则）。智谱格式独特，可精确识别；DeepSeek 的 sk-
+# 与其它厂商无法靠前缀区分，交给下面的探测。
+VISION_KEY_PREFIXES = ()
+VISION_KEY_PATTERNS = (
+    # 智谱：32 位 hex + "." + 16~48 位
+    (re.compile(r"^[0-9a-fA-F]{32}\.[A-Za-z0-9]{16,48}$"),
+     "https://open.bigmodel.cn/api/paas/v4"),
+)
+
+# 候选服务商（并行探测 GET {base}/models，谁成功用谁）
+VISION_PROVIDERS = (
+    ("DeepSeek", "https://api.deepseek.com/v1"),
+    ("智谱", "https://open.bigmodel.cn/api/paas/v4"),
+)
+
+
+def vision_join(base, path):
+    """把 base 与 path 拼成完整 URL：去掉 base 末尾的 /，再拼 /path。"""
+    return (base or "").rstrip("/") + "/" + (path or "").lstrip("/")
+
+# 明显不是对话模型的关键词（命中就剔除）
+VISION_EXCLUDE_WORDS = (
+    "embed", "embedding", "rerank", "whisper", "tts", "asr", "audio",
+    "moderation", "dall", "flux", "video", "stable-diffusion",
+    "voice", "speech", "realtime", "transcribe",
+)
+
+# 带这些词的多半支持图片输入，排前面
+VISION_PREFER_WORDS = (
+    "vision", "vl", "4v", "-v-", "omni", "4o", "gemini", "claude",
+    "qwen", "glm-4v", "glm-4.5v", "glm-4.6v", "internvl", "llava",
+    "pixtral", "mllm", "multimodal",
+)
+
+# Key 探测（并行）
+VISION_PROBE_WORKERS = 2      # 只两家，两个线程够
+VISION_PROBE_TIMEOUT = 6      # 单个候选地址超时（秒）
+
+# 需要「认证端点」二次确认的服务商（/models 是公开端点时用）
+VISION_PROVIDER_AUTH_PATH = {}   # DeepSeek / 智谱的 /models 都需认证
+
+# 已知视觉模型（/models 不列出时兜底验证；实测自官方文档/接口）
+VISION_KNOWN_MODELS = {
+    "智谱": ("glm-4.6v", "glm-4.5v", "glm-4.6v-flash", "glm-5v-turbo"),
+    "DeepSeek": ("deepseek-v4-flash-vision-exp",),
+}
+
+VISION_MAX_VERIFY = 12      # 最多真实验证多少个候选模型
+VISION_VERIFY_WORKERS = 4   # 并行验证线程数
+VISION_VERIFY_TIMEOUT = 40  # 单个验证请求超时（秒）
+VISION_LIST_TIMEOUT = 15    # GET /models 超时（秒）
 LOOK_SCREEN_PROMPT = (
     "这是主人当前的屏幕画面，前台窗口是「{title}」。"
     "请用大肥鱼的口吻，针对画面内容说一句关心、吐槽或好奇的话，"
@@ -1933,7 +2023,9 @@ def default_config():
             "daily_max": 8,        # 每天最多几次（1~50）
         },
         # 「看看屏幕」配置
-        "look_screen": {"vision_model": "", "vision_base": "", "vision_key": ""},
+        "look_screen": {"vision_model": "", "vision_base": "", "vision_key": "",
+                        "style": VISION_STYLE_DEFAULT,
+                        "max_tokens": VISION_TOKENS_DEFAULT},
         "reply_style": REPLY_STYLE_DEFAULT,
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 用 DEFAULT_PERSONA（代码里的默认人设）
@@ -2344,6 +2436,20 @@ def migrate_and_validate(raw):
                 issues.append("look_screen.%s" % k)
     elif ls is not None:
         issues.append("look_screen")
+
+    # look_screen.style / max_tokens（描述风格与单次上限，独立于聊天页）
+    _vs = ls.get("style") if isinstance(ls, dict) else None
+    if isinstance(_vs, str) and _vs in VISION_STYLE_SUFFIXES:
+        cfg["look_screen"]["style"] = _vs
+    elif _vs is not None:
+        issues.append("look_screen.style")
+    _vt = ls.get("max_tokens") if isinstance(ls, dict) else None
+    if isinstance(_vt, int) and not isinstance(_vt, bool) \
+            and VISION_TOKENS_MIN <= _vt <= VISION_TOKENS_MAX:
+        cfg["look_screen"]["max_tokens"] = _vt
+    elif _vt is not None:
+        issues.append("look_screen.max_tokens")
+
 
     # reply_style：回复长度风格
     rs = raw.get("reply_style")

@@ -1132,6 +1132,31 @@ class ChatWindow(QWidget):
     def render_message(self, role, text):
         return self._add_bubble(role, text)
 
+    def append_external(self, role, text, notice=None):
+        """外部功能（如「看看屏幕」）把消息追加到当前会话。
+
+        作用：
+          - 写入 self.messages 并落盘 → 下次打开还在，可继续追问
+          - 立刻在界面上显示气泡
+          - 可选在消息前插一条 notice（提示气泡，不入会话历史）
+
+        返回写入的消息对象；无当前会话时返回 None。
+        """
+        sess = self._current_session()
+        if sess is None:
+            return None
+        text = (text or "").strip()
+        if not text:
+            return None
+        msg = {"role": role, "content": text}
+        self.messages.append(msg)
+        if notice:
+            self._add_bubble("note", notice)
+        self._add_bubble(role, text)
+        self.save_history()
+        self._update_empty_state()
+        return msg
+
     def render_history(self):
         self._render_current_session()
 
