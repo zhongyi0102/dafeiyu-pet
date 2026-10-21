@@ -196,30 +196,38 @@ def _provider_name(base):
 def suggest_models(provider_name, listed_models):
     """给某服务商挑候选模型。
 
-    优先：/models 里筛出来的；
-    兜底：该服务商的已知视觉模型（如智谱的 glm-4.6v —— /models 常不列出）。
+    优先：/models 里筛出来的（按 filter_and_rank 排序）；
+    兜底：该服务商的已知视觉模型（/models 常不列出）。
+    已知模型并入后**统一按同一规则重排**，保证默认选到最合适的。
     返回 (候选列表, 是否来自兜底)。
     """
     from petcore.consts import VISION_KNOWN_MODELS
-    ranked = filter_and_rank(listed_models or [])
+    listed = list(listed_models or [])
     known = list(VISION_KNOWN_MODELS.get(provider_name or "", ()))
-    if not ranked:
-        return known, True
-    # 已知模型排在前面（它们确认支持图片）
-    out = []
-    for m in known:
-        if m not in out:
-            out.append(m)
-    for m in ranked:
-        if m not in out:
-            out.append(m)
-    return out, False
-
+    if not listed and not known:
+        return [], True
+    if not listed:
+        # 只有已知列表：也按规则排一遍
+        return filter_and_rank(known), True
+    # 合并后统一排序（去重）
+    merged = []
+    for m in known + listed:
+        if m and m not in merged:
+            merged.append(m)
+    return filter_and_rank(merged), False
 
 
 def filter_and_rank(models):
-    """剔除明显非对话模型，把可能支持图片的排前面。"""
-    from petcore.consts import VISION_EXCLUDE_WORDS, VISION_PREFER_WORDS
+    """剔除明显非对话模型，并按用户要求排序。
+
+    排序规则（数字越小越前）：
+      1) 名字以 "-flash" 结尾（且不含 flashx）→ 最前
+      2) 含 "flashx" 或其它 → 次之
+      3) 含 turbo / thinking / pro → 最后
+    同档内再按「偏好词」微调，最后按名字字典序保证稳定。
+    """
+    from petcore.consts import (VISION_EXCLUDE_WORDS, VISION_PREFER_WORDS,
+                                VISION_RANK_LAST_WORDS)
     out = []
     seen = set()
     for n in models or []:
@@ -229,13 +237,23 @@ def filter_and_rank(models):
         if n in seen:
             continue
         seen.add(n)
+        # ---- 主排序档位 ----
+        if low.endswith("-flash"):
+            tier = 0
+        elif "flashx" in low or low.endswith("flashx"):
+            tier = 1
+        elif any(w in low for w in VISION_RANK_LAST_WORDS):
+            tier = 3
+        else:
+            tier = 2
+        # ---- 同档内偏好词微调（越大越前，用负数让 sort 正确）----
         score = 0
         for i, w in enumerate(VISION_PREFER_WORDS):
             if w in low:
                 score = max(score, len(VISION_PREFER_WORDS) - i)
-        out.append((score, n))
-    out.sort(key=lambda x: (-x[0], x[1]))
-    return [n for _s, n in out]
+        out.append((tier, -score, n))
+    out.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [n for _t, _s, n in out]
 
 
 def verify_model(base, key, model, timeout=None):

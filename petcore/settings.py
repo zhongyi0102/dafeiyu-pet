@@ -50,7 +50,7 @@ class _VisionBus(QObject):
     model_found = Signal(str, object)          # model, stale
     progress = Signal(int, object)             # 候选数, stale
     test_done = Signal(object, bool, str, str, list, object)   # stale,ok,err,base,found,total
-    real_done = Signal(object, bool, str, str, int, int, object, str)
+    real_done = Signal(object, bool, str, str, int, int, object, str, object, object)
     # real_done: stale, ok, err, text, used, mt, finish, reason
 
     def __init__(self, win):
@@ -246,6 +246,14 @@ class SettingsWindow(QDialog):
         s.valueChanged.connect(from_slider)
         box.valueChanged.connect(from_box)
         return s, box
+
+    def _hint_label(self, text):
+        """统一风格的灰色小字说明。"""
+        w = QLabel(text)
+        w.setWordWrap(True)
+        w.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+        return w
+
 
     def _tokens_field(self, value, lo, hi, step, on_change, suffix="tokens"):
         """滑块 + 数字框 + 单位，装进一个 QWidget（供 QFormLayout 用）。
@@ -1429,6 +1437,40 @@ class SettingsWindow(QDialog):
                 VISION_TOKENS_MIN, VISION_TOKENS_MAX, 50,
                 lambda v: self._on_vision_tokens_changed(int(v)), "tokens")
         form.addRow("单次上限", self._vision_tokens_field)
+        # 6) 图片最长边
+        self._vision_side_field, self.vision_side_slider, self.vision_side_spin = \
+            self._tokens_field(
+                int((self.app.cfg.get("look_screen") or {}).get("max_side")
+                    or LOOK_SCREEN_SIDE_DEFAULT),
+                LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX, LOOK_SCREEN_SIDE_STEP,
+                lambda v: self._on_vision_limit_changed("max_side", int(v)), "px")
+        form.addRow("图片最长边", self._vision_side_field)
+        lay.addWidget(self._hint_label("最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。"))
+
+        # 7) 图片质量
+        self._vision_quality_field, self.vision_quality_slider, self.vision_quality_spin = \
+            self._tokens_field(
+                int((self.app.cfg.get("look_screen") or {}).get("quality")
+                    or LOOK_SCREEN_QUALITY_DEFAULT),
+                LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX, 5,
+                lambda v: self._on_vision_limit_changed("quality", int(v)), "")
+        form.addRow("图片质量", self._vision_quality_field)
+        lay.addWidget(self._hint_label("JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。"))
+
+        # 8) 请求超时
+        self.vision_timeout_spin = QSpinBox()
+        self.vision_timeout_spin.setRange(LOOK_SCREEN_TIMEOUT_MIN, LOOK_SCREEN_TIMEOUT_MAX)
+        self.vision_timeout_spin.setSingleStep(5)
+        self.vision_timeout_spin.setSuffix(" 秒")
+        self.vision_timeout_spin.setFixedWidth(120)
+        self.vision_timeout_spin.setValue(
+            int((self.app.cfg.get("look_screen") or {}).get("timeout")
+                or LOOK_SCREEN_TIMEOUT_DEFAULT))
+        self.vision_timeout_spin.valueChanged.connect(
+            lambda v: self._on_vision_limit_changed("timeout", int(v)))
+        form.addRow("请求超时", self.vision_timeout_spin)
+        lay.addWidget(self._hint_label("视觉模型多久没响应就放弃（10~120 秒）。模型带思考过程时建议调大。"))
+
         lay.addLayout(form)
 
         # 风格灰字（当前追加句）
@@ -1501,6 +1543,30 @@ class SettingsWindow(QDialog):
             pass
         return self._vision_style_value()
 
+    def _on_vision_limit_changed(self, key, value):
+        """三项限制（最长边/质量/超时）改动后立即保存。"""
+        if getattr(self, "_vision_filling", False):
+            return
+        ls = self._vision_cfg_dict()
+        ls[key] = int(value)
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+
+    def _limits_from_widget(self):
+        """从控件读三项限制（保存时用）。"""
+        try:
+            _s1, _b1 = self._vision_side_field, self.vision_side_spin
+            _s2, _b2 = self._vision_quality_field, self.vision_quality_spin
+            return (int(round(self.vision_side_spin.value())),
+                    int(round(self.vision_quality_spin.value())),
+                    int(self.vision_timeout_spin.value()))
+        except Exception:
+            ls = self._vision_cfg_dict()
+            return (int(ls.get("max_side") or LOOK_SCREEN_SIDE_DEFAULT),
+                    int(ls.get("quality") or LOOK_SCREEN_QUALITY_DEFAULT),
+                    int(ls.get("timeout") or LOOK_SCREEN_TIMEOUT_DEFAULT))
+
+
     def _tokens_from_widget(self):
         """从滑块/数字框读当前上限（保存时用这个）。"""
         try:
@@ -1540,6 +1606,10 @@ class SettingsWindow(QDialog):
         ls = self._vision_cfg_dict()
         ls["style"] = self._style_from_widget()
         ls["max_tokens"] = self._tokens_from_widget()
+        _side, _qual, _tout = self._limits_from_widget()
+        ls["max_side"] = _side
+        ls["quality"] = _qual
+        ls["timeout"] = _tout
         ls["vision_key"] = (self.vision_key.text() or "").strip()[:300]
         ls["vision_base"] = (self.vision_base.text() or "").strip()[:300]
         ls["vision_model"] = (self.vision_model.currentText() or "").strip()[:200]
@@ -1573,6 +1643,23 @@ class SettingsWindow(QDialog):
         _vb.setValue(float(self._vision_tokens_value()))
         _vs.blockSignals(False)
         _vb.blockSignals(False)
+        # 三项限制：最长边 / 质量 / 超时
+        _ls2 = self._vision_cfg_dict()
+        _side = int(_ls2.get("max_side") or LOOK_SCREEN_SIDE_DEFAULT)
+        _qual = int(_ls2.get("quality") or LOOK_SCREEN_QUALITY_DEFAULT)
+        _tout = int(_ls2.get("timeout") or LOOK_SCREEN_TIMEOUT_DEFAULT)
+        for _sl, _bx, _val in (
+                (self.vision_side_slider, self.vision_side_spin, _side),
+                (self.vision_quality_slider, self.vision_quality_spin, _qual)):
+            _sl.blockSignals(True)
+            _bx.blockSignals(True)
+            _sl.setValue(_val)
+            _bx.setValue(float(_val))
+            _sl.blockSignals(False)
+            _bx.blockSignals(False)
+        self.vision_timeout_spin.blockSignals(True)
+        self.vision_timeout_spin.setValue(_tout)
+        self.vision_timeout_spin.blockSignals(False)
         self._refresh_vision_style_hint()
         self._restore_vision_status()
 
@@ -1679,6 +1766,10 @@ class SettingsWindow(QDialog):
         ls["vision_model"] = model[:200]
         ls["style"] = self._style_from_widget()
         ls["max_tokens"] = self._tokens_from_widget()
+        _side, _qual, _tout = self._limits_from_widget()
+        ls["max_side"] = _side
+        ls["quality"] = _qual
+        ls["timeout"] = _tout
         self.app.cfg["look_screen"] = ls
         self.app.save_cfg()
         self._set_vision_status("✓ 已保存：%s @ %s" % (model, base), "ok")
@@ -1701,7 +1792,7 @@ class SettingsWindow(QDialog):
         self._set_vision_status("已取消识别", "info")
 
     def _clear_vision_cfg(self):
-        """清空 Key、地址、模型。"""
+        """清空 Key、地址、模型；**不重置**描述风格/单次上限/三项限制。"""
         if getattr(self, "_vision_testing", False):
             self._reset_vision_test_ui()
         self._vision_filling = True
@@ -1709,16 +1800,20 @@ class SettingsWindow(QDialog):
         self.vision_base.clear()
         self._fill_vision_models([])
         self._vision_filling = False
+        _side, _qual, _tout = self._limits_from_widget()
         self.app.cfg["look_screen"] = {
             "vision_key": "", "vision_base": "", "vision_model": "",
-            # 描述风格与单次上限**不重置**（与聊天页独立）
+            # 这些不重置
             "style": self._style_from_widget(),
             "max_tokens": self._tokens_from_widget(),
+            "max_side": _side,
+            "quality": _qual,
+            "timeout": _tout,
         }
         self.app.save_cfg()
-        self._set_vision_status("已清空，填入新 Key 后点「测试」", "info")
+        self._set_vision_status("已清空 Key/地址/模型（其余设置保留）", "info")
 
-    # ---------- 自动识别（仅由「测试」按钮触发）----------
+
     def _test_vision(self):
         """识别：服务商 → 模型列表 → 真实图片验证（全程后台线程）。"""
         if getattr(self, "_vision_testing", False):
@@ -1819,7 +1914,7 @@ class SettingsWindow(QDialog):
         self._set_vision_status("识别中…（已验证可用 %d 个）" % n, "info")
 
     def _on_vision_test_done(self, stale, ok, err, base, found, total=None):
-        """识别结束：复位 UI、恢复选择、按规则自动保存。"""
+        """识别结束：按规则重排、复位 UI、自动保存、真实试拍。"""
         if stale():
             log("识别已作废，忽略结果")
             return
@@ -1828,41 +1923,56 @@ class SettingsWindow(QDialog):
             self._set_vision_status("✗ " + (err or "识别失败"), "err")
             log("===== 视觉识别失败：%s =====" % err)
             return
-        n = len(found or [])
+        raw_found = list(found or [])
+        n = len(raw_found)
         if n == 0:
             self._set_vision_status(
                 "✗ 这个 Key 下没有可用的视觉模型（已试 %s 个）" % (total or 0), "err")
             return
-        # 恢复选择：原选择仍在列表里就用它，否则选第一个
+
+        # ★ 并行验证的到达顺序是随机的，这里按规则重排一次：
+        #   以 -flash 结尾最前 → flashx/其它 → 含 turbo/thinking/pro 最后
+        try:
+            from petcore.vision import filter_and_rank
+            ranked_found = filter_and_rank(raw_found)
+        except Exception:
+            ranked_found = raw_found
+        if len(ranked_found) != n:
+            ranked_found = raw_found
+        log("验证通过 %d 个，排序后：%s" % (n, ", ".join(ranked_found)))
+
+        # 恢复选择：原选择仍在列表里就用它，否则选第一个（排序后的）
         cur = (self.vision_model.currentText() or "").strip()
-        if cur and cur in found:
+        if cur and cur in ranked_found:
             chosen = cur
         else:
-            chosen = found[0]
+            chosen = ranked_found[0]
         self._vision_filling = True
-        if self.vision_model.count() != n:
-            self._fill_vision_models(found, keep=chosen)
-        else:
-            self.vision_model.setCurrentText(chosen)
+        self._fill_vision_models(ranked_found, keep=chosen)
         self._vision_filling = False
         tip = "，可在上方选择" if n > 1 else ""
         self._set_vision_status("✓ 找到 %d 个可用视觉模型%s" % (n, tip), "ok")
         # 自动保存（不管几个）
         self._save_vision_cfg()
-        # 识别完成后，用「当前描述风格 + 单次上限」做一次真实试拍，
-        # 报告实际输出字数，方便调参（不阻塞界面）
+        # 真实试拍：报告耗时 + 输入/输出 tokens
         _vb, _vk, _vm = self.app._vision_cfg()
-
-
+        self._vision_real_test(base or _vb, _vk or "", chosen, stale)
         log("===== 视觉识别完成：%d 个可用，已选 %s =====" % (n, chosen))
 
-    def _vision_real_test(self, base, key, model, stale):
-        """用当前描述风格与单次上限发一次真实请求，报告实际输出字数。"""
-        import threading
 
-        suffix = vision_style_suffix(self._vision_style_value())
+    def _vision_real_test(self, base, key, model, stale):
+        # 试拍用独立 token：_on_vision_test_done 已把识别 token +1，
+        # 若继续用它会让 stale() 立刻为真、结果被丢弃。
+        _rtoken = getattr(self, "_vision_rtoken", 0) + 1
+        self._vision_rtoken = _rtoken
+        """用当前描述风格、单次上限、超时发一次真实请求，报告耗时与 tokens。"""
+        import threading
+        import time as _time
+
+        suffix = vision_style_suffix(self._style_from_widget())
         mt = self._tokens_from_widget()
-        prompt = ("这是一张测试图。请按下面的要求描述它。\n" + suffix)
+        _side, _qual, _tout = self._limits_from_widget()
+        prompt = ("这是一张测试图。请按下面的要求描述它。" + chr(10) + suffix)
         self._set_vision_status(
             "识别完成，正在用当前风格试拍（上限 %d tokens）…" % mt, "info")
 
@@ -1871,6 +1981,7 @@ class SettingsWindow(QDialog):
             from petcore.consts import vision_join
             import requests as _rq
             import base64 as _b64
+            t0 = _time.time()
             try:
                 png = V.make_test_png(64)
                 b64 = _b64.b64encode(png).decode("ascii")
@@ -1886,11 +1997,12 @@ class SettingsWindow(QDialog):
                 r = _rq.post(vision_join(base, "chat/completions"),
                              headers={"Authorization": "Bearer " + key,
                                       "Content-Type": "application/json"},
-                             json=payload, timeout=120)
+                             json=payload, timeout=_tout)
+                elapsed = _time.time() - t0
                 if r.status_code != 200:
                     self._vbus.real_done.emit(
                         stale, False, "HTTP %s" % r.status_code,
-                        "", 0, mt, None, "")
+                        "", 0, mt, None, "", elapsed, None)
                     return
                 d = r.json()
                 ch = d["choices"][0]
@@ -1898,46 +2010,52 @@ class SettingsWindow(QDialog):
                 text = (msg.get("content") or "").strip()
                 reason = (msg.get("reasoning_content") or "").strip()
                 finish = ch.get("finish_reason")
-                used = d.get("usage", {}).get("completion_tokens", 0)
+                usage = d.get("usage") or {}
+                used = usage.get("completion_tokens", 0) or 0
+                ptok = usage.get("prompt_tokens")
                 self._vbus.real_done.emit(
-                    stale, True, "", text, used, mt, finish, reason)
+                    stale, True, "", text, used, mt, finish, reason, elapsed, ptok)
             except Exception as ex:
+                elapsed = _time.time() - t0
                 self._vbus.real_done.emit(
-                    stale, False, str(ex)[:80], "", 0, mt, None, "")
+                    stale, False, str(ex)[:80], "", 0, mt, None, "", elapsed, None)
 
         threading.Thread(target=work, daemon=True).start()
 
+
     def _vision_real_test_done(self, stale, ok, err, text, used, mt,
-                               finish=None, reason=""):
-        """真实试拍结果：报告字数（方便调描述风格与上限）。"""
-        if stale():
+                               finish=None, reason="", elapsed=None,
+                               prompt_tokens=None, _rtoken=None):
+        """真实试拍结果：报告耗时、输入/输出 tokens（取不到就只报耗时）。"""
+        if _rtoken is not None and getattr(self, "_vision_rtoken", 0) != _rtoken:
             return
         if not ok:
             self._set_vision_status("✗ 试拍失败：%s" % (err or "未知"), "err")
             return
         n = len(text or "")
+        t_part = ("耗时 %.1fs" % elapsed) if elapsed else ""
+        u_part = ""
+        bits = []
+        if prompt_tokens is not None:
+            bits.append("输入 %d" % prompt_tokens)
+        if used:
+            bits.append("输出 %d" % used)
+        if bits:
+            u_part = " / ".join(bits) + " tokens"
         if n == 0 and finish == "length":
             self._set_vision_status(
-                "⚠ 模型只输出了思考过程（用 %d tokens），没给出正文。"
-                "请把「单次上限」调大后重试。" % used, "err")
+                "⚠ 模型只输出了思考过程，没给出正文（%s）。请把「单次上限」调大。"
+                % (t_part or "耗时未知"), "err")
             return
         if n == 0:
             self._set_vision_status(
-                "⚠ 模型没返回内容（用 %d tokens）。可换模型或调大上限。" % used, "err")
+                "⚠ 模型没返回内容（%s）。可换模型或调大上限。"
+                % (t_part or "耗时未知"), "err")
             return
-        # 目标字数（从风格句里取）
-        target = ""
-        try:
-            m = re.search(r"(\d+)\s*字", vision_style_suffix(self._vision_style_value()))
-            target = m.group(1) if m else ""
-        except Exception:
-            pass
-        over = ""
-        if target and target.isdigit() and n > int(target):
-            over = "（超出目标 %s 字）" % target
+        parts = [x for x in (t_part, u_part) if x]
+        tail = ("（" + "，".join(parts) + "）") if parts else ""
         self._set_vision_status(
-            "✓ 识别完成。试拍：输出 %d 字，用 %d/%d tokens%s"
-            % (n, used, mt, over), "ok")
+            "✓ 识别完成。试拍输出 %d 字%s" % (n, tail), "ok")
 
 
     def _refresh_vision_hint(self):

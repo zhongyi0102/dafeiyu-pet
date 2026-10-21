@@ -2596,6 +2596,25 @@ class PetApp(QObject):
         mt = max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, mt))
         return suffix, mt
 
+    def _vision_limits(self):
+        """视觉请求限制：返回 (max_side, quality, timeout)。"""
+        ls = self.cfg.get("look_screen") or {}
+
+        def _int(key, lo, hi, dv):
+            try:
+                v = int(ls.get(key) or dv)
+            except Exception:
+                v = dv
+            return max(lo, min(hi, v))
+
+        side = _int("max_side", LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX,
+                    LOOK_SCREEN_SIDE_DEFAULT)
+        qual = _int("quality", LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX,
+                    LOOK_SCREEN_QUALITY_DEFAULT)
+        tout = _int("timeout", LOOK_SCREEN_TIMEOUT_MIN, LOOK_SCREEN_TIMEOUT_MAX,
+                    LOOK_SCREEN_TIMEOUT_DEFAULT)
+        return side, qual, tout
+
 
     def _vision_ready_check(self):
         """进入框选前的检查：三项任一为空就不进入。
@@ -2740,8 +2759,9 @@ class PetApp(QObject):
                 # 缩放到长边 ≤ 1024
                 rw, rh = region.width(), region.height()
                 mx = max(rw, rh)
-                if mx > LOOK_SCREEN_REGION_MAX_SIDE:
-                    k = LOOK_SCREEN_REGION_MAX_SIDE / float(mx)
+                _side, _q, _t = self._vision_limits()
+                if mx > _side:
+                    k = _side / float(mx)
                     region = region.scaled(max(1, int(rw * k)), max(1, int(rh * k)),
                                            Qt.AspectRatioMode.KeepAspectRatio,
                                            Qt.TransformationMode.SmoothTransformation)
@@ -2774,7 +2794,8 @@ class PetApp(QObject):
         # 转 JPEG 只在内存里
         buf = QBuffer()
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buf, "JPEG", LOOK_SCREEN_JPEG_Q)
+        _side, _quality, _timeout = self._vision_limits()
+        image.save(buf, "JPEG", _quality)
         holder["jpg"] = bytes(buf.data())
         buf.close()
         image = None
@@ -2800,7 +2821,7 @@ class PetApp(QObject):
                     vision_join(base, "chat/completions"),
                     headers={"Authorization": "Bearer " + key,
                              "Content-Type": "application/json"},
-                    json=payload, timeout=120)
+                    json=payload, timeout=_timeout)
                 if r.status_code != 200:
                     msg = _http_error_message(r.status_code, r.text)
                     self.say_main(msg)
@@ -2822,7 +2843,7 @@ class PetApp(QObject):
                         vision_join(base, "chat/completions"),
                         headers={"Authorization": "Bearer " + key,
                                  "Content-Type": "application/json"},
-                        json=payload, timeout=120)
+                        json=payload, timeout=_timeout)
                     if r2.status_code == 200:
                         try:
                             m2 = r2.json()["choices"][0].get("message") or {}

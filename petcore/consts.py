@@ -295,6 +295,19 @@ LOOK_SCREEN_JPEG_Q = 70             # JPEG 质量
 LOOK_SCREEN_COOLDOWN = 4.0          # 冷却秒数（防连点）
 LOOK_SCREEN_MIN_SELECTION = 20     # 框选最小边长（像素），小于视为取消
 LOOK_SCREEN_REGION_MAX_SIDE = 1024  # 框选截图长边上限（超过则等比缩小）
+# ===== 视觉请求限制（可在设置页调整，写入配置）=====
+LOOK_SCREEN_SIDE_MIN = 512
+LOOK_SCREEN_SIDE_MAX = 2048
+LOOK_SCREEN_SIDE_STEP = 64
+LOOK_SCREEN_SIDE_DEFAULT = 1024
+
+LOOK_SCREEN_QUALITY_MIN = 60
+LOOK_SCREEN_QUALITY_MAX = 95
+LOOK_SCREEN_QUALITY_DEFAULT = 70
+
+LOOK_SCREEN_TIMEOUT_MIN = 10
+LOOK_SCREEN_TIMEOUT_MAX = 120
+LOOK_SCREEN_TIMEOUT_DEFAULT = 60
 # 视觉模型多为推理模型，思考过程也消耗 token；太小会导致 content 为空
 # ===== 描述风格与单次上限（与聊天页完全独立，各自保存）=====
 VISION_STYLE_CHOICES = (
@@ -354,6 +367,10 @@ VISION_PREFER_WORDS = (
     "qwen", "glm-4v", "glm-4.5v", "glm-4.6v", "internvl", "llava",
     "pixtral", "mllm", "multimodal",
 )
+
+# 视觉模型排序优先级（数字越小越靠前）
+# 1) 以 -flash 结尾  2) flashx / 其它  3) 含 turbo/thinking/pro
+VISION_RANK_LAST_WORDS = ("turbo", "thinking", "pro")
 
 # Key 探测（并行）
 VISION_PROBE_WORKERS = 2      # 只两家，两个线程够
@@ -2043,7 +2060,11 @@ def default_config():
         # 「看看屏幕」配置
         "look_screen": {"vision_model": "", "vision_base": "", "vision_key": "",
                         "style": VISION_STYLE_DEFAULT,
-                        "max_tokens": VISION_TOKENS_DEFAULT},
+                        "style": VISION_STYLE_DEFAULT,
+                        "max_tokens": VISION_TOKENS_DEFAULT,
+                        "max_side": LOOK_SCREEN_SIDE_DEFAULT,
+                        "quality": LOOK_SCREEN_QUALITY_DEFAULT,
+                        "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
         "reply_style": REPLY_STYLE_DEFAULT,
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 用 DEFAULT_PERSONA（代码里的默认人设）
@@ -2454,6 +2475,17 @@ def migrate_and_validate(raw):
                 issues.append("look_screen.%s" % k)
     elif ls is not None:
         issues.append("look_screen")
+
+    # look_screen.max_side / quality / timeout（视觉请求限制）
+    for _k, _lo, _hi in (("max_side", LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX),
+                         ("quality", LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX),
+                         ("timeout", LOOK_SCREEN_TIMEOUT_MIN, LOOK_SCREEN_TIMEOUT_MAX)):
+        _v = ls.get(_k) if isinstance(ls, dict) else None
+        if isinstance(_v, int) and not isinstance(_v, bool) and _lo <= _v <= _hi:
+            cfg["look_screen"][_k] = _v
+        elif _v is not None:
+            issues.append("look_screen.%s" % _k)
+
 
     # look_screen.style / max_tokens（描述风格与单次上限，独立于聊天页）
     _vs = ls.get("style") if isinstance(ls, dict) else None
