@@ -1814,6 +1814,15 @@ SEASONAL_ASSETS = {
 }
 
 BALANCE_URL = "https://api.deepseek.com/user/balance"
+
+# 智谱余额（实测可用，返回 data.availableBalance 等）
+# GET https://open.bigmodel.cn/api/biz/account/query-customer-account-report
+BALANCE_URL_ZHIPU = "https://open.bigmodel.cn/api/biz/account/query-customer-account-report"
+# 余额来源：deepseek / zhipu（auto 时按当前配置自动判断）
+BALANCE_PROVIDERS = (
+    ("deepseek", "DeepSeek"),
+    ("zhipu", "智谱 GLM"),
+)
 BALANCE_MIN_INTERVAL_MIN = 30      # 自动查询最短间隔（分钟）
 
 # ===== 功能开关注册表（新增功能只需在这里登记一行，设置页会自动出现） =====
@@ -2009,7 +2018,7 @@ def default_config():
         "animation_mode": "auto",
         "animation_weights": dict(ACTION_CATEGORY_WEIGHTS),
         "physics": dict(DEFAULT_PHYSICS),
-        "balance": {"auto": False, "interval_min": BALANCE_MIN_INTERVAL_MIN,
+        "balance": {"auto": False, "provider": "auto", "interval_min": BALANCE_MIN_INTERVAL_MIN,
                     "last_value": None, "last_time": None},
         "seasonal_fx": {"auto": True},
         "features": _default_features(),
@@ -2504,6 +2513,16 @@ def migrate_and_validate(raw):
             issues.append(key)
         else:
             changed = True
+
+    # balance.provider：余额来源（auto / deepseek / zhipu）
+    _bp = raw.get("balance")
+    if isinstance(_bp, dict):
+        _pv = _bp.get("provider")
+        if isinstance(_pv, str) and _pv.lower() in ("auto", "deepseek", "zhipu"):
+            cfg["balance"]["provider"] = _pv.lower()
+        elif _pv is not None:
+            issues.append("balance.provider")
+
 
     # balance_full：满额基准（元）
     bf = raw.get("balance_full")

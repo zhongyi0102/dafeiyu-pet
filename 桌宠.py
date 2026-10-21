@@ -69,52 +69,112 @@ from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa:
 from petcore.pet_window import PetWindow, FoodPanel   # noqa: F401
 
 
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
 class BalanceWorker(QThread):
-    """后台查询 DeepSeek 余额（GET /user/balance）"""
+    """后台查询余额：DeepSeek（GET /user/balance）或 智谱（GET /api/biz/account/...）"""
     done = Signal(float, dict)
     failed = Signal(str)
 
-    def __init__(self, api_key):
+    def __init__(self, api_key, provider="deepseek"):
         super().__init__()
         self.api_key = api_key
+        self.provider = (provider or "deepseek").lower()
+
+    # ---------- DeepSeek ----------
+    def _query_deepseek(self):
+        headers = {"Authorization": "Bearer " + self.api_key,
+                   "Accept": "application/json"}
+        r = requests.get(BALANCE_URL, headers=headers, timeout=15)
+        if r.status_code != 200:
+            self.failed.emit(_http_error_message(r.status_code, r.text))
+            return
+        try:
+            data = r.json()
+        except Exception:
+            self.failed.emit("余额接口返回的不是 JSON，可能是被劫持或代理异常")
+            return
+        total = None
+        infos = data.get("balance_infos")
+        if isinstance(infos, list) and infos:
+            cur = None
+            for info in infos:
+                if not isinstance(info, dict):
+                    continue
+                try:
+                    amount = float(info.get("total_balance") or 0)
+                except Exception:
+                    continue
+                sym = str(info.get("currency") or "").upper()
+                sign = "¥" if sym in ("CNY", "RMB", "¥", "") else (sym + " ")
+                if cur is None or amount > cur[0]:
+                    cur = (amount, sign)
+            if cur is not None:
+                total = cur
+        if total is None:
+            try:
+                total = (float(data.get("total_balance") or 0), "¥")
+            except Exception:
+                self.failed.emit("余额接口没有返回可用金额")
+                return
+        self.done.emit(total[0], {"sign": total[1], "provider": "deepseek",
+                                  "raw": data})
+
+    # ---------- 智谱 ----------
+    def _query_zhipu(self):
+        headers = {"Authorization": "Bearer " + self.api_key,
+                   "Accept": "application/json"}
+        r = requests.get(BALANCE_URL_ZHIPU, headers=headers, timeout=15)
+        if r.status_code != 200:
+            self.failed.emit(_http_error_message(r.status_code, r.text))
+            return
+        try:
+            data = r.json()
+        except Exception:
+            self.failed.emit("智谱余额接口返回的不是 JSON")
+            return
+        # 业务错误：{"code":404,"msg":"...","success":false}
+        if isinstance(data, dict) and data.get("success") is False:
+            self.failed.emit("智谱余额查询失败：%s" % (data.get("msg") or "未知错误"))
+            return
+        d = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(d, dict):
+            self.failed.emit("智谱余额接口没有返回数据")
+            return
+        # 优先 availableBalance，退回 balance
+        amount = None
+        for k in ("availableBalance", "balance"):
+            try:
+                v = d.get(k)
+                if v is not None:
+                    amount = float(v)
+                    break
+            except Exception:
+                continue
+        if amount is None:
+            self.failed.emit("智谱余额接口没有返回可用金额")
+            return
+        meta = {
+            "sign": "¥",
+            "provider": "zhipu",
+            "raw": data,
+            "recharge": _safe_float(d.get("rechargeAmount")),
+            "give": _safe_float(d.get("giveAmount")),
+            "spent": _safe_float(d.get("totalSpendAmount")),
+        }
+        self.done.emit(amount, meta)
 
     def run(self):
         try:
-            headers = {"Authorization": "Bearer " + self.api_key,
-                       "Accept": "application/json"}
-            r = requests.get(BALANCE_URL, headers=headers, timeout=15)
-            if r.status_code != 200:
-                self.failed.emit(_http_error_message(r.status_code, r.text))
-                return
-            try:
-                data = r.json()
-            except Exception:
-                self.failed.emit("余额接口返回的不是 JSON，可能是被劫持或代理异常")
-                return
-            total = None
-            infos = data.get("balance_infos")
-            if isinstance(infos, list) and infos:
-                cur = None
-                for info in infos:
-                    if not isinstance(info, dict):
-                        continue
-                    try:
-                        amount = float(info.get("total_balance") or 0)
-                    except Exception:
-                        continue
-                    sym = str(info.get("currency") or "").upper()
-                    sign = "¥" if sym in ("CNY", "RMB", "¥", "") else (sym + " ")
-                    if cur is None or amount > cur[0]:
-                        cur = (amount, sign)
-                if cur is not None:
-                    total = cur
-            if total is None:
-                try:
-                    total = (float(data.get("total_balance") or 0), "¥")
-                except Exception:
-                    self.failed.emit("余额接口没有返回可用金额")
-                    return
-            self.done.emit(total[0], {"sign": total[1], "raw": data})
+            if self.provider == "zhipu":
+                self._query_zhipu()
+            else:
+                self._query_deepseek()
         except requests.exceptions.Timeout:
             self.failed.emit("余额查询超时（网络或接口缓慢），稍后再试")
         except requests.exceptions.RequestException as ex:
@@ -1843,13 +1903,37 @@ class PetApp(QObject):
         b = self.cfg.get("balance")
         if not isinstance(b, dict):
             b = {}
+        prov = str(b.get("provider") or "auto").lower()
+        if prov not in ("auto", "deepseek", "zhipu"):
+            prov = "auto"
         return {
             "auto": bool(b.get("auto", False)),
             "interval_min": max(BALANCE_MIN_INTERVAL_MIN,
                                 int(b.get("interval_min", BALANCE_MIN_INTERVAL_MIN) or 0)),
             "last_value": b.get("last_value"),
             "last_time": b.get("last_time"),
+            "provider": prov,
         }
+
+    def _balance_provider(self):
+        """决定这次查哪家：显式配置优先，auto 时看哪个 Key 有值。"""
+        cfg = self._balance_cfg()
+        p = cfg.get("provider") or "auto"
+        if p in ("deepseek", "zhipu"):
+            return p
+        # auto：优先智谱（若配了视觉 Key），否则 DeepSeek
+        ls = self.cfg.get("look_screen") or {}
+        if (ls.get("vision_key") or "").strip():
+            return "zhipu"
+        return "deepseek"
+
+    def _balance_key(self, provider):
+        """取对应服务商的 Key。"""
+        if provider == "zhipu":
+            ls = self.cfg.get("look_screen") or {}
+            return (ls.get("vision_key") or "").strip()
+        return (self.cfg.get("ds_api_key") or "").strip()
+
 
     def _save_balance_cfg(self, patch):
         b = self.cfg.get("balance")
@@ -1860,25 +1944,48 @@ class PetApp(QObject):
         self.save_cfg()
 
     def query_balance(self, manual=True):
-        """查询余额：后台线程 GET /user/balance，结果用气泡播报。"""
+        """查询余额：后台线程，结果用气泡播报。支持 DeepSeek / 智谱。"""
         if self.balance_worker is not None and self.balance_worker.isRunning():
             if manual:
                 self.say_main("正在查余额，稍等一下…")
             return
-        key = (self.cfg.get("ds_api_key") or "").strip()
+        provider = self._balance_provider()
+        key = self._balance_key(provider)
         if not key:
-            self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」")
+            if provider == "zhipu":
+                self.say_main("还没填智谱 Key：设置 →「聊天」→「看看屏幕」填一下")
+            else:
+                self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」")
             return
-        self.balance_worker = BalanceWorker(key)
+        self.balance_worker = BalanceWorker(key, provider=provider)
         self.balance_worker.done.connect(self._on_balance_ok)
         self.balance_worker.failed.connect(self._on_balance_failed)
         self.balance_worker.start()
 
+
     def _on_balance_ok(self, amount, meta):
         sign = (meta or {}).get("sign", "¥")
+        prov = (meta or {}).get("provider", "deepseek")
+        label = "智谱" if prov == "zhipu" else "DeepSeek"
         self._save_balance_cfg({"last_value": float(amount),
-                                "last_time": time.time()})
-        self.say_main("余额 %s%.2f" % (sign, amount))
+                                "last_time": time.time(),
+                                "last_provider": prov})
+        # 智谱可附带充值/赠送/已花
+        extra = ""
+        if prov == "zhipu":
+            r = (meta or {}).get("recharge")
+            g = (meta or {}).get("give")
+            sp = (meta or {}).get("spent")
+            parts = []
+            if r:
+                parts.append("充值 %.2f" % r)
+            if g:
+                parts.append("赠送 %.2f" % g)
+            if sp:
+                parts.append("已花 %.2f" % sp)
+            if parts:
+                extra = "（%s）" % " / ".join(parts)
+        self.say_main("%s余额 %s%.2f%s" % (label, sign, amount, extra))
         tier = self._balance_tier(amount)
         pet = self.main_pet
         if pet is not None and tier is not None:
@@ -1887,9 +1994,9 @@ class PetApp(QObject):
                 pet._start_chain_action(name)
             elif name in CLICK_RESPONSES:
                 pet._play_temp(name, total=CLICK_RESPONSES[name]["duration"], squash=True)
-            # 台词延后一点，避免把余额数字立刻盖掉
             line = self._pick_line(tier[3], "balance_" + tier[1])
             QTimer.singleShot(2600, lambda t=line: self.say_main(t))
+
 
     def _on_balance_failed(self, msg):
         log("余额查询失败: %s" % msg, logging.WARNING)

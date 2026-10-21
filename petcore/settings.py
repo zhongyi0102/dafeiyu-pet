@@ -1207,8 +1207,22 @@ class SettingsWindow(QDialog):
     # ---------- 余额页 ----------
     def _build_balance_page(self, lay):
         self._title(lay, "余额",
-                    "查询 https://api.deepseek.com/user/balance；档位按「满额基准」折算已用百分比。")
+                    "支持 DeepSeek 与智谱 GLM；档位按「满额基准」折算已用百分比。")
         bc = self.app._balance_cfg()
+        self._balance_provider_combo = self._combo_row(
+            lay, "余额来源",
+            [("自动（有智谱 Key 就用智谱）", "auto"),
+             ("DeepSeek", "deepseek"),
+             ("智谱 GLM", "zhipu")],
+            bc.get("provider", "auto"),
+            lambda v: self._set_balance_provider(str(v)))
+        self._balance_provider_hint = QLabel("")
+        self._balance_provider_hint.setWordWrap(True)
+        self._balance_provider_hint.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._balance_provider_hint)
+        self._refresh_balance_provider_hint()
+
         self._check(lay, "自动查询余额", bool(bc["auto"]),
                     lambda on: self.app.set_balance_auto(on),
                     "默认关闭；开启后按下面间隔自动查询")
@@ -1232,6 +1246,33 @@ class SettingsWindow(QDialog):
         lay.addWidget(btn)
         lay.addStretch(1)
         self._refresh_balance_hint()
+
+    def _set_balance_provider(self, value):
+        """切换余额来源：auto / deepseek / zhipu。"""
+        v = str(value or "auto").lower()
+        if v not in ("auto", "deepseek", "zhipu"):
+            v = "auto"
+        b = self.app.cfg.get("balance")
+        if not isinstance(b, dict):
+            b = {}
+        b["provider"] = v
+        self.app.cfg["balance"] = b
+        self.app.save_cfg()
+        self._refresh_balance_provider_hint()
+
+    def _refresh_balance_provider_hint(self):
+        try:
+            prov = self.app._balance_provider()
+            key = self.app._balance_key(prov)
+            label = "智谱 GLM" if prov == "zhipu" else "DeepSeek"
+            if not key:
+                self._balance_provider_hint.setText(
+                    "当前会查 %s，但还没填对应的 Key" % label)
+            else:
+                self._balance_provider_hint.setText("当前会查：%s" % label)
+        except Exception:
+            pass
+
 
     def _set_balance_full(self, value):
         self.app.cfg["balance_full"] = max(1.0, float(value))

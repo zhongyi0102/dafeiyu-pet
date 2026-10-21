@@ -150,6 +150,17 @@
     （「仅此而已，不是剧情、不是某部作品」）
   - 实测：编造性解读消失，画面里真实存在的文字正常转述
 
+### 新增（Added）
+
+- **余额查询支持智谱 GLM**（原来只有 DeepSeek）
+  - 端点：`GET https://open.bigmodel.cn/api/biz/account/query-customer-account-report`
+  - 返回 `data.availableBalance`，附带 `rechargeAmount` / `giveAmount` / `totalSpendAmount`
+  - 播报格式：`智谱余额 ¥4.97（充值 5.00 / 已花 0.03）`
+  - `BalanceWorker` 增加 `provider` 参数，拆出 `_query_deepseek()` / `_query_zhipu()`
+  - 设置 →「余额」页新增「余额来源」下拉：自动 / DeepSeek / 智谱 GLM
+  - `auto` 模式下：有智谱 Key 就用智谱，否则用 DeepSeek
+  - 配置字段 `balance.provider`（默认 `auto`），带校验
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。
