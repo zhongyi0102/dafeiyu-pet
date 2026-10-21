@@ -1989,11 +1989,11 @@ class PetApp(QObject):
         self._report_balances()
 
     def _report_balances(self):
-        """把两家的余额合并成一条播报。"""
+        """把各家的余额合并成一条播报：只显示「模型 + 金额」。"""
         results = self._balance_results or {}
         if not results:
             return
-        lines_out = []
+        parts = []
         total = 0.0
         got_any = False
         for prov in ("deepseek", "zhipu"):
@@ -2002,36 +2002,20 @@ class PetApp(QObject):
             ok, amount, payload = results[prov]
             label = "智谱" if prov == "zhipu" else "DeepSeek"
             if not ok:
-                lines_out.append("%s 查询失败（%s）" % (label, str(payload)[:40]))
+                parts.append("%s 查询失败" % label)
                 continue
             got_any = True
             try:
                 total += float(amount)
             except Exception:
                 pass
-            sign = "¥"
-            extra = ""
-            if prov == "zhipu" and isinstance(payload, dict):
-                r = payload.get("recharge")
-                sp = payload.get("spent")
-                bits = []
-                if r:
-                    bits.append("充值 %.2f" % r)
-                if sp:
-                    bits.append("已花 %.2f" % sp)
-                if bits:
-                    extra = "（%s）" % " / ".join(bits)
-            lines_out.append("%s %s%.2f%s" % (label, sign, amount, extra))
+            parts.append("%s ¥%.2f" % (label, amount))
 
         if not got_any:
-            self.say_main("余额查询失败：" + "；".join(lines_out))
+            self.say_main("余额查询失败：" + "；".join(parts))
             return
 
-        # 播报：单家时直接说，两家时带合计
-        if len(lines_out) == 1:
-            text = "余额 " + lines_out[0]
-        else:
-            text = " / ".join(lines_out) + "，合计 ¥%.2f" % total
+        text = " / ".join(parts)
         self._save_balance_cfg({"last_value": float(total),
                                 "last_time": time.time()})
         self.say_main(text)
