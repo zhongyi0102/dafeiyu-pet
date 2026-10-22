@@ -56,6 +56,7 @@ from petcore.consts import mask_secrets, is_default_vision_system  # noqa: F401
 
 # 看看屏幕增强模块（场景分类 / OCR / 预处理 / 看屏记忆 / 视觉模型排序）
 import screen_vision as SV   # noqa: E402
+from weather_cn import weather_cn, weather_tip  # noqa: E402
 import proactive as PRO      # noqa: E402  主动搭话
 
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
@@ -3668,15 +3669,14 @@ class PetApp(QObject):
                 data = r.json()
                 weather = data["current_condition"][0]
                 temp = weather["temp_C"]
-                weather_map = {
-                    "Sunny": "晴", "Clear": "晴",
-                    "Partly cloudy": "多云", "Cloudy": "阴",
-                    "Light rain": "小雨", "Moderate rain": "中雨",
-                    "Heavy rain": "大雨",
-                }
-                raw_weather = weather["weatherDesc"][0]["value"]
-                desc = weather_map.get(raw_weather, raw_weather)
-                text = "%s今天%s°，天气%s……带伞了没，笨蛋" % (city, temp, desc)
+                raw_weather = (weather.get("weatherDesc") or [{}])[0].get("value", "")
+                desc = weather_cn(raw_weather)
+                tip = weather_tip(raw_weather)
+                # 认不出的天气名不硬塞英文，只说温度
+                if desc:
+                    text = "%s今天%s°，%s。%s" % (city, temp, desc, tip)
+                else:
+                    text = "%s今天%s°。%s" % (city, temp, tip)
             except Exception as ex:
                 log("天气错误: %s: %s" % (type(ex).__name__, ex), logging.WARNING)
                 text = "天气查不到了……不是我不肯说，是它坏了"
