@@ -644,7 +644,7 @@ FOOD_ANIM = {
 
 # ===== 主动陪伴（第 23 批）=====
 # 触发条件（全部满足才说话）
-PROACTIVE_CHECK_SEC = 60           # 检查间隔（秒）
+PROACTIVE_CHECK_SEC = 7            # 主动搭话轮询间隔（秒，5~10）
 PROACTIVE_IDLE_MIN = 600           # 宠物已静默多久（秒）→ 10 分钟
 PROACTIVE_SAME_APP_MIN = 1200      # 同一应用连续用多久（秒）→ 20 分钟
 PROACTIVE_COOLDOWN_MIN = 900       # 两次主动说话最短间隔（秒）→ 15 分钟
@@ -2214,15 +2214,17 @@ def default_config():
         "pause_when_hidden": True,
         # 撞飞彩蛋（甩飞撞边缘时头部旋转）
         "smash_spin": True,
-        # 主动陪伴（定时主动说话）
+        # 旧「主动陪伴」（固定台词池）——保留字段兼容，不再使用
         "proactive": True,
-        # 主动陪伴阈值（分钟 / 次）
         "proactive_cfg": {
-            "idle_min": 10,        # 宠物静默多久（1~180 分钟）
-            "same_app_min": 20,    # 同一应用连续用多久（1~480 分钟）
-            "cooldown_min": 15,    # 两次主动说话间隔（1~240 分钟）
-            "daily_max": 8,        # 每天最多几次（1~50）
+            "idle_min": 10,
+            "same_app_min": 20,
+            "cooldown_min": 15,
+            "daily_max": 8,
         },
+        # 「主动搭话」（模型生成，工作时间段内发呆时触发）
+        # 具体默认值由 proactive.default_cfg() 提供，这里只放最小占位
+        "proactive_ai": {},
         # 「看看屏幕」配置
         "look_screen": {"vision_model": "", "vision_base": "", "vision_key": "",
                         "style": VISION_STYLE_DEFAULT,
@@ -2623,6 +2625,14 @@ def migrate_and_validate(raw):
                 issues.append("proactive_cfg.%s" % _k)
     elif pc is not None:
         issues.append("proactive_cfg")
+
+    # proactive_ai：主动搭话（结构复杂，交给 proactive.normalize_cfg 校验）
+    _pai = raw.get("proactive_ai")
+    if _pai is not None:
+        if isinstance(_pai, dict):
+            cfg["proactive_ai"] = _pai
+        else:
+            issues.append("proactive_ai")
 
     # pause_when_hidden / smash_spin / proactive
     for key in ("pause_when_hidden", "smash_spin", "proactive"):

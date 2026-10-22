@@ -2253,7 +2253,23 @@ class PetWindow(QWidget):
         return False
 
     # ---------- 鼠标事件 ----------
+    def _in_bubble_area(self, pt):
+        """点是否落在气泡区域（顶部 BUBBLE_H 高度内）。"""
+        try:
+            return 0 <= pt.y() <= BUBBLE_H and self.bubble_text and \
+                self.t * TICK / 1000.0 < self.bubble_until
+        except Exception:
+            return False
+
     def mousePressEvent(self, e):
+        # 主动搭话气泡：点一下 → 进聊天页并把这句话带进上下文
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._in_bubble_area(e.position().toPoint())):
+            try:
+                if self.app._on_proactive_clicked():
+                    return      # 已处理，不再触发拖拽/戳脸
+            except Exception:
+                pass
         # 提醒中被拖拽 → 取消回位，以用户拖到的位置为准
         if self.remind_origin is not None and e.button() == Qt.MouseButton.LeftButton:
             self.remind_user_moved = True

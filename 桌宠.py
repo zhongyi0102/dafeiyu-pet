@@ -56,6 +56,7 @@ from petcore.consts import mask_secrets, is_default_vision_system  # noqa: F401
 
 # 看看屏幕增强模块（场景分类 / OCR / 预处理 / 看屏记忆 / 视觉模型排序）
 import screen_vision as SV   # noqa: E402
+import proactive as PRO      # noqa: E402  主动搭话
 
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
                             CONFIG_PATH, CHAT_PATH, MEMORY_PATH, LOG_PATH,
@@ -731,6 +732,9 @@ class PetApp(QObject):
 
     # 天气查询结果回主线程（worker 线程只 emit）
     weather_done = Signal(str, int)
+
+    # 主动搭话：模型返回结果回主线程（line, 是否回来打招呼）
+    pro_active_say = Signal(str, bool)
     """全局唯一的东西：配置、托盘、菜单、聊天、记忆、提醒、节日、截屏守卫、
     系统监控、小游戏、用量。持有 1~N 个 PetWindow。"""
 
@@ -770,6 +774,8 @@ class PetApp(QObject):
         # 看看屏幕结果回主线程写聊天（worker 线程只 emit）
         self.look_to_chat.connect(self._on_look_to_chat)
         self.weather_done.connect(self._on_weather_done)
+        self.pro_active_say.connect(self._on_proactive_say)
+        # 气泡点击 → 主动搭话反馈（在 PetWindow 里判断是否点中气泡）
         self.main_pet = None
         self.chat_window = None
         self.memory_dialog = None
@@ -781,9 +787,19 @@ class PetApp(QObject):
         self._capture_hidden = False
         self._game_hidden = False
         # 主动陪伴状态
-        self._proactive_last = 0.0
-        self._proactive_count = 0
-        self._proactive_day = ""
+        # ---- 主动搭话 ----
+        self._pro_tracker = PRO.StateTracker()
+        self._pro_inside = False
+        self._pro_pending = None
+        self._pro_last_info = {}
+        self._pro_req_id = 0
+        try:
+            self._pro_state = PRO.RuntimeState(
+                os.path.join(APP_DIR, "proactive_state.json"))
+        except Exception as ex:
+            log("[主动] 初始化状态失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            self._pro_state = PRO.RuntimeState(os.path.join(APP_DIR, "_pro_tmp.json"))
         self._proc_last_name = ""
         self._proc_since = time.time()
         self._last_festival_hour = None
@@ -947,108 +963,223 @@ class PetApp(QObject):
         if ok:
             self.set_reminder_interval(mins)
 
-    # ---------- 主动陪伴（第 23 批）----------
-    def _proactive_cfg(self):
-        """主动陪伴是否开启（配置 + 功能开关双门控）。"""
+    # ---------- 主动搭话（工作时间段内、发呆时主动说一句）----------
+    def proactive_cfg(self):
+        """读「主动搭话」配置（补齐/夹紧，旧配置也兼容）。"""
         try:
-            return (bool(self.cfg.get("proactive", True))
-                    and self.is_enabled("idle_talk"))
-        except Exception:
-            return False
+            return PRO.normalize_cfg(self.cfg.get("proactive_ai"))
+        except Exception as ex:
+            log("[主动] 读配置失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return PRO.default_cfg()
 
-    def proactive_thresholds(self):
-        """读主动陪伴阈值（分钟/次），缺失回落默认，越界夹紧。"""
-        defaults = {"idle_min": PROACTIVE_IDLE_MIN // 60,
-                    "same_app_min": PROACTIVE_SAME_APP_MIN // 60,
-                    "cooldown_min": PROACTIVE_COOLDOWN_MIN // 60,
-                    "daily_max": PROACTIVE_DAILY_MAX}
-        limits = {"idle_min": (1, 180), "same_app_min": (1, 480),
-                  "cooldown_min": (1, 240), "daily_max": (1, 50)}
-        raw = self.cfg.get("proactive_cfg")
-        if not isinstance(raw, dict):
-            raw = {}
-        out = {}
-        for k, dv in defaults.items():
-            v = raw.get(k, dv)
-            lo, hi = limits[k]
-            try:
-                v = int(v)
-            except Exception:
-                v = dv
-            out[k] = max(lo, min(hi, v))
-        return out
+    def save_proactive_cfg(self, patch=None):
+        """写「主动搭话」配置（patch 为要合并的字段）。"""
+        cur = self.proactive_cfg()
+        if isinstance(patch, dict):
+            cur.update(patch)
+        self.cfg["proactive_ai"] = PRO.normalize_cfg(cur)
+        self.save_cfg()
+        return self.cfg["proactive_ai"]
 
-
-    def _same_app_seconds(self):
-        """当前前台应用连续使用了多久（秒）。同一进程不变就累加。"""
+    def _proactive_own_hwnds(self):
+        """桌宠自己的窗口句柄集合（这些不算「用户切换窗口」）。"""
+        out = []
         try:
-            title = self._foreground_title()
-            proc = (title.split("|")[0].strip() if "|" in title else title).strip()
+            for w in self.pets:
+                try:
+                    out.append(int(w.winId()))
+                except Exception:
+                    pass
+            for attr in ("settings_window", "chat_window", "memory_dialog",
+                         "rps_panel", "catch_win"):
+                w = getattr(self, attr, None)
+                if w is not None:
+                    try:
+                        out.append(int(w.winId()))
+                    except Exception:
+                        pass
         except Exception:
-            proc = ""
-        now = time.time()
-        if proc != getattr(self, "_proc_last_name", ""):
-            self._proc_last_name = proc
-            self._proc_since = now
+            pass
+        return tuple(out)
+
+    def _proactive_chat_ready(self):
+        """聊天 Key/地址/模型是否可用。返回 (ok, base, key, model)。"""
+        try:
+            base, key, model = self._chat_cfg()
+        except Exception:
+            return False, "", "", ""
+        ok = bool((key or "").strip() and (base or "").strip()
+                  and (model or "").strip())
+        return ok, base, key, model
+
+    def _proactive_cooldown_left(self, cfg):
+        """冷却剩余秒数（含「无视翻倍」的倍率）。"""
+        st = getattr(self, "_pro_state", None)
+        if st is None:
             return 0.0
-        return max(0.0, now - float(getattr(self, "_proc_since", now)))
-
-    def _proactive_pick_scene(self, now_dt):
-        """按当前情境挑场景，返回 (场景名, 台词池)。"""
-        hour = now_dt.hour
-        if hour >= 23 or hour < 5:
-            return "late_night", PROACTIVE_LINES["late_night"]
-        if hour in (11, 12, 17, 18):
-            return "meal", PROACTIVE_LINES["meal"]
-        if self._same_app_seconds() >= PROACTIVE_SAME_APP_MIN:
-            return "long_session", PROACTIVE_LINES["long_session"]
-        return "lonely", PROACTIVE_LINES["lonely"]
+        base = float(cfg.get("cooldown_min") or 0) * 60.0
+        mult = float(getattr(st, "interval_mult", 1.0) or 1.0)
+        need = base * mult
+        elapsed = time.time() - float(getattr(st, "last_fire_ts", 0.0) or 0.0)
+        return max(0.0, need - elapsed)
 
     def _proactive_tick(self):
-        """定时检查：满足条件就主动说一句。"""
-        if not self._proactive_cfg():
+        """定时轮询（只在工作时间段内真正工作，段外直接返回）。"""
+        cfg = self.proactive_cfg()
+        if not cfg.get("enabled"):
             return
-        if self.game_active or self.chat_paused:
+        # ① 时间段门控：段外完全不轮询
+        inside, _seg = PRO.in_work_session(cfg)
+        if not inside:
+            if getattr(self, "_pro_inside", False):
+                # 刚离开时间段：进行中的计时作废
+                self._pro_inside = False
+                if getattr(self, "_pro_tracker", None) is not None:
+                    self._pro_tracker.reset()
+                log("[主动] 离开工作时间段，计时作废")
             return
-        if self._in_dnd():
+        if not getattr(self, "_pro_inside", False):
+            # 刚进入时间段：计时清零
+            self._pro_inside = True
+            if getattr(self, "_pro_tracker", None) is None:
+                self._pro_tracker = PRO.StateTracker()
+            else:
+                self._pro_tracker.reset()
+            log("[主动] 进入工作时间段，计时清零")
+
+        # ② 其他暂停条件
+        if self.game_active or self.chat_paused or self._in_dnd():
             return
         pet = self.main_pet
         if pet is None or not pet.isVisible():
             return
-        if PROACTIVE_SKIP_SLEEP and getattr(pet, "_idle_stage", "") == "sleep":
+
+        # ③ 更新状态
+        tracker = self._pro_tracker
+        state, idle_sec, info = tracker.tick(
+            cfg["idle_min"], cfg["away_min"], self._proactive_own_hwnds())
+        self._pro_last_info = dict(info or {})
+
+        # ④ 回来打招呼
+        if (cfg.get("welcome_enabled")
+                and state == PRO.ACTIVE
+                and tracker.was_away()):
+            if self._pro_can_welcome(cfg):
+                self._pro_fire(cfg, info, 0, welcome=True)
+                return
+
+        if state != PRO.IDLE:
+            return
+        if not tracker.can_fire():
+            return          # 这次发呆已经搭过话
+
+        # ⑤ 本地过滤（命中就不调模型）
+        ready, base, key, model = self._proactive_chat_ready()
+        st = self._pro_state
+        st.roll_day()
+        reason = PRO.local_filter(
+            info, cfg, self._proactive_cooldown_left(cfg),
+            st.used, ready)
+        if reason:
+            log("[主动] 跳过：%s" % reason)
             return
 
-        # 读可调阈值（分钟 → 秒）
-        th = self.proactive_thresholds()
-        idle_sec = th["idle_min"] * 60
-        same_app_sec = th["same_app_min"] * 60
-        cooldown_sec = th["cooldown_min"] * 60
+        # ⑥ 调模型
+        tracker.mark_fired()
+        self._pro_fire(cfg, info, idle_sec, welcome=False)
 
-        now = time.time()
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        if self._proactive_day != today:
-            self._proactive_day = today
-            self._proactive_count = 0
-        if self._proactive_count >= th["daily_max"]:
-            return
-        if now - float(getattr(self, "_proactive_last", 0.0)) < cooldown_sec:
-            return
-        if pet._idle_seconds() < idle_sec:
-            return
-        long_app = self._same_app_seconds() >= same_app_sec
-        lonely = pet._idle_seconds() >= idle_sec
-        if not (long_app or lonely):
-            return
+    def _pro_can_welcome(self, cfg):
+        """回来打招呼是否允许（每日上限/冷却同样适用）。"""
+        ready, _b, _k, _m = self._proactive_chat_ready()
+        if not ready:
+            return False
+        st = self._pro_state
+        st.roll_day()
+        if st.used >= int(cfg.get("daily_max") or 0):
+            return False
+        if self._proactive_cooldown_left(cfg) > 0:
+            return False
+        return True
 
-        scene, pool = self._proactive_pick_scene(datetime.datetime.now())
-        text = self._pick_line(pool, "proactive_" + scene)
-        if not text:
+    def _pro_fire(self, cfg, info, idle_sec, welcome=False):
+        """真正调用模型（后台线程），成功后弹气泡。"""
+        ready, base, key, model = self._proactive_chat_ready()
+        if not ready:
             return
-        self._proactive_last = now
-        self._proactive_count = int(self._proactive_count) + 1
-        pet.say(text)
-        log("[主动] %s -> %s（今日第 %d 次）" % (scene, text[:24], self._proactive_count))
+        st = self._pro_state
+        recent = list(getattr(st, "recent", []) or [])
+        if welcome:
+            system, user = PRO.build_welcome_messages(cfg, info, recent)
+        else:
+            system, user = PRO.build_messages(cfg, info, idle_sec, recent)
+        timeout = 45
+        self._pro_req_id = getattr(self, "_pro_req_id", 0) + 1
+        rid = self._pro_req_id
 
+        def work():
+            text, err = PRO.call_chat(base, key, model, system, user,
+                                      timeout=timeout)
+            if err:
+                log("[主动] 调用失败（静默）：%s" % err)
+                return
+            line = PRO.clean_reply(text)
+            if not line:
+                log("[主动] 模型返回 SKIP（静默）")
+                return
+            if rid != getattr(self, "_pro_req_id", 0):
+                return
+            self.pro_active_say.emit(line, bool(welcome))
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_proactive_say(self, line, welcome):
+        """主线程：显示气泡 + 记录。"""
+        pet = self.main_pet
+        if pet is None:
+            return
+        try:
+            pet.say(line)
+            pet.bubble_until = pet.t * TICK / 1000.0 + 8.0   # 8 秒
+            pet.update()
+        except Exception as ex:
+            log("[主动] 显示失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return
+        st = self._pro_state
+        st.mark_fire(line)
+        self._pro_pending = {"line": line, "info": self._pro_last_info,
+                             "ts": time.time(), "welcome": welcome}
+        log("[主动] %s -> %s（今日第 %d 次）"
+            % ("打招呼" if welcome else "搭话", line[:30], st.used))
+
+    def _on_proactive_clicked(self):
+        """用户点了主动搭话的气泡：进聊天页并带上上下文。"""
+        pend = getattr(self, "_pro_pending", None)
+        if not pend:
+            return False
+        try:
+            self._pro_state.mark_clicked()
+        except Exception:
+            pass
+        self._pro_pending = None
+        # 带进聊天上下文
+        try:
+            self.open_chat()
+            cw = self.chat_window
+            if cw is not None:
+                info = pend.get("info") or {}
+                extra = ""
+                if info.get("proc"):
+                    extra = "（刚才在看 %s）" % info.get("proc")
+                cw.append_external("user", "[宠物主动搭话] " + pend.get("line", ""))
+                cw.append_external("assistant", pend.get("line", ""))
+                log("[主动] 已带入聊天上下文%s" % extra)
+        except Exception as ex:
+            log("[主动] 带入聊天失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+        return True
 
     # ---------- 提醒（第 18 批重做） ----------
     def _rem_extras(self):

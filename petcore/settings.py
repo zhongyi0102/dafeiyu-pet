@@ -201,6 +201,7 @@ class SettingsWindow(QDialog):
         ("balance", "余额"),
         ("chat", "聊天"),
         ("visual", "视觉"),
+        ("proactive", "主动搭话"),
         ("memory", "记忆"),
         ("general", "通用"),
         ("about", "关于"),
@@ -292,6 +293,7 @@ class SettingsWindow(QDialog):
         self._build_balance_page(self._pages["balance"])
         self._build_chat_page(self._pages["chat"])
         self._build_visual_page(self._pages["visual"])
+        self._build_proactive_page(self._pages["proactive"])
         self._build_general_page(self._pages["general"])
         self._build_memory_page(self._pages["memory"])
         self._build_about_page(self._pages["about"])
@@ -797,34 +799,7 @@ class SettingsWindow(QDialog):
                     lambda on: self._set_anim_cfg("smash_spin", bool(on)),
                     "高速甩飞撞到屏幕边缘时，头部跟随速度方向旋转，停稳后回正")
 
-        # ---- 主动陪伴 ----
-        line3 = QFrame()
-        line3.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line3)
-        self._check(lay, "主动陪伴", bool(self.app.cfg.get("proactive", True)),
-                    lambda on: self._set_anim_cfg("proactive", bool(on)),
-                    "宠物会自己找你说话：静默够久 + 距上次够久 → 主动冒一句。"
-                    "深夜/饭点/久坐会说不同的话；睡觉、免打扰、小游戏中不打扰。")
-        th = self.app.proactive_thresholds()
-        self._pro_sliders = {}
-        specs = (
-            ("idle_min", "静默多久", 1, 180, 1, "分钟",
-             "宠物多久没被理会时，才会主动说话"),
-            ("same_app_min", "同应用时长", 1, 480, 5, "分钟",
-             "同一个程序连续用多久算「坐太久」（会触发久坐台词）"),
-            ("cooldown_min", "两次间隔", 1, 240, 5, "分钟",
-             "两次主动说话之间至少隔多久，别太烦人"),
-            ("daily_max", "每天最多", 1, 50, 1, "次",
-             "一天最多主动几次，跨天自动重置"),
-        )
-        for key, label, lo, hi, step, suffix, desc in specs:
-            self._pro_sliders[key] = self._slider_row(
-                lay, label, th[key], lo, hi, step, None,
-                lambda v, k=key: self._set_proactive_th(key, int(v)), suffix)
-            hint = QLabel(desc)
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-            lay.addWidget(hint)
+        # 主动搭话已独立成页（见「主动搭话」）
 
         # ---- 帧序列动画 ----
         line2 = QFrame()
@@ -1034,14 +1009,6 @@ class SettingsWindow(QDialog):
                 w.apply_bubble_scale()
             except Exception:
                 pass
-
-    def _set_proactive_th(self, key, value):
-        cfg = self.app.cfg.get("proactive_cfg")
-        if not isinstance(cfg, dict):
-            cfg = self.app.proactive_thresholds()
-        cfg[key] = int(value)
-        self.app.cfg["proactive_cfg"] = cfg
-        self.app.save_cfg()
 
     def _set_anim_cfg(self, key, value):
         self.app.cfg[key] = value
@@ -3135,6 +3102,354 @@ class SettingsWindow(QDialog):
             self.app.cfg["city"] = text.strip()
             self.app.save_cfg()
             self.app.say_main("城市已设置为%s" % text.strip())
+
+    # ---------- 主动搭话页 ----------
+    def _build_proactive_page(self, lay):
+        self._title(lay, "主动搭话",
+                    "工作时间段内，检测到你在发呆时，宠物会主动说一句话。"
+                    "段外完全不检测。")
+        cfg = self.app.proactive_cfg()
+
+        # ---- 总开关 ----
+        self._check(lay, "启用主动搭话", bool(cfg.get("enabled")),
+                    lambda on: self._pro_save({"enabled": bool(on)}),
+                    "关闭后不检测、不调用模型。")
+
+        # ---- 工作时间段 ----
+        self._pro_line(lay)
+        _sec = self._pro_section(lay, "工作时间段", expanded=True)
+        self._pro_sessions_host = QWidget()
+        self._pro_sessions_lay = QVBoxLayout(self._pro_sessions_host)
+        self._pro_sessions_lay.setContentsMargins(0, 0, 0, 0)
+        self._pro_sessions_lay.setSpacing(6)
+        _sec.body_add(self._pro_sessions_host)
+        self._pro_render_sessions(cfg.get("sessions") or [])
+        _btn = QPushButton("添加时间段")
+        _btn.clicked.connect(self._pro_add_session)
+        _sec.body_add(_btn)
+        _sec.body_add(self._sub_hint(
+            "只在勾选的星期、且落在时间段内才检测。可添加多段。"))
+
+        # ---- 发呆 / 离开阈值 ----
+        self._pro_line(lay)
+        _sec2 = self._pro_section(lay, "状态阈值", expanded=True)
+        self._pro_idle = self._pro_slider(
+            _sec2, "发呆阈值", int(cfg.get("idle_min")), 1, 60, 1, "分钟",
+            "多久没动就当作在发呆（实际会在 ±20% 内随机浮动）")
+        self._pro_away = self._pro_slider(
+            _sec2, "离开阈值", int(cfg.get("away_min")), 2, 180, 1, "分钟",
+            "超过这个时间当作离开了，离开时不搭话")
+
+        # ---- 频率控制 ----
+        self._pro_line(lay)
+        _sec3 = self._pro_section(lay, "频率控制", expanded=True)
+        self._pro_cool = self._pro_slider(
+            _sec3, "冷却时间", int(cfg.get("cooldown_min")), 1, 180, 1, "分钟",
+            "两次搭话之间至少隔多久")
+        self._pro_daily = self._pro_slider(
+            _sec3, "每日上限", int(cfg.get("daily_max")), 1, 30, 1, "次",
+            "一天最多主动几次，跨天自动重置")
+
+        # ---- 隐私与过滤 ----
+        self._pro_line(lay)
+        _sec4 = self._pro_section(lay, "隐私与过滤", expanded=True)
+        self._pro_send_title = self._check(
+            _sec4.body_layout, "把前台窗口标题发给模型", bool(cfg.get("send_title")),
+            lambda on: self._pro_save({"send_title": bool(on)}),
+            "关闭后只发进程名，不发标题。")
+        _sec4.body_add(self._pro_sub_title("隐私黑名单"))
+        _sec4.body_add(self._sub_hint(
+            "命中这些词的窗口不搭话，标题也不会发出去。"))
+        self._pro_private = self._pro_word_editor(
+            _sec4, cfg.get("private_words") or [], self._pro_set_private)
+        _sec4.body_add(self._pro_sub_title("跳过关键词"))
+        _sec4.body_add(self._sub_hint(
+            "视频、游戏、会议等场景不搭话（命中就不调用模型，不耗额度）。"))
+        self._pro_skip = self._pro_word_editor(
+            _sec4, cfg.get("skip_words") or [], self._pro_set_skip)
+        _rst = QPushButton("恢复默认跳过词")
+        _rst.clicked.connect(self._pro_reset_skip)
+        _sec4.body_add(_rst)
+
+        # ---- 搭话提示词 ----
+        self._pro_line(lay)
+        _sec5 = self._pro_section(lay, "搭话提示词", expanded=False)
+        _sec5.body_add(self._sub_hint(
+            "作为 system 发给聊天模型。留空则用内置默认。"))
+        self._pro_prompt = QTextEdit()
+        self._pro_prompt.setMinimumHeight(150)
+        self._pro_prompt.setPlainText(cfg.get("prompt") or "")
+        self._pro_prompt.textChanged.connect(self._pro_on_prompt_edited)
+        _sec5.body_add(self._pro_prompt)
+        _prow = QHBoxLayout()
+        _pb = QPushButton("恢复默认提示词")
+        _pb.clicked.connect(self._pro_reset_prompt)
+        _prow.addWidget(_pb)
+        _prow.addStretch(1)
+        _sec5.body_add_layout(_prow)
+
+        # ---- 回来打招呼 ----
+        self._pro_line(lay)
+        _sec6 = self._pro_section(lay, "回来打招呼", expanded=False)
+        self._pro_welcome = self._check(
+            _sec6.body_layout, "从离开回来时打一声招呼",
+            bool(cfg.get("welcome_enabled")),
+            lambda on: self._pro_save({"welcome_enabled": bool(on)}),
+            "只调一次模型，同样受冷却与每日上限约束。")
+        self._pro_welcome_prompt = QTextEdit()
+        self._pro_welcome_prompt.setMinimumHeight(100)
+        self._pro_welcome_prompt.setPlainText(cfg.get("welcome_prompt") or "")
+        self._pro_welcome_prompt.textChanged.connect(
+            lambda: self._pro_save({"welcome_prompt":
+                                    self._pro_welcome_prompt.toPlainText()}))
+        _sec6.body_add(self._pro_welcome_prompt)
+        _wrow = QHBoxLayout()
+        _wb = QPushButton("恢复默认欢迎语")
+        _wb.clicked.connect(self._pro_reset_welcome)
+        _wrow.addWidget(_wb)
+        _wrow.addStretch(1)
+        _sec6.body_add_layout(_wrow)
+
+        # ---- 状态提示 ----
+        self._pro_line(lay)
+        self._pro_status = QLabel("")
+        self._pro_status.setWordWrap(True)
+        self._pro_status.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:2px;")
+        lay.addWidget(self._pro_status)
+        self._pro_refresh_status()
+        lay.addStretch(1)
+
+    # ---- 主动搭话页的小工具 ----
+    def _pro_line(self, lay):
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(f)
+
+    def _pro_section(self, lay, title, expanded=True):
+        sec = CollapsibleSection(title, expanded=expanded)
+        lay.addWidget(sec)
+        return sec
+
+    def _pro_sub_title(self, text):
+        w = QLabel(text)
+        w.setStyleSheet("color:#2f3542;font-size:11px;font-weight:bold;")
+        return w
+
+    def _pro_slider(self, sec, label, value, lo, hi, step, suffix, desc):
+        """滑块 + 数字框 + 说明（返回数字框，便于读取）。"""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        s = QSlider(Qt.Orientation.Horizontal)
+        s.setRange(lo, hi)
+        s.setSingleStep(step)
+        s.setPageStep(step * 5)
+        s.setValue(int(value))
+        s.setMinimumWidth(200)
+        h.addWidget(s, 1)
+        box = QSpinBox()
+        box.setRange(lo, hi)
+        box.setSingleStep(step)
+        box.setValue(int(value))
+        box.setFixedWidth(96)
+        box.setSuffix(" " + suffix)
+        h.addWidget(box)
+        sec.body_add(self._pro_form_row(label, row))
+        sec.body_add(self._sub_hint(desc))
+
+        key = {"发呆阈值": "idle_min", "离开阈值": "away_min",
+               "冷却时间": "cooldown_min", "每日上限": "daily_max"}.get(label)
+
+        def from_slider(v):
+            if box.value() != v:
+                box.blockSignals(True)
+                box.setValue(int(v))
+                box.blockSignals(False)
+            if key:
+                self._pro_save({key: int(v)})
+
+        def from_box(v):
+            if s.value() != v:
+                s.blockSignals(True)
+                s.setValue(int(v))
+                s.blockSignals(False)
+            if key:
+                self._pro_save({key: int(v)})
+
+        s.valueChanged.connect(from_slider)
+        box.valueChanged.connect(from_box)
+        return box
+
+    def _pro_form_row(self, label, widget):
+        """一行：左标签（固定宽）+ 右控件。"""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        lab = QLabel(label)
+        lab.setFixedWidth(96)
+        lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        h.addWidget(lab)
+        h.addWidget(widget, 1)
+        return row
+
+    def _pro_word_editor(self, sec, words, on_save):
+        """多行关键词编辑（一行一个）+ 增删按钮。返回 QPlainTextEdit。"""
+        ed = QTextEdit()
+        ed.setMinimumHeight(90)
+        ed.setPlainText("\n".join(str(w) for w in words))
+        ed.textChanged.connect(lambda: on_save(
+            [x.strip() for x in ed.toPlainText().split("\n") if x.strip()]))
+        sec.body_add(ed)
+        return ed
+
+    # ---- 时间段渲染 ----
+    def _pro_render_sessions(self, sessions):
+        while self._pro_sessions_lay.count():
+            it = self._pro_sessions_lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        self._pro_sessions = [dict(s) for s in sessions]
+        for idx, s in enumerate(self._pro_sessions):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+            st = QLineEdit(str(s.get("start") or "09:00"))
+            st.setFixedWidth(64)
+            st.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            en = QLineEdit(str(s.get("end") or "18:00"))
+            en.setFixedWidth(64)
+            en.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            h.addWidget(QLabel("从"))
+            h.addWidget(st)
+            h.addWidget(QLabel("到"))
+            h.addWidget(en)
+            # 星期复选
+            days = set(s.get("days") or [])
+            day_boxes = []
+            for di, dn in enumerate(("一", "二", "三", "四", "五", "六", "日")):
+                cb = QCheckBox(dn)
+                cb.setChecked(di in days)
+                cb.toggled.connect(
+                    lambda on, i=idx, d=di: self._pro_toggle_day(i, d, on))
+                h.addWidget(cb)
+                day_boxes.append(cb)
+            h.addStretch(1)
+            rm = QPushButton("删除")
+            rm.setFixedWidth(56)
+            rm.clicked.connect(lambda _=False, i=idx: self._pro_del_session(i))
+            h.addWidget(rm)
+
+            st.editingFinished.connect(
+                lambda i=idx, w=st: self._pro_set_session_time(i, "start", w.text()))
+            en.editingFinished.connect(
+                lambda i=idx, w=en: self._pro_set_session_time(i, "end", w.text()))
+            self._pro_sessions_lay.addWidget(row)
+
+    def _pro_toggle_day(self, idx, day, on):
+        if idx >= len(getattr(self, "_pro_sessions", [])):
+            return
+        days = set(self._pro_sessions[idx].get("days") or [])
+        if on:
+            days.add(day)
+        else:
+            days.discard(day)
+        self._pro_sessions[idx]["days"] = sorted(days)
+        self._pro_save({"sessions": self._pro_sessions})
+
+    def _pro_set_session_time(self, idx, key, text):
+        if idx >= len(getattr(self, "_pro_sessions", [])):
+            return
+        t = (text or "").strip()
+        if not re.match(r"^\d{1,2}:\d{2}$", t):
+            # 还原
+            self._pro_render_sessions(self._pro_sessions)
+            return
+        hh, mm = t.split(":")
+        t = "%02d:%02d" % (int(hh), int(mm))
+        self._pro_sessions[idx][key] = t
+        self._pro_save({"sessions": self._pro_sessions})
+        self._pro_render_sessions(self._pro_sessions)
+
+    def _pro_add_session(self):
+        cur = list(getattr(self, "_pro_sessions", []) or [])
+        cur.append({"start": "09:00", "end": "18:00", "days": [0, 1, 2, 3, 4]})
+        self._pro_save({"sessions": cur})
+        self._pro_render_sessions(cur)
+
+    def _pro_del_session(self, idx):
+        cur = list(getattr(self, "_pro_sessions", []) or [])
+        if 0 <= idx < len(cur):
+            cur.pop(idx)
+        if not cur:
+            cur = [{"start": "09:00", "end": "18:00", "days": [0, 1, 2, 3, 4]}]
+        self._pro_save({"sessions": cur})
+        self._pro_render_sessions(cur)
+
+    # ---- 保存 ----
+    def _pro_save(self, patch):
+        try:
+            self.app.save_proactive_cfg(patch)
+            self._pro_refresh_status()
+        except Exception as ex:
+            log("[设置] 保存主动搭话配置失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _pro_set_private(self, words):
+        self._pro_save({"private_words": words})
+
+    def _pro_set_skip(self, words):
+        self._pro_save({"skip_words": words})
+
+    def _pro_on_prompt_edited(self):
+        self._pro_save({"prompt": self._pro_prompt.toPlainText()})
+
+    def _pro_reset_skip(self):
+        import proactive as _P
+        self._pro_save({"skip_words": list(_P.DEFAULT_SKIP_WORDS)})
+        self._pro_skip.blockSignals(True)
+        self._pro_skip.setPlainText("\n".join(_P.DEFAULT_SKIP_WORDS))
+        self._pro_skip.blockSignals(False)
+
+    def _pro_reset_prompt(self):
+        import proactive as _P
+        self._pro_prompt.blockSignals(True)
+        self._pro_prompt.setPlainText(_P.DEFAULT_PROMPT)
+        self._pro_prompt.blockSignals(False)
+        self._pro_save({"prompt": _P.DEFAULT_PROMPT})
+
+    def _pro_reset_welcome(self):
+        import proactive as _P
+        self._pro_welcome_prompt.blockSignals(True)
+        self._pro_welcome_prompt.setPlainText(_P.DEFAULT_WELCOME_PROMPT)
+        self._pro_welcome_prompt.blockSignals(False)
+        self._pro_save({"welcome_prompt": _P.DEFAULT_WELCOME_PROMPT})
+
+    def _pro_refresh_status(self):
+        try:
+            cfg = self.app.proactive_cfg()
+            inside, seg = False, -1
+            try:
+                import proactive as _P
+                inside, seg = _P.in_work_session(cfg)
+            except Exception:
+                pass
+            st = getattr(self.app, "_pro_state", None)
+            used = getattr(st, "used", 0)
+            bits = []
+            bits.append("当前%s工作时间段" % ("在" if inside else "不在"))
+            bits.append("今日已搭话 %d / %d 次" % (used, cfg.get("daily_max", 0)))
+            if cfg.get("enabled"):
+                bits.append("已启用")
+            else:
+                bits.append("未启用")
+            self._pro_status.setText(" · ".join(bits))
+        except Exception:
+            pass
 
     # ---------- 记忆页 ----------
     def _build_memory_page(self, lay):
