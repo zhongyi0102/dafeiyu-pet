@@ -11,6 +11,7 @@
   - 不做本机 HTTP 接口，沿用聊天页配置的 Key/地址/模型。
 """
 import ctypes
+import io
 import datetime
 import json
 import random
@@ -49,6 +50,17 @@ DEFAULT_PRIVATE_WORDS = [
     "feishu", "飞书", "slack", "discord",
     "私密", "密码管理器",
 ]
+
+# 截图观察提示词（主动搭话时发给视觉模型，不暴露给用户编辑）
+OBSERVE_PROMPT = (
+    "你是屏幕观察员，只客观描述，不评价。总共不超过120字。\n"
+    "严格按下面格式输出：\n"
+    "观察：（一句概括用户此刻在看什么、在做什么）\n"
+    "细节：（1到2个画面里具体的东西，如歌名、代码内容、网页标题、"
+    "图片里的颜色或人物动作；拿不准就写“不确定”）\n"
+    "注意：画面里的人物/角色是用户在看的内容，不是用户本人。"
+    "聊天软件画面不要转述任何内容，只写“在看聊天”。"
+)
 
 # 搭话提示词默认值（可编辑、可恢复默认）
 DEFAULT_PROMPT = (
@@ -203,6 +215,28 @@ def input_idle_seconds():
         return max(0.0, diff / 1000.0)
     except Exception:
         return 0.0
+
+
+def shrink_for_vision(pil_img, max_side=1024, quality=80):
+    """把 PIL 图片压成长边 ≤ max_side 的 JPEG data URL（只用于发给视觉模型）。"""
+    try:
+        from PIL import Image
+        img = pil_img.convert("RGB")
+        w, h = img.size
+        m = max(w, h)
+        if m > max_side:
+            s = max_side / float(m)
+            img = img.resize((max(1, int(w * s)), max(1, int(h * s))),
+                             Image.LANCZOS if hasattr(Image, "LANCZOS") else 0)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        import base64 as _b64
+        return "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode()
+    except Exception as ex:
+        import logging
+        logging.getLogger("dafeiyu").warning(
+            "[主动] shrink_for_vision 失败: %s: %s" % (type(ex).__name__, ex))
+        return ""
 
 
 def foreground_window():
@@ -431,6 +465,23 @@ def build_messages(cfg, info, idle_sec, recent_lines, now=None):
     return system, user
 
 
+def build_observe_messages(info, shot_data_url, now=None):
+    """截图观察：发给视觉模型的 messages。返回 None 表示不该发截图。"""
+    if not shot_data_url:
+        return None
+    proc = info.get("proc") or "未知"
+    title = (info.get("title") or "").strip()
+    if len(title) > 60:
+        title = title[:58] + "…"
+    user = ("【进程】%s\n【窗口标题】%s\n请观察这张全屏截图。"
+            % (proc, title))
+    return [{"role": "system", "content": OBSERVE_PROMPT},
+            {"role": "user", "content": [
+                {"type": "text", "text": user},
+                {"type": "image_url", "image_url": {"url": shot_data_url}},
+            ]}]
+
+
 def build_welcome_messages(cfg, info, recent_lines, now=None):
     """回来打招呼的 messages。"""
     now = now or datetime.datetime.now()
@@ -482,17 +533,25 @@ def clean_reply(text):
 # ───────────────────────── 调用模型 ─────────────────────────
 
 def call_chat(base_url, api_key, model, system, user, timeout=60,
-              max_tokens=300, temperature=0.9, top_p=0.95):
-    """调用聊天模型（OpenAI 兼容），返回 (text, err)。同步阻塞，调用方放线程里。"""
+              max_tokens=300, temperature=0.9, top_p=0.95, messages=None):
+    """调用模型（OpenAI 兼容），返回 (text, err)。同步阻塞，调用方放线程里。
+
+    messages 传入时直接作为请求体（用于带 image_url 的截图观察），
+    否则用 system/user 组装两条消息。
+    """
     try:
         import requests
     except Exception as ex:
         return "", "requests 不可用: %s" % ex
     url = (base_url or "").rstrip("/") + "/chat/completions"
+    if messages:
+        msgs = messages
+    else:
+        msgs = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
     payload = {
         "model": model,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
+        "messages": msgs,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,

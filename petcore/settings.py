@@ -12,6 +12,7 @@ import os
 import random
 import re
 import sys
+import io
 import time
 
 from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QThread, Signal,
@@ -3147,7 +3148,7 @@ class SettingsWindow(QDialog):
 
         # ---- 频率控制 ----
         self._pro_line(lay)
-        _sec3 = self._pro_section(lay, "频率控制", expanded=True)
+        _sec3 = self._pro_section(lay, "频率控制", expanded=False)
         self._pro_cool = self._pro_slider(
             _sec3, "冷却时间", int(cfg.get("cooldown_min")), 1, 180, 1, "分钟",
             "两次搭话之间至少隔多久")
@@ -3157,7 +3158,7 @@ class SettingsWindow(QDialog):
 
         # ---- 隐私与过滤 ----
         self._pro_line(lay)
-        _sec4 = self._pro_section(lay, "隐私与过滤", expanded=True)
+        _sec4 = self._pro_section(lay, "隐私与过滤", expanded=False)
         self._pro_send_title = self._check(
             _sec4.body_layout, "把前台窗口标题发给模型", bool(cfg.get("send_title")),
             lambda on: self._pro_save({"send_title": bool(on)}),
@@ -3182,7 +3183,7 @@ class SettingsWindow(QDialog):
         _sec5.body_add(self._sub_hint(
             "作为 system 发给聊天模型。留空则用内置默认。"))
         self._pro_prompt = QTextEdit()
-        self._pro_prompt.setMinimumHeight(150)
+        self._pro_prompt.setMinimumHeight(110)
         self._pro_prompt.setPlainText(cfg.get("prompt") or "")
         self._pro_prompt.textChanged.connect(self._pro_on_prompt_edited)
         _sec5.body_add(self._pro_prompt)
@@ -3202,7 +3203,7 @@ class SettingsWindow(QDialog):
             lambda on: self._pro_save({"welcome_enabled": bool(on)}),
             "只调一次模型，同样受冷却与每日上限约束。")
         self._pro_welcome_prompt = QTextEdit()
-        self._pro_welcome_prompt.setMinimumHeight(100)
+        self._pro_welcome_prompt.setMinimumHeight(72)
         self._pro_welcome_prompt.setPlainText(cfg.get("welcome_prompt") or "")
         self._pro_welcome_prompt.textChanged.connect(
             lambda: self._pro_save({"welcome_prompt":
@@ -3220,7 +3221,8 @@ class SettingsWindow(QDialog):
         _sec7 = self._pro_section(lay, "测试", expanded=True)
         _sec7.body_add(self._sub_hint(
             "忽略工作时间段、发呆阈值和冷却，直接调一次模型看效果。"
-            "不会计入每日次数，也不会被无视惩罚影响。"))
+            "会自动截一张全屏图让视觉模型先看（用「视觉」页配置；"
+            "没配视觉模型则只发文字）。不会计入每日次数。"))
         _trow = QHBoxLayout()
         self._pro_test_btn = QPushButton("测试搭话")
         self._pro_test_btn.setToolTip("立刻调一次模型，结果显示在下方")
@@ -3346,7 +3348,7 @@ class SettingsWindow(QDialog):
     def _pro_word_editor(self, sec, words, on_save):
         """多行关键词编辑（一行一个）+ 增删按钮。返回 QPlainTextEdit。"""
         ed = QTextEdit()
-        ed.setMinimumHeight(90)
+        ed.setMinimumHeight(64)
         ed.setPlainText("\n".join(str(w) for w in words))
         ed.textChanged.connect(lambda: on_save(
             [x.strip() for x in ed.toPlainText().split("\n") if x.strip()]))
@@ -3540,13 +3542,56 @@ class SettingsWindow(QDialog):
         # 预览要发送的内容（可折叠显示在结果里）
         preview = user if len(user) <= 300 else user[:300] + "…"
 
+        # 截全屏（与正式触发一致）：视觉模型先看，观察结果并进 user
+        shot_img = None
+        try:
+            from PySide6.QtCore import QBuffer, QIODevice
+            from PySide6.QtWidgets import QApplication as _QA
+            screen = _QA.screenAt(_QA.primaryScreen().geometry().center()) or \
+                _QA.primaryScreen()
+            pix = screen.grabWindow(0)
+            if pix and not pix.isNull():
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                pix.save(buf, "PNG")
+                from PIL import Image as _PIL
+                shot_img = _PIL.open(io.BytesIO(bytes(buf.data()))).convert("RGB")
+                buf.close()
+        except Exception:
+            shot_img = None
+
         import threading
         self._pro_test_seq = getattr(self, "_pro_test_seq", 0) + 1
         seq = self._pro_test_seq
 
         def work():
             t0 = time.time()
-            text, err = _P.call_chat(base, key, model, system, user, timeout=45)
+            observe_text = ""
+            if shot_img is not None:
+                # 视觉模型观察（用视觉页配置）
+                try:
+                    _ls = self.app.cfg.get("look_screen") or {}
+                    _vb = (_ls.get("vision_base") or "").strip()
+                    _vk = (_ls.get("vision_key") or "").strip()
+                    _vm = (_ls.get("vision_model") or "").strip()
+                    if _vb and _vk and _vm:
+                        from petcore.consts import LOOK_SCREEN_QUALITY_DEFAULT
+                        du = _P.shrink_for_vision(
+                            shot_img, max_side=1024,
+                            quality=int(_ls.get("quality")
+                                        or LOOK_SCREEN_QUALITY_DEFAULT))
+                        omsg = _P.build_observe_messages(info, du)
+                        if omsg:
+                            obs, _oerr = _P.call_chat(
+                                _vb, _vk, _vm, "", omsg,
+                                timeout=30, max_tokens=200, temperature=0.2)
+                            if obs:
+                                observe_text = obs.strip()
+                except Exception:
+                    observe_text = ""
+            user2 = user + ("\n\n【屏幕观察】\n" + observe_text
+                            if observe_text else "")
+            text, err = _P.call_chat(base, key, model, system, user2, timeout=45)
             dt = time.time() - t0
             if seq != getattr(self, "_pro_test_seq", 0):
                 return          # 已取消/作废
@@ -3584,7 +3629,7 @@ class SettingsWindow(QDialog):
         self._pro_set_test_out(
             "✓ %.1fs\n\n【宠物会说】\n%s\n\n【发送内容】\n%s"
             % (dt, line, preview), "#1a7f37")
-        # 真实弹气泡（走测试专用路径，不计入每日次数、不写记忆）
+        # 真实弹气泡（走测试专用路径，不计入每日次数、不写搭话记忆）
         if real:
             try:
                 pet = self.app.main_pet
@@ -3593,6 +3638,18 @@ class SettingsWindow(QDialog):
                     # 与正式主动搭话一致：8 秒
                     pet.bubble_until = pet.t * TICK / 1000.0 + 8.0
                     pet.update()
+            except Exception:
+                pass
+            # 同步写进聊天（与正式搭话一致）
+            try:
+                label = "[主动打招呼]" if welcome else "[主动搭话]"
+                pairs = [("user", label), ("assistant", line)]
+                cw = self.app.chat_window
+                if cw is not None:
+                    for role, content in pairs:
+                        cw.append_external(role, content)
+                else:
+                    self.app._append_pairs_to_chat_file(pairs)
             except Exception:
                 pass
 

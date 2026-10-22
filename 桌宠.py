@@ -1066,7 +1066,8 @@ class PetApp(QObject):
                 and state == PRO.ACTIVE
                 and tracker.was_away()):
             if self._pro_can_welcome(cfg):
-                self._pro_fire(cfg, info, 0, welcome=True)
+                _, pil = self._pro_grab_fullscreen_jpg()
+                self._pro_fire(cfg, info, 0, welcome=True, shot_img=pil)
                 return
 
         if state != PRO.IDLE:
@@ -1085,9 +1086,10 @@ class PetApp(QObject):
             log("[主动] 跳过：%s" % reason)
             return
 
-        # ⑥ 调模型
+        # ⑥ 调模型（先在主线程截全屏，发给视觉模型观察）
         tracker.mark_fired()
-        self._pro_fire(cfg, info, idle_sec, welcome=False)
+        _, pil = self._pro_grab_fullscreen_jpg()
+        self._pro_fire(cfg, info, idle_sec, welcome=False, shot_img=pil)
 
     def _pro_can_welcome(self, cfg):
         """回来打招呼是否允许（每日上限/冷却同样适用）。"""
@@ -1102,8 +1104,35 @@ class PetApp(QObject):
             return False
         return True
 
-    def _pro_fire(self, cfg, info, idle_sec, welcome=False):
-        """真正调用模型（后台线程），成功后弹气泡。"""
+    def _pro_grab_fullscreen_jpg(self):
+        """截当前屏幕全屏，返回 (QPixmap, PIL.Image)。失败返回 (None, None)。
+
+        只在内存里，不落盘。截图前桌宠会短暂隐藏，避免拍到宠物自己。
+        """
+        try:
+            screen = self._screen_under_cursor()
+            pix, dpr = self._grab_screen_pixmap(screen)
+            if pix is None or pix.isNull():
+                return None, None
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            pix.save(buf, "PNG")
+            raw = bytes(buf.data())
+            buf.close()
+            from PIL import Image as _PILImage
+            img = _PILImage.open(io.BytesIO(raw)).convert("RGB")
+            return pix, img
+        except Exception as ex:
+            log("[主动] 截屏失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return None, None
+
+    def _pro_fire(self, cfg, info, idle_sec, welcome=False, shot_img=None):
+        """真正调用模型（后台线程），成功后弹气泡。
+
+        shot_img: PIL.Image（主线程截好的全屏图）。None 则不发截图。
+        流程：视觉模型先「看」→ 把观察结果并进聊天消息 → 聊天模型说话。
+        """
         ready, base, key, model = self._proactive_chat_ready()
         if not ready:
             return
@@ -1113,12 +1142,58 @@ class PetApp(QObject):
             system, user = PRO.build_welcome_messages(cfg, info, recent)
         else:
             system, user = PRO.build_messages(cfg, info, idle_sec, recent)
+
+        # 截图观察（聊天场景/黑名单在 _proactive_tick 的本地过滤已拦，
+        # 这里再兜底一次：微信/QQ 等聊天进程不发截图）
+        observe_msgs = None
+        vbase, vkey, vmodel = "", "", ""
+        try:
+            proc_low = (info.get("proc") or "").lower()
+            private_hit = PRO._hit("%s %s" % (info.get("proc") or "",
+                                              info.get("title") or ""),
+                                   cfg.get("private_words") or [])
+            if shot_img is not None and not private_hit and \
+                    not any(k in proc_low for k in
+                            ("wechat", "weixin", "qq", "telegram",
+                             "dingtalk", "feishu", "lark", "discord")):
+                _ls = self.cfg.get("look_screen") or {}
+                vbase = (vbase or (_ls.get("vision_base") or "")).strip()
+                vkey = (vkey or (_ls.get("vision_key") or "")).strip()
+                vmodel = (vmodel or (_ls.get("vision_model") or "")).strip()
+                if vbase and vkey and vmodel:
+                    from petcore.consts import LOOK_SCREEN_QUALITY_DEFAULT
+                    data_url = PRO.shrink_for_vision(
+                        shot_img, max_side=1024,
+                        quality=int(_ls.get("quality")
+                                    or LOOK_SCREEN_QUALITY_DEFAULT))
+                    observe_msgs = PRO.build_observe_messages(info, data_url)
+        except Exception as ex:
+            log("[主动] 组装截图观察失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            observe_msgs = None
+
         timeout = 45
+        vtimeout = min(45, int((self.cfg.get("look_screen") or {})
+                               .get("timeout") or 30))
         self._pro_req_id = getattr(self, "_pro_req_id", 0) + 1
         rid = self._pro_req_id
 
         def work():
-            text, err = PRO.call_chat(base, key, model, system, user,
+            observe_text = ""
+            if observe_msgs:
+                obs, oerr = PRO.call_chat(vbase, vkey, vmodel, "", "",
+                                          timeout=vtimeout, max_tokens=200,
+                                          temperature=0.2, top_p=1.0,
+                                          messages=observe_msgs)
+                if obs:
+                    observe_text = obs.strip()
+                elif oerr:
+                    log("[主动] 截图观察失败（降级为无观察继续）：%s" % oerr)
+            # 把观察并进聊天 user 消息
+            user2 = user
+            if observe_text:
+                user2 = user + "\n\n【屏幕观察】\n" + observe_text
+            text, err = PRO.call_chat(base, key, model, system, user2,
                                       timeout=timeout)
             if err:
                 log("[主动] 调用失败（静默）：%s" % err)
@@ -1151,6 +1226,19 @@ class PetApp(QObject):
         st.mark_fire(line)
         self._pro_pending = {"line": line, "info": self._pro_last_info,
                              "ts": time.time(), "welcome": welcome}
+        # 写入聊天（与「看看屏幕」一致：聊天窗口开着就实时追加，否则写文件）
+        try:
+            label = "[主动打招呼]" if welcome else "[主动搭话]"
+            pairs = [("user", label), ("assistant", line)]
+            cw = self.chat_window
+            if cw is not None:
+                for role, content in pairs:
+                    cw.append_external(role, content)
+            else:
+                self._append_pairs_to_chat_file(pairs)
+        except Exception as ex:
+            log("[主动] 写聊天失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
         log("[主动] %s -> %s（今日第 %d 次）"
             % ("打招呼" if welcome else "搭话", line[:30], st.used))
 
