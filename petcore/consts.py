@@ -418,6 +418,22 @@ LOOK_SCREEN_ANTI_HALLUCINATION_HELP = (
     "  4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
     "  5. 不确定的部分直接跳过，宁少勿编。"
 )
+
+# 视觉请求 system 的默认内容（可在设置页「视觉 → 识别规则」修改）
+# 注意：描述风格的长度句由程序自动追加在最末尾，不属于这段
+VISION_SYSTEM_DEFAULT = (
+    "你是屏幕观察员。客观描述画面内容和用户可能在做的事，"
+    "不使用任何角色语气，不评论。\n"
+    "识别时严格遵守以下规则，避免臆编：\n"
+    "1. 只描述画面里真实可见的内容，一个字都不推测。\n"
+    "2. 不凭外观猜测作品名、游戏名、动画名、人物名、门派名、地名；"
+    "但画面里有文字明确写出来的，可以直接引用。\n"
+    "3. 不编造画面外的剧情、前后文、角色关系。\n"
+    "4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
+    "5. 不确定的部分直接跳过，宁少勿编。"
+)
+# 视觉请求的 user 消息固定部分（配合 system 使用）
+VISION_USER_PROMPT = "描述这张屏幕截图。"
 # 视觉描述请求：只描述可见内容（两步流程第一步用）
 LOOK_SCREEN_PROMPT = (
     "描述这张屏幕截图。"
@@ -2081,6 +2097,7 @@ def default_config():
                         "style": VISION_STYLE_DEFAULT,
                         "style": VISION_STYLE_DEFAULT,
                         "max_tokens": VISION_TOKENS_DEFAULT,
+                        "vision_system": VISION_SYSTEM_DEFAULT,
                         "max_side": LOOK_SCREEN_SIDE_DEFAULT,
                         "quality": LOOK_SCREEN_QUALITY_DEFAULT,
                         "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
@@ -2494,6 +2511,14 @@ def migrate_and_validate(raw):
                 issues.append("look_screen.%s" % k)
     elif ls is not None:
         issues.append("look_screen")
+
+    # look_screen.vision_system（识别规则，字符串，空则回落默认）
+    _vsys = ls.get("vision_system") if isinstance(ls, dict) else None
+    if isinstance(_vsys, str) and _vsys.strip():
+        cfg["look_screen"]["vision_system"] = _vsys[:8000]
+    elif _vsys is not None and not isinstance(_vsys, str):
+        issues.append("look_screen.vision_system")
+
 
     # look_screen.max_side / quality / timeout（视觉请求限制）
     for _k, _lo, _hi in (("max_side", LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX),

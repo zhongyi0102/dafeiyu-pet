@@ -1385,13 +1385,49 @@ class SettingsWindow(QDialog):
                     "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
 
 
-        # 反幻觉规则（展示给用户看，说明识别时会遵守什么）
-        _anti = QLabel(LOOK_SCREEN_ANTI_HALLUCINATION_HELP)
-        _anti.setWordWrap(True)
-        _anti.setStyleSheet(
-            "color:#5a6070;font-size:11px;margin-left:22px;margin-top:4px;"
-            "background:#f5f7fb;border-radius:6px;padding:8px;")
-        lay.addWidget(_anti)
+        # ---- 识别规则（视觉请求 system，可编辑）----
+        self._vision_rule_title = QPushButton("识别规则")
+        self._vision_rule_title.setCheckable(True)
+        self._vision_rule_title.setChecked(True)   # 默认展开
+        self._vision_rule_title.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._vision_rule_title.setStyleSheet(
+            "QPushButton{border:none;background:transparent;text-align:left;"
+            "font-weight:600;font-size:13px;color:#2f3542;padding:4px 0;}"
+            "QPushButton:hover{color:#1a7f37;}")
+        self._vision_rule_title.setToolTip("点击展开 / 收起")
+        self._vision_rule_title.clicked.connect(self._toggle_vision_rule)
+        lay.addWidget(self._vision_rule_title)
+
+        _rule_hint = QLabel("这段会作为视觉请求的 system，长度句自动追加在末尾")
+        _rule_hint.setWordWrap(True)
+        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(_rule_hint)
+
+        self.vision_rule_edit = QTextEdit()
+        self.vision_rule_edit.setFixedHeight(120)   # 约 6 行
+        self.vision_rule_edit.setPlaceholderText("留空则使用内置默认规则")
+        self.vision_rule_edit.setStyleSheet(
+            "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
+            "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
+        lay.addWidget(self.vision_rule_edit)
+
+        _rrow = QHBoxLayout()
+        _rrow.addSpacing(22)
+        self._vision_rule_save = QPushButton("保存规则")
+        self._vision_rule_save.clicked.connect(self._save_vision_rule)
+        _rrow.addWidget(self._vision_rule_save)
+        self._vision_rule_reset = QPushButton("恢复默认")
+        self._vision_rule_reset.clicked.connect(self._reset_vision_rule)
+        _rrow.addWidget(self._vision_rule_reset)
+        self._vision_rule_state = QLabel("")
+        self._vision_rule_state.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _rrow.addWidget(self._vision_rule_state, 1)
+        lay.addLayout(_rrow)
+
+        # 编辑时实时提示「已修改」
+        self.vision_rule_edit.textChanged.connect(self._on_vision_rule_edited)
+
+
 
 
         # 全部字段放进同一个 QFormLayout（标签右对齐、同宽；控件左对齐）
@@ -1440,11 +1476,6 @@ class SettingsWindow(QDialog):
         # 可编辑：手输模型名时也要立即保存
         self.vision_model.editTextChanged.connect(self._on_vision_model_changed)
         form.addRow("视觉模型", self.vision_model)
-        self._vision_model_hint = QLabel("")
-        self._vision_model_hint.setWordWrap(True)
-        self._vision_model_hint.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._vision_model_hint)
 
         # 4) 描述风格
         self.vision_style = QComboBox()
@@ -1470,7 +1501,11 @@ class SettingsWindow(QDialog):
                 LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX, LOOK_SCREEN_SIDE_STEP,
                 lambda v: self._on_vision_limit_changed("max_side", int(v)), "px")
         form.addRow("图片最长边", self._vision_side_field)
-        lay.addWidget(self._hint_label("最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。"))
+        self._vision_side_field.setToolTip(
+            "最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。")
+        self.vision_side_slider.setToolTip(
+            "最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。")
+        self.vision_side_spin.setToolTip("截图长边上限（像素）")
 
         # 7) 图片质量
         self._vision_quality_field, self.vision_quality_slider, self.vision_quality_spin = \
@@ -1480,7 +1515,11 @@ class SettingsWindow(QDialog):
                 LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX, 5,
                 lambda v: self._on_vision_limit_changed("quality", int(v)), "")
         form.addRow("图片质量", self._vision_quality_field)
-        lay.addWidget(self._hint_label("JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。"))
+        self._vision_quality_field.setToolTip(
+            "JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。")
+        self.vision_quality_slider.setToolTip(
+            "JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。")
+        self.vision_quality_spin.setToolTip("JPEG 质量")
 
         # 8) 请求超时
         self.vision_timeout_spin = QSpinBox()
@@ -1494,7 +1533,9 @@ class SettingsWindow(QDialog):
         self.vision_timeout_spin.valueChanged.connect(
             lambda v: self._on_vision_limit_changed("timeout", int(v)))
         form.addRow("请求超时", self.vision_timeout_spin)
-        lay.addWidget(self._hint_label("视觉模型多久没响应就放弃（10~120 秒）。模型带思考过程时建议调大。"))
+        self.vision_timeout_spin.setToolTip(
+            "视觉模型多久没响应就放弃（10~120 秒）。"
+            "模型带思考过程时建议调大。")
 
         lay.addLayout(form)
 
@@ -1506,12 +1547,12 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._vision_style_hint)
 
         # 视觉上限说明
-        _vt_hint = QLabel(
-            "视觉模型单次最多输出多少 token。描述风格决定「说多长」，"
-            "这个值决定「最多能说多长」。若所选模型带思考过程，请调大。")
-        _vt_hint.setWordWrap(True)
-        _vt_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(_vt_hint)
+        _vt_tip = ("视觉模型单次最多输出多少 token。"
+                   "描述风格决定「说多长」，这个值决定「最多能说多长」。"
+                   "若所选模型带思考过程，请调大。")
+        self._vision_tokens_field.setToolTip(_vt_tip)
+        self.vision_tokens_slider.setToolTip(_vt_tip)
+        self.vision_tokens_spin.setToolTip(_vt_tip)
 
         # 按钮：保存 / 测试 / 取消 / 清空
         vbtn_row = QHBoxLayout()
@@ -1544,6 +1585,81 @@ class SettingsWindow(QDialog):
         self._vision_fill_from_cfg()
 
         lay.addStretch(1)
+    # ---------- 识别规则（视觉 system） ----------
+    def _rule_from_widget(self):
+        """从文本框读规则（空则回落默认）。"""
+        try:
+            t = (self.vision_rule_edit.toPlainText() or "").strip()
+        except Exception:
+            t = ""
+        return t or VISION_SYSTEM_DEFAULT
+
+    def _saved_rule(self):
+        """配置里保存的规则（空则默认）。"""
+        ls = self.app.cfg.get("look_screen") or {}
+        return (ls.get("vision_system") or "").strip() or VISION_SYSTEM_DEFAULT
+
+    def _toggle_vision_rule(self):
+        """折叠 / 展开规则文本框。"""
+        show = self._vision_rule_title.isChecked()
+        self.vision_rule_edit.setVisible(show)
+        self._vision_rule_save.setVisible(show)
+        self._vision_rule_reset.setVisible(show)
+        self._vision_rule_state.setVisible(show)
+
+    def _on_vision_rule_edited(self):
+        """实时提示：默认 / 已修改未保存。"""
+        try:
+            cur = (self.vision_rule_edit.toPlainText() or "").strip()
+        except Exception:
+            cur = ""
+        saved = self._saved_rule()
+        if not cur or cur == VISION_SYSTEM_DEFAULT.strip():
+            if saved == VISION_SYSTEM_DEFAULT.strip():
+                self._vision_rule_state.setText("默认")
+                self._vision_rule_state.setStyleSheet("color:#8a8f9c;font-size:11px;")
+            else:
+                self._vision_rule_state.setText("已修改（未保存）")
+                self._vision_rule_state.setStyleSheet("color:#d08a00;font-size:11px;")
+        elif cur == saved:
+            self._vision_rule_state.setText("已保存")
+            self._vision_rule_state.setStyleSheet("color:#1a7f37;font-size:11px;")
+        else:
+            self._vision_rule_state.setText("已修改（未保存）")
+            self._vision_rule_state.setStyleSheet("color:#d08a00;font-size:11px;")
+
+    def _save_vision_rule(self):
+        """把规则写进配置（与请求共用同一份 vision_system）。"""
+        text = (self.vision_rule_edit.toPlainText() or "").strip()
+        if not text:
+            text = VISION_SYSTEM_DEFAULT
+        ls = self._vision_cfg_dict()
+        ls["vision_system"] = text[:8000]
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        self._on_vision_rule_edited()
+        self._set_vision_status("✓ 识别规则已保存", "ok")
+
+    def _reset_vision_rule(self):
+        """恢复默认规则（二次确认，避免误覆盖）。"""
+        ans = QMessageBox.question(
+            self, "恢复默认规则",
+            "确定把识别规则恢复成内置默认吗？\n你当前编辑的内容会丢失。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.vision_rule_edit.blockSignals(True)
+        self.vision_rule_edit.setPlainText(VISION_SYSTEM_DEFAULT)
+        self.vision_rule_edit.blockSignals(False)
+        ls = self._vision_cfg_dict()
+        ls["vision_system"] = VISION_SYSTEM_DEFAULT
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        self._on_vision_rule_edited()
+        self._set_vision_status("✓ 已恢复默认规则", "ok")
+
+
     def _vision_provider_name(self):
         """从当前地址判断服务商名（用于选默认模型）。"""
         base = (self.vision_base.text() or "").strip().lower()
@@ -1640,20 +1756,16 @@ class SettingsWindow(QDialog):
         return max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, v))
 
     def _refresh_vision_model_hint(self):
-        """灰字：说明当前模型是默认还是自定义。"""
+        """把「默认/自定义」说明设为模型控件的悬停提示。"""
         try:
             cur = (self.vision_model.currentText() or "").strip()
             prov = self._vision_provider_name()
             dft = VISION_DEFAULT_MODELS.get(prov) or VISION_DEFAULT_MODEL_FALLBACK
-            if not cur:
-                self._vision_model_hint.setText(
-                    "默认模型：%s（可下拉选择或直接手填）" % dft)
-            elif cur == dft:
-                self._vision_model_hint.setText(
-                    "默认模型：%s（可下拉选择或直接手填）" % dft)
+            if not cur or cur == dft:
+                tip = "默认模型：%s（可下拉选择或直接手填）" % dft
             else:
-                self._vision_model_hint.setText(
-                    "自定义模型：%s（默认是 %s，可改回）" % (cur, dft))
+                tip = "自定义模型：%s（默认是 %s，可改回）" % (cur, dft)
+            self.vision_model.setToolTip(tip)
         except Exception:
             pass
 
@@ -1731,6 +1843,12 @@ class SettingsWindow(QDialog):
         self.vision_timeout_spin.setValue(_tout)
         self.vision_timeout_spin.blockSignals(False)
         self._refresh_vision_style_hint()
+        # 识别规则（与请求共用配置里的 vision_system）
+        _rule = (ls.get("vision_system") or "").strip() or VISION_SYSTEM_DEFAULT
+        self.vision_rule_edit.blockSignals(True)
+        self.vision_rule_edit.setPlainText(_rule)
+        self.vision_rule_edit.blockSignals(False)
+        self._on_vision_rule_edited()
         self._restore_vision_status()
 
         self._refresh_vision_model_hint()
@@ -1869,7 +1987,7 @@ class SettingsWindow(QDialog):
         self._set_vision_status("已取消识别", "info")
 
     def _clear_vision_cfg(self):
-        """清空 Key、地址、模型；**不重置**描述风格/单次上限/三项限制。"""
+        """清空 Key、地址、模型；**不重置**规则/风格/上限/三项限制。"""
         if getattr(self, "_vision_testing", False):
             self._reset_vision_test_ui()
         self._vision_filling = True
@@ -1880,7 +1998,8 @@ class SettingsWindow(QDialog):
         _side, _qual, _tout = self._limits_from_widget()
         self.app.cfg["look_screen"] = {
             "vision_key": "", "vision_base": "", "vision_model": "",
-            # 这些不重置
+            # 这些不重置（识别规则也不清）
+            "vision_system": self._rule_from_widget(),
             "style": self._style_from_widget(),
             "max_tokens": self._tokens_from_widget(),
             "max_side": _side,
@@ -1888,7 +2007,7 @@ class SettingsWindow(QDialog):
             "timeout": _tout,
         }
         self.app.save_cfg()
-        self._set_vision_status("已清空 Key/地址/模型（其余设置保留）", "info")
+        self._set_vision_status("已清空 Key/地址/模型（规则与其余设置保留）", "info")
 
 
     def _test_vision(self):

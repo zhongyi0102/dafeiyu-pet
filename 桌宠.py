@@ -2635,6 +2635,22 @@ class PetApp(QObject):
         mt = max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, mt))
         return suffix, mt
 
+    def _vision_system_cfg(self):
+        """视觉请求的 system 文本。
+
+        结构：识别规则（可编辑，来自配置）+ 空行 + 描述风格长度句（自动追加）。
+        长度句不存进配置，也不受文本框内容影响。
+        """
+        ls = self.cfg.get("look_screen") or {}
+        body = (ls.get("vision_system") or "").strip()
+        if not body:
+            body = VISION_SYSTEM_DEFAULT
+        suffix = vision_style_suffix(ls.get("style") or VISION_STYLE_DEFAULT)
+        if suffix:
+            return body + chr(10) + chr(10) + suffix
+        return body
+
+
     def _vision_limits(self):
         """视觉请求限制：返回 (max_side, quality, timeout)。"""
         ls = self.cfg.get("look_screen") or {}
@@ -2839,8 +2855,9 @@ class PetApp(QObject):
         buf.close()
         image = None
 
-        prompt = ("描述这张屏幕截图。" + "\n\n" + LOOK_SCREEN_ANTI_HALLUCINATION
-                  + "\n" + suffix)
+        # system = 识别规则（可编辑）+ 自动追加的长度句；user = 固定指令
+        sys_prompt = self._vision_system_cfg()
+        user_prompt = VISION_USER_PROMPT
 
 
         def run():
@@ -2849,8 +2866,10 @@ class PetApp(QObject):
                 b64 = base64.b64encode(holder["jpg"]).decode("ascii")
                 payload = {
                     "model": model,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": prompt},
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": [
+                        {"type": "text", "text": user_prompt},
                         {"type": "image_url",
                          "image_url": {"url": "data:image/jpeg;base64," + b64}},
                     ]}],
