@@ -291,7 +291,6 @@ SMASH_SPIN_MAX_DEG = 26.0          # 最大旋转角
 SMASH_SPIN_MIN_SPEED = 900.0       # 触发所需速度（px/s）
 SMASH_SETTLE_SEC = 5.0             # 落地停稳后多久解除
 # 「看看屏幕」：截图压缩参数
-LOOK_SCREEN_JPEG_Q = 70             # JPEG 质量
 LOOK_SCREEN_COOLDOWN = 4.0          # 冷却秒数（防连点）
 LOOK_SCREEN_MIN_SELECTION = 20     # 框选最小边长（像素），小于视为取消
 LOOK_SCREEN_REGION_MAX_SIDE = 1024  # 框选截图长边上限（超过则等比缩小）
@@ -359,7 +358,13 @@ VISION_EXCLUDE_WORDS = (
     "embed", "embedding", "rerank", "whisper", "tts", "asr", "audio",
     "moderation", "dall", "flux", "video", "stable-diffusion",
     "voice", "speech", "realtime", "transcribe",
+    "ocr", "autoglm",
 )
+
+# 纯文本 GLM 的判断：名字形如 glm-5.3 / glm-4.6 / glm-5
+# （即 glm-<数字>，且后面既没有 v 也没有 flash）→ 排除
+import re as _re
+_VISION_PLAINTEXT_GLM = _re.compile(r"^glm-\d+(\.\d+)?$")
 
 # 带这些词的多半支持图片输入，排前面
 VISION_PREFER_WORDS = (
@@ -373,8 +378,7 @@ VISION_PREFER_WORDS = (
 VISION_RANK_LAST_WORDS = ("turbo", "thinking", "pro")
 
 # Key 探测（并行）
-VISION_PROBE_WORKERS = 2      # 只两家，两个线程够
-VISION_PROBE_TIMEOUT = 6      # 单个候选地址超时（秒）
+VISION_PROBE_TIMEOUT = 4      # 单个候选地址超时（秒）
 
 # 需要「认证端点」二次确认的服务商（/models 是公开端点时用）
 VISION_PROVIDER_AUTH_PATH = {}   # DeepSeek / 智谱的 /models 都需认证
@@ -385,13 +389,7 @@ VISION_KNOWN_MODELS = {
     "DeepSeek": ("deepseek-v4-flash-vision-exp",),
 }
 
-# 各服务商的「默认视觉模型」（识别不出或用户没选时用这个）
-VISION_DEFAULT_MODELS = {
-    "智谱": "glm-5.3-flash",
-    "DeepSeek": "deepseek-v4-flash-vision-exp",
-}
-# 兜底：连服务商都不知道时的默认模型
-VISION_DEFAULT_MODEL_FALLBACK = "glm-5.3-flash"
+
 
 VISION_MAX_VERIFY = 12      # 最多真实验证多少个候选模型
 VISION_VERIFY_WORKERS = 4   # 并行验证线程数
@@ -417,6 +415,7 @@ LOOK_SCREEN_ANTI_HALLUCINATION_HELP = (
     "  3. 不编造画面外的剧情、前后文、角色关系。\n"
     "  4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
     "  5. 不确定的部分直接跳过，宁少勿编。"
+    "  6. 密码、验证码、账号、银行卡号、身份证号等敏感信息不要抄写，写成[已省略]。"
 )
 
 # 视觉请求 system 的默认内容（可在设置页「视觉 → 识别规则」修改）
@@ -430,7 +429,9 @@ VISION_SYSTEM_DEFAULT = (
     "但画面里有文字明确写出来的，可以直接引用。\n"
     "3. 不编造画面外的剧情、前后文、角色关系。\n"
     "4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
-    "5. 不确定的部分直接跳过，宁少勿编。"
+    "5. 不确定的部分直接跳过，宁少勿编。\n"
+    "6. 密码、验证码、账号、银行卡号、身份证号等敏感信息不要抄写，"
+    "写成[已省略]。"
 )
 # 视觉请求的 user 消息固定部分（配合 system 使用）
 VISION_USER_PROMPT = "描述这张屏幕截图。"
@@ -2098,11 +2099,12 @@ def default_config():
             "daily_max": 8,        # 每天最多几次（1~50）
         },
         # 「看看屏幕」配置
-        "look_screen": {"vision_model": VISION_DEFAULT_MODEL_FALLBACK, "vision_base": "", "vision_key": "",
+        "look_screen": {"vision_model": "", "vision_base": "", "vision_key": "",
                         "style": VISION_STYLE_DEFAULT,
                         "style": VISION_STYLE_DEFAULT,
                         "max_tokens": VISION_TOKENS_DEFAULT,
                         "vision_system": VISION_SYSTEM_DEFAULT,
+                        "save_desc": False,
                         "max_side": LOOK_SCREEN_SIDE_DEFAULT,
                         "quality": LOOK_SCREEN_QUALITY_DEFAULT,
                         "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
@@ -2516,6 +2518,12 @@ def migrate_and_validate(raw):
                 issues.append("look_screen.%s" % k)
     elif ls is not None:
         issues.append("look_screen")
+
+    # look_screen.save_desc：是否把屏幕描述写进聊天记录（默认 False）
+    _sd = ls.get("save_desc") if isinstance(ls, dict) else None
+    if isinstance(_sd, bool):
+        cfg["look_screen"]["save_desc"] = _sd
+
 
     # look_screen.vision_system（识别规则，字符串，空则回落默认）
     _vsys = ls.get("vision_system") if isinstance(ls, dict) else None

@@ -717,6 +717,11 @@ class PetApp(QObject):
 
     def __init__(self):
         self.cfg, migrated = load_config_safe()
+        # 旧配置迁移（一次性写入 chat_base / chat_model，运行时不再回落）
+        try:
+            self._migrate_chat_cfg()
+        except Exception as ex:
+            log("[聊天] 迁移失败: %s: %s" % (type(ex).__name__, ex), logging.WARNING)
         super().__init__()
         self.pets = []
         # 看看屏幕结果回主线程写聊天（worker 线程只 emit）
@@ -2020,8 +2025,10 @@ class PetApp(QObject):
             got_any = True
             try:
                 total += float(amount)
-            except Exception:
-                pass
+            except Exception as ex:
+                log("[%s] %s 失败: %s: %s"
+                    % (__name__, "_report_balances", type(ex).__name__, ex),
+                    logging.WARNING)
             parts.append("%s ¥%.2f" % (label, amount))
 
         if not got_any:
@@ -2616,46 +2623,50 @@ class PetApp(QObject):
             return ""
 
     # ---------- 看看屏幕：框选截图 ----------
+    def _migrate_chat_cfg(self):
+        """旧配置迁移：只有 ds_api_key 时，一次性写入 chat_base / chat_model 并保存。
+
+        运行时不再悄悄回落，之后所有读取都走配置里的实际值。
+        """
+        if (self.cfg.get("chat_base") or "").strip():
+            return   # 已经迁移过
+        key = (self.cfg.get("ds_api_key") or "").strip()
+        if not key:
+            return   # 没 Key，无需迁移
+        self.cfg["chat_base"] = DS_BASE_URL
+        self.cfg["chat_model"] = DS_MODEL
+        try:
+            self.save_cfg()
+            log("[聊天] 旧配置迁移：chat_base / chat_model 已写入配置")
+        except Exception as ex:
+            log("[聊天] 迁移保存失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _chat_cfg(self):
         """聊天配置：返回 (base_url, api_key, model)。
 
-        地址/模型为空时回落内置默认（DS_BASE_URL / DS_MODEL），
-        这样旧配置（只有 ds_api_key）无需迁移即可继续用。
+        运行时**不回落**：base/model 为空就是空，由调用方判断未配置。
         """
         base = (self.cfg.get("chat_base") or "").strip()
         key = (self.cfg.get("ds_api_key") or "").strip()
         model = (self.cfg.get("chat_model") or "").strip()
-        if not base:
-            base = DS_BASE_URL
-        if not model:
-            model = DS_MODEL
         return base, key, model
 
     def _chat_cfg_raw(self):
-        """界面上要显示的原始值（空则显示内置默认，供迁移带入）。"""
-        base = (self.cfg.get("chat_base") or "").strip() or DS_BASE_URL
-        key = (self.cfg.get("ds_api_key") or "").strip()
-        model = (self.cfg.get("chat_model") or "").strip() or DS_MODEL
-        return base, key, model
+        """界面上要显示的值（迁移后应始终有值）。"""
+        return self._chat_cfg()
 
 
     def _vision_cfg(self):
         """视觉配置（独立于聊天 Key）：返回 (base_url, api_key, model_name)。
 
-        模型名留空时回落该服务商的默认模型（VISION_DEFAULT_MODELS）。
+        模型名为空时**不做任何回落**，按「未配置」处理
+        （由 _vision_ready_check 提示用户去点「测试」）。
         """
         ls = self.cfg.get("look_screen") or {}
         base = (ls.get("vision_base") or "").strip()
         key = (ls.get("vision_key") or "").strip()
         model = (ls.get("vision_model") or "").strip()
-        if not model:
-            bl = base.lower()
-            if "bigmodel" in bl or "z.ai" in bl:
-                model = VISION_DEFAULT_MODELS.get("智谱", "")
-            elif "deepseek" in bl:
-                model = VISION_DEFAULT_MODELS.get("DeepSeek", "")
-            if not model:
-                model = VISION_DEFAULT_MODEL_FALLBACK
         return base, key, model
 
 
@@ -2714,9 +2725,9 @@ class PetApp(QObject):
         """
         base, key, model = self._vision_cfg()
         if not key:
-            return False, "还没填视觉 Key 呢，笨蛋主人——去「设置 → 聊天 → 看看屏幕」填一个吧。"
+            return False, "还没填视觉 Key 呢，笨蛋主人——去「设置 → 视觉」填一个吧。"
         if not base or not model:
-            return False, ("只有 Key 还不行哦，得在「设置 → 聊天 → 看看屏幕」里"
+            return False, ("只有 Key 还不行哦，得在「设置 → 视觉」里"
                            "点一下「测试」，让我认出服务商和模型。")
         return True, ""
 
@@ -2727,8 +2738,10 @@ class PetApp(QObject):
             sc = QApplication.screenAt(pos)
             if sc is not None:
                 return sc
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_screen_under_cursor", type(ex).__name__, ex),
+                logging.WARNING)
         return QApplication.primaryScreen()
 
     def _grab_screen_pixmap(self, screen):
@@ -2805,8 +2818,10 @@ class PetApp(QObject):
         for w in getattr(self, "_look_was_visible", []) or []:
             try:
                 self.set_visible(w.pet_id, True, "capture")
-            except Exception:
-                pass
+            except Exception as ex:
+                log("[%s] %s 失败: %s: %s"
+                    % (__name__, "_restore_after_select", type(ex).__name__, ex),
+                    logging.WARNING)
         self._look_was_visible = []
 
     def _release_region_overlay(self):
@@ -2817,8 +2832,10 @@ class PetApp(QObject):
                 ov._base = None
                 ov.hide()
                 ov.deleteLater()
-            except Exception:
-                pass
+            except Exception as ex:
+                log("[%s] %s 失败: %s: %s"
+                    % (__name__, "_release_region_overlay", type(ex).__name__, ex),
+                    logging.WARNING)
         self._region_overlay = None
 
     def _on_region_cancelled(self):
@@ -2942,8 +2959,10 @@ class PetApp(QObject):
                         try:
                             m2 = r2.json()["choices"][0].get("message") or {}
                             desc = (m2.get("content") or "").strip()
-                        except Exception:
-                            pass
+                        except Exception as ex:
+                            log("[%s] %s 失败: %s: %s"
+                                % (__name__, "_run_look_screen", type(ex).__name__, ex),
+                                logging.WARNING)
                 if not desc and reason:
                     desc = reason.strip().split("\n")[-1].strip()[:80]
                 if not desc:
@@ -2975,11 +2994,16 @@ class PetApp(QObject):
             return False
 
     def _on_look_to_chat(self, title, text, desc):
-        """主线程：把解析与回复写进聊天窗口/文件。"""
+        """主线程：把结果写进聊天窗口/文件。
+
+        默认**不写**「[屏幕解析] …」到历史（只用于本次回复）；
+        高级设置里开启「保存屏幕描述到聊天记录」后才写。
+        """
         try:
             user_line = "[看看屏幕] %s" % (title or "框选")
+            save_desc = bool((self.cfg.get("look_screen") or {}).get("save_desc", False))
             pairs = []
-            if desc:
+            if desc and save_desc:
                 pairs.append(("user", "[屏幕解析] " + desc))
             pairs.append(("user", user_line))
             pairs.append(("assistant", text))
@@ -2988,12 +3012,15 @@ class PetApp(QObject):
             if cw is not None:
                 for role, content in pairs:
                     cw.append_external(role, content)
-                log("[看看屏幕] 已同步到聊天（含解析）")
+                log("[看看屏幕] 已同步到聊天（描述%s写入）"
+                    % ("已" if (desc and save_desc) else "未"))
                 return
             if self._append_pairs_to_chat_file(pairs):
-                log("[看看屏幕] 已写入聊天记录（含解析）")
+                log("[看看屏幕] 已写入聊天记录（描述%s写入）"
+                    % ("已" if (desc and save_desc) else "未"))
         except Exception as ex:
-            log("[看看屏幕] 写聊天失败: %s" % ex, logging.WARNING)
+            log("[看看屏幕] 写聊天失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
 
     def _append_pairs_to_chat_file(self, pairs):
@@ -3111,8 +3138,10 @@ class PetApp(QObject):
         sys_text = build_system_prompt(style, persona)
         try:
             sys_text = self.memory.system_content(sys_text)
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_ask_chat_for_look", type(ex).__name__, ex),
+                logging.WARNING)
         messages = [
             {"role": "system", "content": sys_text},
             {"role": "user", "content": line},
@@ -3151,14 +3180,14 @@ class PetApp(QObject):
         threading.Thread(target=run, daemon=True).start()
 
     def _look_fallback(self, desc, why=""):
-        """聊天模型不可用时：把视觉描述用人设口吻显示（不报错）。"""
+        """聊天模型不可用时：把视觉描述用人设口吻显示（不写历史）。"""
         if why:
             log("[看看屏幕] 降级原因：%s" % why)
         text = "唔……我看到了：" + (desc or "（看不清）")
         if len(text) > 120:
             text = text[:118] + "…"
+        # 只显示气泡，不写聊天历史
         self.say_main(text)
-        self._look_screen_to_chat("(框选)", text, ok=True, desc=desc)
 
 
     def _get_weather(self, pet=None):

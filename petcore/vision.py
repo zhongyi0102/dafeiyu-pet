@@ -135,7 +135,7 @@ def detect_provider(key, log=None):
       3. **401 不再中止循环** —— 各服务商对陌生 Key 都回 401，
          不能用它判断「Key 无效」；只有全部失败才算失败
     """
-    from petcore.consts import (VISION_PROVIDERS, VISION_PROBE_WORKERS,
+    from petcore.consts import (VISION_PROVIDERS, 
                                 VISION_PROBE_TIMEOUT)
 
     def _log(m):
@@ -220,33 +220,39 @@ def suggest_models(provider_name, listed_models):
 def filter_and_rank(models):
     """剔除明显非对话模型，并按用户要求排序。
 
+    剔除规则：
+      1) 命中 VISION_EXCLUDE_WORDS（含 ocr / autoglm 等）→ 剔除
+      2) 纯文本 GLM：名字形如 glm-5.3 / glm-4.6 / glm-5
+         （glm-<数字>[.<数字>]，且不含 v、不含 flash）→ 剔除
+
     排序规则（数字越小越前）：
-      1) 名字以 "-flash" 结尾（且不含 flashx）→ 最前
+      1) 名字含 "-flash" 且其后不是 "x" → 最前（如 glm-5.3-flash-0901 也算）
       2) 含 "flashx" 或其它 → 次之
       3) 含 turbo / thinking / pro → 最后
-    同档内再按「偏好词」微调，最后按名字字典序保证稳定。
     """
     from petcore.consts import (VISION_EXCLUDE_WORDS, VISION_PREFER_WORDS,
-                                VISION_RANK_LAST_WORDS)
+                                VISION_RANK_LAST_WORDS, _VISION_PLAINTEXT_GLM)
     out = []
     seen = set()
     for n in models or []:
         low = n.lower()
         if any(w in low for w in VISION_EXCLUDE_WORDS):
             continue
+        # 纯文本 GLM（无 v、无 flash）
+        if _VISION_PLAINTEXT_GLM.match(low) and "v" not in low and "flash" not in low:
+            continue
         if n in seen:
             continue
         seen.add(n)
         # ---- 主排序档位 ----
-        if low.endswith("-flash"):
+        if "-flash" in low and not low.split("-flash", 1)[1].startswith("x"):
             tier = 0
-        elif "flashx" in low or low.endswith("flashx"):
+        elif "flashx" in low:
             tier = 1
         elif any(w in low for w in VISION_RANK_LAST_WORDS):
             tier = 3
         else:
             tier = 2
-        # ---- 同档内偏好词微调（越大越前，用负数让 sort 正确）----
         score = 0
         for i, w in enumerate(VISION_PREFER_WORDS):
             if w in low:
@@ -321,8 +327,10 @@ def verify_all(base, key, models, on_found=None, should_stop=None, log=None):
                 if on_found:
                     try:
                         on_found(m)
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        log("[%s] %s 失败: %s: %s"
+                            % (__name__, "_worker", type(ex).__name__, ex),
+                            logging.WARNING)
             elif log:
                 log("跳过 %s（%s）" % (m, why))
 

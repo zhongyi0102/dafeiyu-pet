@@ -1419,8 +1419,10 @@ class SettingsWindow(QDialog):
             if scope in ("auto", "zhipu"):
                 bits.append("智谱 %s" % ("✓" if zk else "未填 Key"))
             self._balance_provider_hint.setText("会查询：" + "，".join(bits))
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_balance_provider_hint", type(ex).__name__, ex),
+                logging.WARNING)
 
 
     def _set_balance_full(self, value):
@@ -1617,7 +1619,8 @@ class SettingsWindow(QDialog):
     # ---------- 看看屏幕：视觉配置 ----------
     def _build_visual_page(self, lay):
         self._title(lay, "视觉",
-                    "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
+                    "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。"
+                    "高级设置里可调上限、图片大小、质量和超时。")
 
         _rowh = 30
 
@@ -1792,6 +1795,14 @@ class SettingsWindow(QDialog):
         self._advanced_section.body_add(self._hint_label(
             "多久没响应就放弃（10~120 秒）。带思考过程的模型建议调大。"))
 
+        # 保存屏幕描述到聊天记录（默认关闭）
+        self._vision_save_desc = self._check(
+            self._advanced_section.body_layout, "保存屏幕描述到聊天记录",
+            bool((self.app.cfg.get("look_screen") or {}).get("save_desc", False)),
+            lambda on: self._set_vision_save_desc(bool(on)),
+            "关闭时描述只用于本次回复，不写入 chats.json")
+
+
         # 高级设置加入页面（放在识别规则之后、按钮之前）
         lay.addWidget(self._advanced_section)
 
@@ -1826,6 +1837,13 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._vision_hint)
         self._vision_fill_from_cfg()
         self._refresh_advanced_summary()
+
+        # 明文 Key 提醒
+        _keywarn = QLabel("⚠ 配置文件（config.json）含明文 Key，请勿分享该文件")
+        _keywarn.setWordWrap(True)
+        _keywarn.setStyleSheet(
+            "color:#d08a00;font-size:11px;margin-left:22px;")
+        lay.addWidget(_keywarn)
 
         lay.addStretch(1)
 
@@ -1875,8 +1893,10 @@ class SettingsWindow(QDialog):
             tout = int(self.vision_timeout_spin.value())
             self._advanced_section.set_summary(
                 "上限 %d · 最长边 %d · 质量 %d · 超时 %d 秒" % (mt, side, qual, tout))
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_advanced_summary", type(ex).__name__, ex),
+                logging.WARNING)
 
 
     def _on_persona_edited(self):
@@ -1982,8 +2002,10 @@ class SettingsWindow(QDialog):
                 self._set_chat_status("已填 Key，点「测试」识别可用模型", "info")
             else:
                 self._set_chat_status("当前：%s @ %s" % (model, base), "ok")
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_chat_status", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _set_chat_status(self, text, kind="info"):
         color = {"ok": "#1a7f37", "err": "#c0392b", "info": "#8a8f9c"}.get(kind, "#8a8f9c")
@@ -2008,7 +2030,7 @@ class SettingsWindow(QDialog):
         """切换/手填模型后立即保存。"""
         if getattr(self, "_chat_filling", False):
             return
-        if getattr(self, "_chat_testing2", False):
+        if getattr(self, "_chat_testing", False):
             return
         model = (self.chat_model.currentText() or "").strip()
         key = (self.chat_key.text() or "").strip()
@@ -2050,22 +2072,39 @@ class SettingsWindow(QDialog):
         self._set_chat_status(
             "已清空。尚未配置聊天 Key，点「测试」前请先填写", "info")
 
-    def _cancel_chat_test(self):
+    def _reset_chat_test_ui(self):
+        """复位聊天识别界面状态（完成/失败/取消/隐藏/关闭/超时都走这里）。"""
+        self._chat_testing = False
+        try:
+            self._chat_deadline_timer.stop()
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_reset_chat_test_ui", type(ex).__name__, ex),
+                logging.WARNING)
         self._chat_token = getattr(self, "_chat_token", 0) + 1
-        self._chat_testing2 = False
-        self._chat_cancel_btn.hide()
-        self._chat_test_btn.setEnabled(True)
+        try:
+            self._chat_test_btn.setEnabled(True)
+            self._chat_cancel_btn.hide()
+        except Exception as ex:
+            log("[设置] 复位聊天识别 UI 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+
+    def _cancel_chat_test(self):
+        """取消聊天识别：立刻复位，旧线程结果会被丢弃。"""
+        self._reset_chat_test_ui()
         self._set_chat_status("已取消识别", "info")
 
+
     def _test_chat(self):
-        """点「测试」才识别：服务商/地址 + 可用模型（子线程，总超时 60 秒）。"""
-        if getattr(self, "_chat_testing2", False):
+        """点「测试」才识别：服务商/地址 + 可用模型（子线程，硬性总超时 60 秒）。"""
+        if getattr(self, "_chat_testing", False):
             return
         key = (self.chat_key.text() or "").strip()
         if not key:
             self._set_chat_status("✗ 请先填写聊天 Key", "err")
             return
-        self._chat_testing2 = True
+        self._chat_testing = True
         self._chat_token = getattr(self, "_chat_token", 0) + 1
         token = self._chat_token
         self._chat_test_btn.setEnabled(False)
@@ -2075,6 +2114,13 @@ class SettingsWindow(QDialog):
         def stale():
             return getattr(self, "_chat_token", 0) != token
 
+        # 硬性总超时：到点直接复位 UI 并提示，不等线程 join
+        self._chat_deadline_timer = QTimer(self)
+        self._chat_deadline_timer.setSingleShot(True)
+        self._chat_deadline_timer.timeout.connect(
+            lambda t=token: self._on_chat_timeout(t))
+        self._chat_deadline_timer.start(60000)
+
         def log2(m):
             log("[聊天识别] " + str(m))
 
@@ -2083,7 +2129,6 @@ class SettingsWindow(QDialog):
             t0 = _t.time()
             from petcore import vision as V
             try:
-                # 1) 识别地址（复用视觉的探测逻辑）
                 base, provider, err = V.detect_provider(key, log=log2)
                 if stale():
                     return
@@ -2092,26 +2137,23 @@ class SettingsWindow(QDialog):
                                               "", [], None)
                     return
                 self._cbus.base_found.emit(base, provider, stale)
-                if _t.time() - t0 > 60:
-                    self._cbus.test_done.emit(stale, False, "总超时 60 秒", base, [], None)
+                if _t.time() - t0 > 60 or stale():
                     return
-                # 2) 取模型列表
                 ok, models, err2 = V.list_models(base, key, timeout=4)
                 if stale():
                     return
                 if not ok:
                     models = []
-                # 3) 剔除明显非对话模型
                 EXCLUDE = ("embed", "rerank", "whisper", "tts", "asr", "audio",
                            "moderation", "dall", "flux", "video", "image",
                            "speech", "transcri")
                 cand = [m for m in (models or [])
                         if not any(w in m.lower() for w in EXCLUDE)]
-                # 排序：沿用视觉的偏好规则（不含视觉专用词也能稳定）
                 try:
                     cand = V.filter_and_rank(cand)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    log("[聊天识别] 排序失败: %s: %s"
+                        % (type(ex).__name__, ex), logging.WARNING)
                 cand = cand[:12]
                 if not cand:
                     self._cbus.test_done.emit(stale, False,
@@ -2119,7 +2161,6 @@ class SettingsWindow(QDialog):
                     return
                 self._cbus.progress.emit(len(cand), stale)
 
-                # 4) 并发验证（最多 4 个，单请求 40 秒，边验证边出现）
                 found = []
                 lock = __import__("threading").Lock()
                 q = list(cand)
@@ -2134,9 +2175,7 @@ class SettingsWindow(QDialog):
                                 return
                             m = q[qi[0]]
                             qi[0] += 1
-                        if stale():
-                            return
-                        if _t.time() - t0 > 60:
+                        if stale() or _t.time() - t0 > 60:
                             return
                         try:
                             r = _rq.post(
@@ -2173,6 +2212,15 @@ class SettingsWindow(QDialog):
         import threading
         threading.Thread(target=work, daemon=True).start()
 
+    def _on_chat_timeout(self, token):
+        """硬性总超时到点：令牌作废 + 复位 + 提示。"""
+        if getattr(self, "_chat_token", 0) != token:
+            return
+        self._reset_chat_test_ui()
+        self._set_chat_status("✗ 识别超时（60 秒）", "err")
+        log("[聊天识别] 硬性总超时 60 秒，已丢弃结果")
+
+
     def _on_chat_base_found(self, base, provider, stale):
         if stale():
             return
@@ -2196,7 +2244,7 @@ class SettingsWindow(QDialog):
     def _on_chat_test_done(self, stale, ok, err, base, found, total=None):
         if stale():
             return
-        self._chat_testing2 = False
+        self._chat_testing = False
         self._chat_test_btn.setEnabled(True)
         self._chat_cancel_btn.hide()
         if not ok:
@@ -2243,18 +2291,13 @@ class SettingsWindow(QDialog):
 
 
     def _current_vision_model(self):
-        """当前下拉/手填的模型名；空则回落该服务商的默认模型。"""
+        """当前下拉/手填的模型名（空就是空，不回落）。"""
         try:
-            m = (self.vision_model.currentText() or "").strip()
-        except Exception:
-            m = ""
-        if m:
-            return m
-        try:
-            prov = self.app._vision_provider_name()
-        except Exception:
-            prov = ""
-        return VISION_DEFAULT_MODELS.get(prov) or VISION_DEFAULT_MODEL_FALLBACK
+            return (self.vision_model.currentText() or "").strip()
+        except Exception as ex:
+            log("[设置] 读视觉模型失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return ""
 
 
     def _vision_cfg_dict(self):
@@ -2274,9 +2317,19 @@ class SettingsWindow(QDialog):
             v = self.vision_style.currentData()
             if v in VISION_STYLE_SUFFIXES:
                 return v
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_style_from_widget", type(ex).__name__, ex),
+                logging.WARNING)
         return self._vision_style_value()
+
+    def _set_vision_save_desc(self, on):
+        """保存「是否把屏幕描述写进聊天记录」。"""
+        ls = self._vision_cfg_dict()
+        ls["save_desc"] = bool(on)
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+
 
     def _on_vision_limit_changed(self, key, value):
         """三项限制（最长边/质量/超时）改动后立即保存。"""
@@ -2329,18 +2382,17 @@ class SettingsWindow(QDialog):
         return max(VISION_TOKENS_MIN, min(VISION_TOKENS_MAX, v))
 
     def _refresh_vision_model_hint(self):
-        """把「默认/自定义」说明设为模型控件的悬停提示。"""
+        """模型控件的悬停提示：未配置 / 已选。"""
         try:
             cur = (self.vision_model.currentText() or "").strip()
-            prov = self._vision_provider_name()
-            dft = VISION_DEFAULT_MODELS.get(prov) or VISION_DEFAULT_MODEL_FALLBACK
-            if not cur or cur == dft:
-                tip = "默认模型：%s（可下拉选择或直接手填）" % dft
+            if cur:
+                tip = "当前模型：%s（可下拉选择或直接手填）" % cur
             else:
-                tip = "自定义模型：%s（默认是 %s，可改回）" % (cur, dft)
+                tip = "尚未选择模型，点「测试」自动识别"
             self.vision_model.setToolTip(tip)
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[设置] 刷新视觉模型提示失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
 
     def _refresh_vision_style_hint(self):
@@ -2349,8 +2401,10 @@ class SettingsWindow(QDialog):
             suffix = vision_style_suffix(self._style_from_widget())
             self._vision_style_hint.setText(
                 "当前风格下，视觉请求 system 末尾会追加：「%s」" % suffix)
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_vision_style_hint", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _save_vision_extra(self):
         """把描述风格与单次上限写进配置（独立于聊天页）。"""
@@ -2377,12 +2431,10 @@ class SettingsWindow(QDialog):
         self.vision_base.setText(ls["vision_base"])
         for w in (self.vision_key, self.vision_base):
             w.blockSignals(False)
-        # 模型为空时用默认值填充（下拉框要能看到默认模型）
-        _prov = self._vision_provider_name()
-        _dft = VISION_DEFAULT_MODELS.get(_prov) or VISION_DEFAULT_MODEL_FALLBACK
-        _cur_model = ls["vision_model"] or _dft
-        models = [_cur_model]
-        self._fill_vision_models(models, keep=_cur_model)
+        # 模型为空就留空（不预填默认值）
+        _cur_model = (ls["vision_model"] or "").strip()
+        models = [_cur_model] if _cur_model else []
+        self._fill_vision_models(models, keep=_cur_model or None)
         # 描述风格与单次上限：独立于聊天页，各自填
         _st = self._vision_style_value()
         self.vision_style.blockSignals(True)
@@ -2548,12 +2600,20 @@ class SettingsWindow(QDialog):
     def _reset_vision_test_ui(self):
         """复位识别中的界面状态（完成/失败/取消/隐藏/关闭都走这里）。"""
         self._vision_testing = False
+        try:
+            self._vision_deadline_timer.stop()
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_reset_vision_test_ui", type(ex).__name__, ex),
+                logging.WARNING)
         self._vision_token = getattr(self, "_vision_token", 0) + 1
         try:
             self._vision_test_btn.setEnabled(True)
             self._vision_cancel_btn.hide()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_reset_vision_test_ui", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _cancel_vision_test(self):
         """取消识别：立刻复位，旧线程结果会被丢弃。"""
@@ -2598,6 +2658,13 @@ class SettingsWindow(QDialog):
         self._vision_testing = True
         self._vision_token = getattr(self, "_vision_token", 0) + 1
         token = self._vision_token
+
+        # 硬性总超时：到点直接复位 UI 并提示，不等线程 join
+        self._vision_deadline_timer = QTimer(self)
+        self._vision_deadline_timer.setSingleShot(True)
+        self._vision_deadline_timer.timeout.connect(
+            lambda t=token: self._on_vision_timeout(t))
+        self._vision_deadline_timer.start(60000)
         self._vision_test_btn.setEnabled(False)
         self._vision_cancel_btn.show()
         self.vision_base.clear()
@@ -2657,6 +2724,15 @@ class SettingsWindow(QDialog):
             self._vbus.test_done.emit(stale, True, "", base, found, len(ranked))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_vision_timeout(self, token):
+        """硬性总超时到点：令牌作废 + 复位 + 提示。"""
+        if getattr(self, "_vision_token", 0) != token:
+            return
+        self._reset_vision_test_ui()
+        self._set_vision_status("✗ 识别超时（60 秒）", "err")
+        log("[视觉识别] 硬性总超时 60 秒，已丢弃结果")
+
 
     def _on_vision_progress(self, n, stale):
         if stale():
@@ -2895,8 +2971,10 @@ class SettingsWindow(QDialog):
             self._chat_preview.setText(
                 "system = 人设 + 回复长度句（%s）+ %d 条长期记忆"
                 % (length_txt, mem_n))
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_chat_hint", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _build_general_page(self, lay):
         self._title(lay, "通用", "Key、生日、城市、窗口行为与开机自启。")
@@ -3001,8 +3079,10 @@ class SettingsWindow(QDialog):
 
         try:
             self._memory_count.setText("当前共 %d 条记忆" % len(self.app.memory.items))
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "reload", type(ex).__name__, ex),
+                logging.WARNING)
         self._refresh_balance_hint()
 
         # 视觉字段：复用窗口时重新填，避免输入框变空
@@ -3011,16 +3091,20 @@ class SettingsWindow(QDialog):
                 self._vision_filling = True
                 self._vision_fill_from_cfg()
                 self._vision_filling = False
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "reload", type(ex).__name__, ex),
+                logging.WARNING)
         # 单次输出上限跟着配置走
         try:
             mt = int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
             self.max_tokens_spin.blockSignals(True)
             self.max_tokens_spin.setValue(mt)
             self.max_tokens_spin.blockSignals(False)
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "reload", type(ex).__name__, ex),
+                logging.WARNING)
         self._refresh_chat_hint()
 
     def show_page(self, page=None):
@@ -3038,15 +3122,30 @@ class SettingsWindow(QDialog):
             if getattr(self, "_vision_testing", False):
                 self._reset_vision_test_ui()
                 self._set_vision_status("已取消识别（窗口已关闭）", "info")
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[设置] hideEvent 复位视觉识别失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+        try:
+            if getattr(self, "_chat_testing", False):
+                self._reset_chat_test_ui()
+                self._set_chat_status("已取消识别（窗口已关闭）", "info")
+        except Exception as ex:
+            log("[设置] hideEvent 复位聊天识别失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
         super().hideEvent(e)
 
     def closeEvent(self, e):
-        """关闭时同样复位。"""
+        """关闭时同样复位（视觉 + 聊天）。"""
         try:
             if getattr(self, "_vision_testing", False):
                 self._reset_vision_test_ui()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[设置] closeEvent 复位视觉识别失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+        try:
+            if getattr(self, "_chat_testing", False):
+                self._reset_chat_test_ui()
+        except Exception as ex:
+            log("[设置] closeEvent 复位聊天识别失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
         super().closeEvent(e)

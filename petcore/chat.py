@@ -653,8 +653,10 @@ class ChatWindow(QWidget):
         try:
             self._sync_session(touch=False)
             self._write_sessions()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "load_history", type(ex).__name__, ex),
+                logging.WARNING)
 
     def save_history(self):
         self._sync_session(touch=True)
@@ -901,8 +903,10 @@ class ChatWindow(QWidget):
         try:
             key = (self.pet.cfg.get("ds_api_key") or "").strip()
             self.key_action.setText("设置 Key（已设置）" if key else "设置 Key（未设置）")
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_settings_menu", type(ex).__name__, ex),
+                logging.WARNING)
         busy = bool(self.busy)
         for act in (getattr(self, "rename_action", None),
                     getattr(self, "delete_action", None),
@@ -946,8 +950,10 @@ class ChatWindow(QWidget):
                 pix = QPixmap(os.path.join(SPRITE_DIR, name))
                 if not pix.isNull():
                     return pix
-            except Exception:
-                pass
+            except Exception as ex:
+                log("[%s] %s 失败: %s: %s"
+                    % (__name__, "_load_avatar", type(ex).__name__, ex),
+                    logging.WARNING)
         return QPixmap()
 
     def _round_icon(self, pix, size):
@@ -1018,14 +1024,18 @@ class ChatWindow(QWidget):
             if show:
                 try:
                     self.empty_text.setText(random.choice(CHAT_EMPTY_GREETINGS))
-                except Exception:
-                    pass
+                except Exception as ex:
+                    log("[%s] %s 失败: %s: %s"
+                        % (__name__, "_update_empty_state", type(ex).__name__, ex),
+                        logging.WARNING)
             self._fit_empty_state()
             self.empty_state.setVisible(show)
             if show:
                 self.empty_state.raise_()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_update_empty_state", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _fit_empty_state(self):
         """把空白状态铺满消息区可视范围。"""
@@ -1130,8 +1140,10 @@ class ChatWindow(QWidget):
             if wrap is not None:
                 self.msg_layout.removeWidget(wrap)
                 wrap.deleteLater()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_remove_bubble", type(ex).__name__, ex),
+                logging.WARNING)
 
     def render_message(self, role, text):
         return self._add_bubble(role, text)
@@ -1202,8 +1214,10 @@ class ChatWindow(QWidget):
         self._render_current_session()
         try:
             QTimer.singleShot(0, lambda v=keep: self.scroll.verticalScrollBar().setValue(v))
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_load_earlier", type(ex).__name__, ex),
+                logging.WARNING)
 
     # ---------- 窗口 ----------
     def show_window(self):
@@ -1229,8 +1243,10 @@ class ChatWindow(QWidget):
         try:
             self._sync_session(touch=False)
             self._write_sessions()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "shutdown", type(ex).__name__, ex),
+                logging.WARNING)
         self._save_geometry()
         for w in (self.worker, self.summary_worker):
             if w is None:
@@ -1284,8 +1300,10 @@ class ChatWindow(QWidget):
     def _update_send_button(self):
         try:
             self.send_btn.setText("停止" if self.busy else "发送")
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_update_send_button", type(ex).__name__, ex),
+                logging.WARNING)
 
     def _usage_placeholder(self):
         return "输入 - · 输出 - · 缓存命中 -"
@@ -1383,8 +1401,10 @@ class ChatWindow(QWidget):
     def _hide_typing(self):
         try:
             self._typing_timer.stop()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_hide_typing", type(ex).__name__, ex),
+                logging.WARNING)
         if self._typing_bubble is not None:
             self._remove_bubble(self._typing_bubble)
             self._typing_bubble = None
