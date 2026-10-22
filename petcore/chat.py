@@ -133,7 +133,9 @@ class ChatWorker(QThread):
     done = Signal(str, dict)
     failed = Signal(str)
 
-    def __init__(self, messages, api_key, max_tokens=None):
+    def __init__(self, messages, api_key, max_tokens=None, base_url=None, model=None):
+        self.base_url = (base_url or DS_BASE_URL).rstrip("/")
+        self.model = model or DS_MODEL
         super().__init__()
         self.messages = messages
         self.api_key = api_key
@@ -147,13 +149,13 @@ class ChatWorker(QThread):
         full = ""
         usage = {}
         try:
-            url = DS_BASE_URL + "/chat/completions"
+            url = self.base_url + "/chat/completions"
             headers = {
                 "Authorization": "Bearer " + self.api_key,
                 "Content-Type": "application/json",
             }
             payload = {
-                "model": DS_MODEL,
+                "model": self.model,
                 "messages": self.messages,
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -198,8 +200,10 @@ class SummaryWorker(QThread):
     done = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, prev_summary, messages, api_key):
+    def __init__(self, prev_summary, messages, api_key, base_url=None, model=None):
         super().__init__()
+        self.base_url = (base_url or DS_BASE_URL).rstrip("/")
+        self.model = model or DS_MODEL
         self.prev_summary = prev_summary
         self.messages = messages
         self.api_key = api_key
@@ -224,13 +228,13 @@ class SummaryWorker(QThread):
                 "Content-Type": "application/json",
             }
             payload = {
-                "model": DS_MODEL,
+                "model": self.model,
                 "messages": [
                     {"role": "system", "content": DS_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
             }
-            r = requests.post(DS_BASE_URL + "/chat/completions", headers=headers,
+            r = requests.post(self.base_url + "/chat/completions", headers=headers,
                               json=payload, timeout=180)
             if r.status_code != 200:
                 self.failed.emit(_http_error_message(r.status_code, r.text))
@@ -1323,7 +1327,8 @@ class ChatWindow(QWidget):
 
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
         if not key:
-            self._on_failed("还没设置 API Key：右键桌宠 →「设置 Key」填写后重试。")
+            self._on_failed(
+                "唔…笨蛋主人还没给我配聊天 Key 呢。去 设置 →「聊天」→「聊天模型」填一下，我就能说话啦~")
             return
 
         if self._need_summary():
@@ -1420,7 +1425,9 @@ class ChatWindow(QWidget):
             self._start_chat_stream()
             return
         self.token_label.setText("正在整理前情摘要…")
-        self.summary_worker = SummaryWorker(self.summary, old, key)
+        _b2, _k3, _m2 = self.pet.app._chat_cfg()
+        self.summary_worker = SummaryWorker(
+            self.summary, old, key, base_url=_b2, model=_m2)
         self.summary_worker.done.connect(lambda text, c=cut: self._on_summary_done(text, c))
         self.summary_worker.failed.connect(self._on_summary_failed)
         self.summary_worker.start()
@@ -1442,7 +1449,11 @@ class ChatWindow(QWidget):
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
         messages = self._build_request_messages()
         self.token_label.setText("本次　生成中…")
-        self.worker = ChatWorker(messages, key, max_tokens=self.pet.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
+        _base, _key2, _model = self.pet.app._chat_cfg()
+        self.worker = ChatWorker(
+            messages, key,
+            max_tokens=self.pet.cfg.get("max_tokens", MAX_TOKENS_DEFAULT),
+            base_url=_base, model=_model)
         self.pet.set_work_state("thinking")
         self.worker.chunk.connect(self._on_chunk)
         self.worker.done.connect(self._on_done)

@@ -59,6 +59,19 @@ class _VisionBus(QObject):
 
 
 
+class _ChatBus(QObject):
+    """聊天 Key 识别 → UI 的跨线程信号总线（与 _VisionBus 同构）。"""
+    base_found = Signal(str, str, object)      # base, provider, stale
+    model_found = Signal(str, object)          # model, stale
+    progress = Signal(int, object)             # 候选数, stale
+    test_done = Signal(object, bool, str, str, list, object)  # stale,ok,err,base,found,total
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+
+
+
 class CollapsibleSection(QWidget):
     """可收缩区块：标题行（箭头 + 标题 + 状态小字）+ 内容区。
 
@@ -208,6 +221,13 @@ class SettingsWindow(QDialog):
         self._vbus.progress.connect(self._on_vision_progress)
         self._vbus.test_done.connect(self._on_vision_test_done)
         self._vbus.real_done.connect(self._vision_real_test_done)
+
+        # 聊天 Key 识别的跨线程信号
+        self._cbus = _ChatBus(self)
+        self._cbus.base_found.connect(self._on_chat_base_found)
+        self._cbus.model_found.connect(self._on_chat_model_found)
+        self._cbus.progress.connect(self._on_chat_progress)
+        self._cbus.test_done.connect(self._on_chat_test_done)
         if page:
             self._select_page(page)
         self.reload()
@@ -1422,6 +1442,93 @@ class SettingsWindow(QDialog):
                     "回复长度与单次输出上限。风格只改 system 末尾那一句固定文字，"
                     "同一风格下前缀缓存稳定；切换风格时缓存失效一次属正常。")
 
+        # ---- 聊天模型（可收缩，默认展开）----
+        _c_exp = bool((self.app.cfg.get("ui_sections") or {}).get("chat_model", True))
+        self._chat_section = CollapsibleSection("聊天模型", expanded=_c_exp)
+        self._chat_section.toggled.connect(
+            lambda on: self._save_section_state("chat_model", on))
+
+        _rowh = 30
+        _cf = QFormLayout()
+        _cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _cf.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        _cf.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        _cf.setHorizontalSpacing(10)
+        _cf.setVerticalSpacing(6)
+        _cf.setContentsMargins(22, 0, 0, 0)
+
+        # 1) 聊天 Key（密码 + 显示/隐藏）
+        self.chat_key = QLineEdit()
+        self.chat_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.chat_key.setFixedHeight(_rowh)
+        self.chat_key.textChanged.connect(self._on_chat_key_changed)
+        _ckw = QWidget()
+        _ckh = QHBoxLayout(_ckw)
+        _ckh.setContentsMargins(0, 0, 0, 0)
+        _ckh.setSpacing(6)
+        _ckh.addWidget(self.chat_key, 1)
+        self._chat_eye_btn = QPushButton("显示")
+        self._chat_eye_btn.setFixedSize(52, _rowh)
+        self._chat_eye_btn.setToolTip("显示 / 隐藏 Key")
+        self._chat_eye_btn.clicked.connect(self._toggle_chat_key)
+        _ckh.addWidget(self._chat_eye_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        _cf.addRow("聊天 Key", _ckw)
+
+        # 2) 接口地址（只读）
+        self.chat_base = QLineEdit()
+        self.chat_base.setReadOnly(True)
+        self.chat_base.setFixedHeight(_rowh)
+        self.chat_base.setStyleSheet(
+            "QLineEdit{background:#f2f4f8;color:#5a6070;}")
+        _cf.addRow("接口地址", self.chat_base)
+
+        # 3) 聊天模型（可编辑）
+        self.chat_model = QComboBox()
+        self.chat_model.setEditable(True)
+        self.chat_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.chat_model.setFixedHeight(_rowh)
+        self.chat_model.currentIndexChanged.connect(self._on_chat_model_changed)
+        self.chat_model.editTextChanged.connect(self._on_chat_model_changed)
+        _cf.addRow("聊天模型", self.chat_model)
+
+        self._chat_section.body_add_layout(_cf)
+
+        # 按钮：保存 / 测试 / 取消 / 清空
+        _cbtn = QHBoxLayout()
+        _cbtn.addSpacing(22)
+        self._chat_save_btn = QPushButton("保存")
+        self._chat_save_btn.clicked.connect(self._save_chat_cfg)
+        _cbtn.addWidget(self._chat_save_btn)
+        self._chat_test_btn = QPushButton("测试")
+        self._chat_test_btn.setToolTip("识别服务商并验证可用的聊天模型")
+        self._chat_test_btn.clicked.connect(self._test_chat)
+        _cbtn.addWidget(self._chat_test_btn)
+        self._chat_cancel_btn = QPushButton("取消")
+        self._chat_cancel_btn.clicked.connect(self._cancel_chat_test)
+        self._chat_cancel_btn.hide()
+        _cbtn.addWidget(self._chat_cancel_btn)
+        self._chat_clear_btn = QPushButton("清空")
+        self._chat_clear_btn.setToolTip("清掉 Key、地址、模型")
+        self._chat_clear_btn.clicked.connect(self._clear_chat_cfg)
+        _cbtn.addWidget(self._chat_clear_btn)
+        _cbtn.addStretch(1)
+        self._chat_section.body_add_layout(_cbtn)
+
+        # 状态行
+        self._chat_status = QLabel("")
+        self._chat_status.setWordWrap(True)
+        self._chat_status.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        self._chat_section.body_add(self._chat_status)
+
+        # 缓存提示
+        self._chat_section.body_add(self._hint_label("更换模型后缓存失效一次属正常"))
+
+        lay.addWidget(self._chat_section)
+        self._chat_fill_from_cfg()
+
+
+
         self._combo_row(
             lay, "回复风格",
             [(label, key) for label, key in REPLY_STYLE_CHOICES],
@@ -1836,6 +1943,293 @@ class SettingsWindow(QDialog):
         self.app.save_cfg()
         self._on_vision_rule_edited()
         self._set_vision_status("✓ 已恢复默认规则", "ok")
+
+
+    # ---------- 聊天模型配置 ----------
+    def _chat_cfg_dict(self):
+        """从配置读聊天三项（空则回落内置默认，供迁移带入）。"""
+        base, key, model = self.app._chat_cfg_raw()
+        return {"chat_key": key, "chat_base": base, "chat_model": model}
+
+    def _chat_fill_from_cfg(self):
+        """把聊天 Key/地址/模型填进控件（不触发识别、不触发保存）。"""
+        d = self._chat_cfg_dict()
+        for w in (self.chat_key, self.chat_base):
+            w.blockSignals(True)
+        self.chat_key.setText(d["chat_key"])
+        self.chat_base.setText(d["chat_base"])
+        for w in (self.chat_key, self.chat_base):
+            w.blockSignals(False)
+        self._chat_filling = True
+        self.chat_model.blockSignals(True)
+        self.chat_model.clear()
+        if d["chat_model"]:
+            self.chat_model.addItem(d["chat_model"])
+            self.chat_model.setCurrentText(d["chat_model"])
+        self.chat_model.blockSignals(False)
+        self._chat_filling = False
+        self._refresh_chat_status()
+
+    def _refresh_chat_status(self):
+        """状态行：未配置 / 已配置。"""
+        try:
+            key = (self.chat_key.text() or "").strip()
+            model = (self.chat_model.currentText() or "").strip()
+            base = (self.chat_base.text() or "").strip()
+            if not key:
+                self._set_chat_status("尚未配置聊天 Key，点「测试」前请先填写", "info")
+            elif not model:
+                self._set_chat_status("已填 Key，点「测试」识别可用模型", "info")
+            else:
+                self._set_chat_status("当前：%s @ %s" % (model, base), "ok")
+        except Exception:
+            pass
+
+    def _set_chat_status(self, text, kind="info"):
+        color = {"ok": "#1a7f37", "err": "#c0392b", "info": "#8a8f9c"}.get(kind, "#8a8f9c")
+        self._chat_status.setText(text or "")
+        self._chat_status.setStyleSheet(
+            "color:%s;font-size:11px;margin-left:22px;" % color)
+
+    def _toggle_chat_key(self):
+        if self.chat_key.echoMode() == QLineEdit.EchoMode.Password:
+            self.chat_key.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._chat_eye_btn.setText("隐藏")
+        else:
+            self.chat_key.setEchoMode(QLineEdit.EchoMode.Password)
+            self._chat_eye_btn.setText("显示")
+
+    def _on_chat_key_changed(self):
+        if getattr(self, "_chat_filling", False):
+            return
+        self._refresh_chat_status()
+
+    def _on_chat_model_changed(self, *_a):
+        """切换/手填模型后立即保存。"""
+        if getattr(self, "_chat_filling", False):
+            return
+        if getattr(self, "_chat_testing2", False):
+            return
+        model = (self.chat_model.currentText() or "").strip()
+        key = (self.chat_key.text() or "").strip()
+        base = (self.chat_base.text() or "").strip()
+        if model:
+            self.app.cfg["chat_model"] = model[:300]
+            if key:
+                self.app.cfg["ds_api_key"] = key[:300]
+            if base:
+                self.app.cfg["chat_base"] = base[:300]
+            self.app.save_cfg()
+            self._set_chat_status("✓ 模型已保存：%s" % model, "ok")
+
+    def _save_chat_cfg(self):
+        """三项一起写入配置。"""
+        key = (self.chat_key.text() or "").strip()
+        base = (self.chat_base.text() or "").strip()
+        model = (self.chat_model.currentText() or "").strip()
+        self.app.cfg["ds_api_key"] = key[:300]
+        self.app.cfg["chat_base"] = base[:300]
+        self.app.cfg["chat_model"] = model[:300]
+        self.app.save_cfg()
+        self._set_chat_status("✓ 已保存", "ok")
+        log("[聊天] 已保存 Key/地址/模型")
+
+    def _clear_chat_cfg(self):
+        """清空三项。"""
+        self._chat_filling = True
+        self.chat_key.clear()
+        self.chat_base.clear()
+        self.chat_model.blockSignals(True)
+        self.chat_model.clear()
+        self.chat_model.blockSignals(False)
+        self._chat_filling = False
+        self.app.cfg["ds_api_key"] = ""
+        self.app.cfg["chat_base"] = ""
+        self.app.cfg["chat_model"] = ""
+        self.app.save_cfg()
+        self._set_chat_status(
+            "已清空。尚未配置聊天 Key，点「测试」前请先填写", "info")
+
+    def _cancel_chat_test(self):
+        self._chat_token = getattr(self, "_chat_token", 0) + 1
+        self._chat_testing2 = False
+        self._chat_cancel_btn.hide()
+        self._chat_test_btn.setEnabled(True)
+        self._set_chat_status("已取消识别", "info")
+
+    def _test_chat(self):
+        """点「测试」才识别：服务商/地址 + 可用模型（子线程，总超时 60 秒）。"""
+        if getattr(self, "_chat_testing2", False):
+            return
+        key = (self.chat_key.text() or "").strip()
+        if not key:
+            self._set_chat_status("✗ 请先填写聊天 Key", "err")
+            return
+        self._chat_testing2 = True
+        self._chat_token = getattr(self, "_chat_token", 0) + 1
+        token = self._chat_token
+        self._chat_test_btn.setEnabled(False)
+        self._chat_cancel_btn.show()
+        self._set_chat_status("识别中…（正在探测服务商）", "info")
+
+        def stale():
+            return getattr(self, "_chat_token", 0) != token
+
+        def log2(m):
+            log("[聊天识别] " + str(m))
+
+        def work():
+            import time as _t
+            t0 = _t.time()
+            from petcore import vision as V
+            try:
+                # 1) 识别地址（复用视觉的探测逻辑）
+                base, provider, err = V.detect_provider(key, log=log2)
+                if stale():
+                    return
+                if not base:
+                    self._cbus.test_done.emit(stale, False, err or "无法识别服务商",
+                                              "", [], None)
+                    return
+                self._cbus.base_found.emit(base, provider, stale)
+                if _t.time() - t0 > 60:
+                    self._cbus.test_done.emit(stale, False, "总超时 60 秒", base, [], None)
+                    return
+                # 2) 取模型列表
+                ok, models, err2 = V.list_models(base, key, timeout=4)
+                if stale():
+                    return
+                if not ok:
+                    models = []
+                # 3) 剔除明显非对话模型
+                EXCLUDE = ("embed", "rerank", "whisper", "tts", "asr", "audio",
+                           "moderation", "dall", "flux", "video", "image",
+                           "speech", "transcri")
+                cand = [m for m in (models or [])
+                        if not any(w in m.lower() for w in EXCLUDE)]
+                # 排序：沿用视觉的偏好规则（不含视觉专用词也能稳定）
+                try:
+                    cand = V.filter_and_rank(cand)
+                except Exception:
+                    pass
+                cand = cand[:12]
+                if not cand:
+                    self._cbus.test_done.emit(stale, False,
+                                              "没有可验证的对话模型", base, [], 0)
+                    return
+                self._cbus.progress.emit(len(cand), stale)
+
+                # 4) 并发验证（最多 4 个，单请求 40 秒，边验证边出现）
+                found = []
+                lock = __import__("threading").Lock()
+                q = list(cand)
+                qi = [0]
+
+                def worker():
+                    import requests as _rq
+                    from petcore.consts import vision_join
+                    while True:
+                        with lock:
+                            if qi[0] >= len(q):
+                                return
+                            m = q[qi[0]]
+                            qi[0] += 1
+                        if stale():
+                            return
+                        if _t.time() - t0 > 60:
+                            return
+                        try:
+                            r = _rq.post(
+                                vision_join(base, "chat/completions"),
+                                headers={"Authorization": "Bearer " + key,
+                                         "Content-Type": "application/json"},
+                                json={"model": m,
+                                      "messages": [{"role": "user",
+                                                    "content": "回复 ok"}],
+                                      "max_tokens": 16},
+                                timeout=40)
+                            if r.status_code == 200:
+                                with lock:
+                                    if m not in found:
+                                        found.append(m)
+                                if not stale():
+                                    self._cbus.model_found.emit(m, stale)
+                        except Exception:
+                            continue
+
+                import threading as _th
+                ths = [_th.Thread(target=worker, daemon=True) for _ in range(4)]
+                for th in ths:
+                    th.start()
+                for th in ths:
+                    th.join()
+                if stale():
+                    return
+                self._cbus.test_done.emit(stale, True, "", base, list(found),
+                                          len(cand))
+            except Exception as ex:
+                self._cbus.test_done.emit(stale, False, str(ex)[:80], "", [], None)
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_chat_base_found(self, base, provider, stale):
+        if stale():
+            return
+        self.chat_base.setText(base)
+        self._set_chat_status("识别中…（服务商：%s，正在取模型列表）" % provider, "info")
+
+    def _on_chat_model_found(self, model, stale):
+        if stale():
+            return
+        if self.chat_model.findText(model) < 0:
+            self.chat_model.blockSignals(True)
+            self.chat_model.addItem(model)
+            self.chat_model.blockSignals(False)
+        self._set_chat_status("识别中…（已验证 %d 个）" % self.chat_model.count(), "info")
+
+    def _on_chat_progress(self, n, stale):
+        if stale():
+            return
+        self._set_chat_status("识别中…（正在验证 %d 个候选模型）" % n, "info")
+
+    def _on_chat_test_done(self, stale, ok, err, base, found, total=None):
+        if stale():
+            return
+        self._chat_testing2 = False
+        self._chat_test_btn.setEnabled(True)
+        self._chat_cancel_btn.hide()
+        if not ok:
+            self._set_chat_status("✗ " + (err or "识别失败"), "err")
+            return
+        n = len(found or [])
+        if n == 0:
+            self._set_chat_status("✗ 没有可用的对话模型", "err")
+            return
+        # 排序后填入
+        try:
+            from petcore.vision import filter_and_rank
+            ranked = filter_and_rank(list(found))
+        except Exception:
+            ranked = list(found)
+        if len(ranked) != n:
+            ranked = list(found)
+        # 保留用户已选（若仍可用）
+        cur = (self.chat_model.currentText() or "").strip()
+        chosen = cur if cur in ranked else ranked[0]
+        self._chat_filling = True
+        self.chat_model.blockSignals(True)
+        self.chat_model.clear()
+        for m in ranked:
+            self.chat_model.addItem(m)
+        self.chat_model.setCurrentText(chosen)
+        self.chat_model.blockSignals(False)
+        self._chat_filling = False
+        if base:
+            self.chat_base.setText(base)
+        self._set_chat_status("✓ 找到 %d 个可用模型，已选 %s" % (n, chosen), "ok")
+        self._save_chat_cfg()
+        log("[聊天识别] 完成：%d 个可用，已选 %s" % (n, chosen))
 
 
     def _vision_provider_name(self):

@@ -1965,9 +1965,22 @@ class PetApp(QObject):
             key = self._balance_key(prov)
             if key:
                 targets.append((prov, key))
+        # DeepSeek 余额接口只对 api.deepseek.com 有效；
+        # 换了别家就跳过（不报错），只查智谱或给出说明。
+        _cb = (self.cfg.get("chat_base") or "").strip().lower()
+        _deepseek_ok = ("deepseek" in _cb) if _cb else True
+        if not _deepseek_ok:
+            targets = [(pv, k) for (pv, k) in targets if pv != "deepseek"]
+            log("[余额] 聊天地址非 DeepSeek（%s），跳过 DeepSeek 余额" % _cb)
+
+
         if not targets:
-            self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」"
-                          "（智谱 Key 在 设置 →「聊天」→「看看屏幕」）")
+            if not _deepseek_ok:
+                self.say_main("当前聊天服务商不支持查询余额哦~"
+                              "（只有 DeepSeek 和智谱能查）")
+            else:
+                self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」"
+                              "（智谱 Key 在 设置 →「视觉」）")
             return
 
         self.balance_workers = []
@@ -2603,6 +2616,29 @@ class PetApp(QObject):
             return ""
 
     # ---------- 看看屏幕：框选截图 ----------
+    def _chat_cfg(self):
+        """聊天配置：返回 (base_url, api_key, model)。
+
+        地址/模型为空时回落内置默认（DS_BASE_URL / DS_MODEL），
+        这样旧配置（只有 ds_api_key）无需迁移即可继续用。
+        """
+        base = (self.cfg.get("chat_base") or "").strip()
+        key = (self.cfg.get("ds_api_key") or "").strip()
+        model = (self.cfg.get("chat_model") or "").strip()
+        if not base:
+            base = DS_BASE_URL
+        if not model:
+            model = DS_MODEL
+        return base, key, model
+
+    def _chat_cfg_raw(self):
+        """界面上要显示的原始值（空则显示内置默认，供迁移带入）。"""
+        base = (self.cfg.get("chat_base") or "").strip() or DS_BASE_URL
+        key = (self.cfg.get("ds_api_key") or "").strip()
+        model = (self.cfg.get("chat_model") or "").strip() or DS_MODEL
+        return base, key, model
+
+
     def _vision_cfg(self):
         """视觉配置（独立于聊天 Key）：返回 (base_url, api_key, model_name)。
 
@@ -3082,8 +3118,7 @@ class PetApp(QObject):
             {"role": "user", "content": line},
         ]
         max_tokens = int(self.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
-        base_url = DS_BASE_URL
-        model = DS_MODEL
+        base_url, _ck, model = self._chat_cfg()
 
         def run():
             text = ""

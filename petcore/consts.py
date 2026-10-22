@@ -2065,6 +2065,8 @@ def default_config():
         "passthrough": False,
         "autostart": False,
         "ds_api_key": "",
+        "chat_base": "",          # 聊天接口地址（空则用 DS_BASE_URL）
+        "chat_model": "",         # 聊天模型（空则用 DS_MODEL）
         "city": "汕头",
         "birthday": "",
         "animation_mode": "auto",
@@ -2074,7 +2076,7 @@ def default_config():
                     "last_value": None, "last_time": None},
         # 设置页可收缩区块的展开状态（只影响显示，不影响配置读写）
         "ui_sections": {"persona": True, "vision_rule": False,
-                        "vision_advanced": False},
+                        "vision_advanced": False, "chat_model": True},
         "seasonal_fx": {"auto": True},
         "features": _default_features(),
         "frame_anim": {"enabled": True, "max_cache": FRAME_ANIM_MAX_CACHE},
@@ -2593,10 +2595,22 @@ def migrate_and_validate(raw):
         else:
             changed = True
 
+    # chat_base / chat_model：聊天接口地址与模型（字符串，空则用内置默认）
+    for _ck in ("chat_base", "chat_model"):
+        _cv = raw.get(_ck)
+        if isinstance(_cv, str):
+            cfg[_ck] = _cv.strip()[:300]
+        elif _cv is not None:
+            issues.append(_ck)
+
+    # 迁移：旧配置只有 ds_api_key，没有 chat_base/chat_model 时不算问题，
+    # 由 App 启动时按 DS_BASE_URL / DS_MODEL 填入界面（见 _chat_cfg）
+
+
     # ui_sections：设置页可收缩区块状态（只影响显示）
     _us = raw.get("ui_sections")
     if isinstance(_us, dict):
-        for _k2 in ("persona", "vision_rule", "vision_advanced"):
+        for _k2 in ("persona", "vision_rule", "vision_advanced", "chat_model"):
             if isinstance(_us.get(_k2), bool):
                 cfg["ui_sections"][_k2] = _us[_k2]
 
