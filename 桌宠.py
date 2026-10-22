@@ -3219,7 +3219,8 @@ class PetApp(QObject):
         """把 [屏幕观察] 交给聊天模型，用大肥鱼人设回一句。
 
         - system 末尾追加 CHAT_LOOK_RULES（只在看屏路径）
-        - temperature 0.8
+        - temperature 0.9 / top_p 0.95（更活泼，减少模板化）
+        - 反套路：新回复开头两字若与最近 3 次相同，重新生成一次（最多重试 1 次）
         - 回复经 postprocess_reply 处理
         - 成功后 mem.save(scene, state, reply)
         聊天 Key 不可用（未配置/失效/网络错误）时降级显示视觉描述。
@@ -3239,17 +3240,27 @@ class PetApp(QObject):
                 logging.WARNING)
         # 只在看屏路径追加规则
         sys_text = sys_text + SV.CHAT_LOOK_RULES
-        messages = [
-            {"role": "system", "content": sys_text},
-            {"role": "user", "content": line},
-        ]
         max_tokens = int(self.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
         base_url, _ck, model = self._chat_cfg()
         mem = self._screen_memory
 
-        def run():
-            text = ""
-            why = ""
+        # 最近 3 次回复的开头两字（反套路比对用）
+        recent_heads = set()
+        try:
+            for rp in (mem.recent_replies() or [])[-3:]:
+                h = SV.reply_head(rp)
+                if h:
+                    recent_heads.add(h)
+        except Exception:
+            pass
+
+        def _ask_once(extra_hint=""):
+            """发一次聊天请求，返回 (text, why)。"""
+            user_msg = line + (("\n" + extra_hint) if extra_hint else "")
+            messages = [
+                {"role": "system", "content": sys_text},
+                {"role": "user", "content": user_msg},
+            ]
             try:
                 r = requests.post(
                     base_url.rstrip("/") + "/chat/completions",
@@ -3257,19 +3268,43 @@ class PetApp(QObject):
                              "Content-Type": "application/json"},
                     json={"model": model, "messages": messages,
                           "max_tokens": max_tokens,
-                          "temperature": 0.8},
+                          "temperature": 0.9,
+                          "top_p": 0.95},
                     timeout=120)
                 if r.status_code == 200:
                     try:
-                        text = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                        return (r.json()["choices"][0]["message"]["content"] or "").strip(), ""
                     except Exception:
-                        text = ""
-                else:
-                    why = "HTTP %s" % r.status_code
-                    log("[看看屏幕] 聊天模型不可用（%s），降级显示视觉描述" % why)
+                        return "", ""
+                why = "HTTP %s" % r.status_code
+                log("[看看屏幕] 聊天模型不可用（%s），降级显示视觉描述" % why)
+                return "", why
             except Exception as ex:
                 why = str(ex)[:40]
                 log("[看看屏幕] 聊天请求失败（%s），降级显示视觉描述" % why)
+                return "", why
+
+        def run():
+            text, why = _ask_once()
+            # 反套路：开头与最近 3 次撞了 → 重生成一次
+            if text and recent_heads:
+                head = SV.reply_head(text)
+                if head and head in recent_heads:
+                    log("[看看屏幕] 开头「%s」与最近重复，重新生成一次" % head)
+                    hint = ("（上一次你的开头是「%s」，和之前重复了。"
+                            "这次换一个完全不同的开头和句式，不要用“哼”“笨蛋主人”"
+                            "“才不是”开头，直接说画面里的东西。）" % head)
+                    text2, why2 = _ask_once(hint)
+                    if text2:
+                        head2 = SV.reply_head(text2)
+                        # 新回复开头也不撞才采用；仍撞就保留第一次的
+                        if head2 and head2 not in recent_heads:
+                            text = text2
+                        else:
+                            log("[看看屏幕] 重试后开头「%s」仍重复，保留原回复" % head2)
+                    elif why2:
+                        why = why2
+
             if text:
                 text = SV.postprocess_reply(text)
                 self.say_main(text)
