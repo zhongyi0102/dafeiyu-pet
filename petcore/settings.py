@@ -394,6 +394,18 @@ class SettingsWindow(QDialog):
         return w
 
 
+    def _sub_hint(self, text):
+        """紧贴控件的单行小字：灰色、比控件标签小一号、无左缩进。
+
+        放在 QFormLayout 的字段列，与上方控件留小间距（由行距控制）。
+        """
+        w = QLabel(text)
+        w.setWordWrap(True)
+        w.setStyleSheet("color:#8a8f9c;font-size:10px;")
+        w.setContentsMargins(0, 0, 0, 0)
+        return w
+
+
     def _tokens_field(self, value, lo, hi, step, on_change, suffix="tokens"):
         """滑块 + 数字框 + 单位，装进一个 QWidget（供 QFormLayout 用）。
 
@@ -1748,8 +1760,10 @@ class SettingsWindow(QDialog):
                 int(self.app.cfg.get("look_screen", {}).get("max_tokens")
                     or VISION_TOKENS_DEFAULT),
                 VISION_TOKENS_MIN, VISION_TOKENS_MAX, 50,
-                lambda v: self._on_vision_tokens_changed(int(v)), "tokens")
+                lambda v: self._on_vision_tokens_changed(int(v)), "")
         _af.addRow("单次上限", self._vision_tokens_field)
+        _af.addRow("", self._sub_hint(
+            "识别结果最长能写多长，太小会被截断。带思考过程的模型请调大。"))
 
         # 6) 图片最长边
         self._vision_side_field, self.vision_side_slider, self.vision_side_spin = \
@@ -1759,6 +1773,8 @@ class SettingsWindow(QDialog):
                 LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX, LOOK_SCREEN_SIDE_STEP,
                 lambda v: self._on_vision_limit_changed("max_side", int(v)), "px")
         _af.addRow("图片最长边", self._vision_side_field)
+        _af.addRow("", self._sub_hint(
+            "截图缩放后的最长边。越大越清楚，也越慢越费钱；一般 1024 够用。"))
 
         # 7) 图片质量
         self._vision_quality_field, self.vision_quality_slider, self.vision_quality_spin = \
@@ -1768,6 +1784,8 @@ class SettingsWindow(QDialog):
                 LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX, 5,
                 lambda v: self._on_vision_limit_changed("quality", int(v)), "")
         _af.addRow("图片质量", self._vision_quality_field)
+        _af.addRow("", self._sub_hint(
+            "越低上传越快，但字会变糊，一般不用动。"))
 
         # 8) 请求超时（宽度与数字框一致）
         self.vision_timeout_spin = QSpinBox()
@@ -1781,26 +1799,17 @@ class SettingsWindow(QDialog):
         self.vision_timeout_spin.valueChanged.connect(
             lambda v: self._on_vision_limit_changed("timeout", int(v)))
         _af.addRow("请求超时", self.vision_timeout_spin)
+        _af.addRow("", self._sub_hint(
+            "等多久没反应就放弃。带思考过程的模型建议调大。"))
 
         self._advanced_section.body_add_layout(_af)
-
-        # 四项说明灰字（样式与聊天页一致，随折叠区显示/隐藏）
-        self._advanced_section.body_add(self._hint_label(
-            "视觉模型单次最多输出多少 token（中文约 1.5 字/token）。"
-            "「描述风格」决定说多长，这个值决定最多能说多长；带思考过程的模型请调大。"))
-        self._advanced_section.body_add(self._hint_label(
-            "截图缩放后的最长边。越大越清晰，也越费 token；512 最省，2048 适合看细节。"))
-        self._advanced_section.body_add(self._hint_label(
-            "JPEG 压缩质量（60~95）。越低上传越快，但文字和线条会变模糊。"))
-        self._advanced_section.body_add(self._hint_label(
-            "多久没响应就放弃（10~120 秒）。带思考过程的模型建议调大。"))
 
         # 保存屏幕描述到聊天记录（默认关闭）
         self._vision_save_desc = self._check(
             self._advanced_section.body_layout, "保存屏幕描述到聊天记录",
             bool((self.app.cfg.get("look_screen") or {}).get("save_desc", False)),
             lambda on: self._set_vision_save_desc(bool(on)),
-            "关闭时描述只用于本次回复，不写入 chats.json")
+            "关闭时只用于这一次回复，不写入聊天记录。")
 
 
         # 高级设置加入页面（放在识别规则之后、按钮之前）
@@ -1822,10 +1831,14 @@ class SettingsWindow(QDialog):
         self._vision_cancel_btn.clicked.connect(self._cancel_vision_test)
         self._vision_cancel_btn.hide()
         vbtn_row.addWidget(self._vision_cancel_btn)
-        self._vision_clear_btn = QPushButton("清空")
-        self._vision_clear_btn.setToolTip("清掉 Key、地址、模型")
+        self._vision_clear_btn = QPushButton("清除 Key")
+        self._vision_clear_btn.setToolTip("清掉 Key、地址、模型（不影响高级设置）")
         self._vision_clear_btn.clicked.connect(self._clear_vision_cfg)
         vbtn_row.addWidget(self._vision_clear_btn)
+        self._vision_reset_btn = QPushButton("恢复默认")
+        self._vision_reset_btn.setToolTip("把高级设置四项恢复为默认值（不影响 Key）")
+        self._vision_reset_btn.clicked.connect(self._reset_vision_advanced)
+        vbtn_row.addWidget(self._vision_reset_btn)
         vbtn_row.addStretch(1)
         lay.addLayout(vbtn_row)
 
@@ -1838,11 +1851,11 @@ class SettingsWindow(QDialog):
         self._vision_fill_from_cfg()
         self._refresh_advanced_summary()
 
-        # 明文 Key 提醒
-        _keywarn = QLabel("⚠ 配置文件（config.json）含明文 Key，请勿分享该文件")
+        # 明文 Key 提示（灰色小字，不用警告色）
+        _keywarn = QLabel("配置文件（config.json）含明文 Key，请勿分享该文件")
         _keywarn.setWordWrap(True)
         _keywarn.setStyleSheet(
-            "color:#d08a00;font-size:11px;margin-left:22px;")
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
         lay.addWidget(_keywarn)
 
         lay.addStretch(1)
@@ -2674,6 +2687,49 @@ class SettingsWindow(QDialog):
         }
         self.app.save_cfg()
         self._set_vision_status("已清空 Key/地址/模型（规则与其余设置保留）", "info")
+
+
+    def _reset_vision_advanced(self):
+        """恢复默认：只把高级设置四项恢复为默认值，**不动 Key / 地址 / 模型**。"""
+        ls = self._vision_cfg_dict()
+        defaults = {
+            "max_tokens": VISION_TOKENS_DEFAULT,        # 800
+            "max_side": LOOK_SCREEN_SIDE_DEFAULT,       # 1024
+            "quality": LOOK_SCREEN_QUALITY_DEFAULT,     # 85
+            "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT,     # 30
+        }
+        # 1) 写回控件（阻止信号，避免逐项触发保存）
+        self.vision_tokens_slider.blockSignals(True)
+        self.vision_tokens_spin.blockSignals(True)
+        self.vision_tokens_slider.setValue(defaults["max_tokens"])
+        self.vision_tokens_spin.setValue(float(defaults["max_tokens"]))
+        self.vision_tokens_slider.blockSignals(False)
+        self.vision_tokens_spin.blockSignals(False)
+
+        for _sl, _bx, _val in (
+                (self.vision_side_slider, self.vision_side_spin, defaults["max_side"]),
+                (self.vision_quality_slider, self.vision_quality_spin,
+                 defaults["quality"])):
+            _sl.blockSignals(True)
+            _bx.blockSignals(True)
+            _sl.setValue(_val)
+            _bx.setValue(float(_val))
+            _sl.blockSignals(False)
+            _bx.blockSignals(False)
+
+        self.vision_timeout_spin.blockSignals(True)
+        self.vision_timeout_spin.setValue(defaults["timeout"])
+        self.vision_timeout_spin.blockSignals(False)
+
+        # 2) 写进配置（只改这四项，其余字段原样保留）
+        ls.update(defaults)
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        self._refresh_advanced_summary()
+        self._set_vision_status(
+            "✓ 高级设置已恢复默认（上限 %d · 最长边 %d · 质量 %d · 超时 %d 秒）"
+            % (defaults["max_tokens"], defaults["max_side"],
+               defaults["quality"], defaults["timeout"]), "ok")
 
 
     def _test_vision(self):
