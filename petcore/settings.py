@@ -192,6 +192,9 @@ class CollapsibleSection(QWidget):
 class SettingsWindow(QDialog):
     """统一设置窗口：左侧分页，右侧内容。所有入口都从这里进（右键「设置…」/ 托盘）。"""
 
+    # 主动搭话测试结果回主线程（worker 线程只 emit）
+    _pro_test_done = Signal(object, str, str, float, str, bool, bool)
+
     PAGES = [
         ("features", "功能开关"),
         ("pet", "宠物"),
@@ -259,6 +262,8 @@ class SettingsWindow(QDialog):
         right.setSpacing(8)
         self.stack = QStackedWidget(self)
         self._pages = {}
+        # 主动搭话测试结果（一次性连接，避免重复触发）
+        self._pro_test_done.connect(self._on_pro_test_done)
         for key, label in self.PAGES:
             w = QWidget()
             lay = QVBoxLayout(w)
@@ -3210,6 +3215,49 @@ class SettingsWindow(QDialog):
         _wrow.addStretch(1)
         _sec6.body_add_layout(_wrow)
 
+        # ---- 测试 ----
+        self._pro_line(lay)
+        _sec7 = self._pro_section(lay, "测试", expanded=True)
+        _sec7.body_add(self._sub_hint(
+            "忽略工作时间段、发呆阈值和冷却，直接调一次模型看效果。"
+            "不会计入每日次数，也不会被无视惩罚影响。"))
+        _trow = QHBoxLayout()
+        self._pro_test_btn = QPushButton("测试搭话")
+        self._pro_test_btn.setToolTip("立刻调一次模型，结果显示在下方")
+        self._pro_test_btn.clicked.connect(
+            lambda: self._pro_run_test(welcome=False))
+        _trow.addWidget(self._pro_test_btn)
+        self._pro_test_welcome_btn = QPushButton("测试回来打招呼")
+        self._pro_test_welcome_btn.setToolTip("用欢迎语提示词调一次模型")
+        self._pro_test_welcome_btn.clicked.connect(
+            lambda: self._pro_run_test(welcome=True))
+        _trow.addWidget(self._pro_test_welcome_btn)
+        self._pro_test_cancel_btn = QPushButton("取消")
+        self._pro_test_cancel_btn.clicked.connect(self._pro_cancel_test)
+        self._pro_test_cancel_btn.hide()
+        _trow.addWidget(self._pro_test_cancel_btn)
+        _trow.addStretch(1)
+        _sec7.body_add_layout(_trow)
+
+        # 是否真实弹气泡
+        self._pro_test_real = self._check(
+            _sec7.body_layout, "同时在桌宠上弹气泡",
+            bool((self.app.cfg.get("proactive_test_real") if
+                  isinstance(self.app.cfg.get("proactive_test_real"), bool) else True)),
+            lambda on: self._pro_set_test_real(bool(on)),
+            "勾选时气泡真的会出现在桌宠上（8 秒后消失）。")
+
+        # 结果区
+        self._pro_test_out = QLabel("")
+        self._pro_test_out.setWordWrap(True)
+        self._pro_test_out.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._pro_test_out.setStyleSheet(
+            "color:#2f3542;font-size:11px;background:#f5f7fb;"
+            "border-radius:6px;padding:8px;")
+        self._pro_test_out.hide()
+        _sec7.body_add(self._pro_test_out)
+
         # ---- 状态提示 ----
         self._pro_line(lay)
         self._pro_status = QLabel("")
@@ -3428,6 +3476,134 @@ class SettingsWindow(QDialog):
         self._pro_welcome_prompt.setPlainText(_P.DEFAULT_WELCOME_PROMPT)
         self._pro_welcome_prompt.blockSignals(False)
         self._pro_save({"welcome_prompt": _P.DEFAULT_WELCOME_PROMPT})
+
+    # ---- 测试按钮 ----
+    def _pro_set_test_real(self, on):
+        try:
+            self.app.cfg["proactive_test_real"] = bool(on)
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[设置] 保存测试弹气泡开关失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _pro_set_test_out(self, text, color="#2f3542"):
+        try:
+            self._pro_test_out.setText(text)
+            self._pro_test_out.setStyleSheet(
+                "color:%s;font-size:11px;background:#f5f7fb;"
+                "border-radius:6px;padding:8px;" % color)
+            self._pro_test_out.setVisible(bool(text))
+        except Exception:
+            pass
+
+    def _pro_run_test(self, welcome=False):
+        """测试：忽略时间段/阈值/冷却，直接调一次模型。"""
+        if getattr(self, "_pro_testing", False):
+            return
+        cfg = self.app.proactive_cfg()
+        ready, base, key, model = self.app._proactive_chat_ready()
+        if not ready:
+            self._pro_set_test_out(
+                "✗ 聊天 Key / 地址 / 模型还没配好，先去「聊天」页配置并点「测试」。",
+                "#c0392b")
+            return
+
+        # 取当前前台窗口（测试不看时间段）
+        try:
+            import proactive as _P
+            _h, _proc, _title = _P.foreground_window()
+            info = {"proc": _proc, "title": _title, "hwnd": _h}
+        except Exception:
+            info = {"proc": "", "title": "", "hwnd": 0}
+
+        # 组装消息：用当前配置的提示词与阈值（假装刚发呆到阈值）
+        idle_sec = max(60, int(cfg.get("idle_min") or 10) * 60)
+        recent = []
+        try:
+            recent = list(getattr(self.app._pro_state, "recent", []) or [])
+        except Exception:
+            pass
+        import proactive as _P
+        if welcome:
+            system, user = _P.build_welcome_messages(cfg, info, recent)
+        else:
+            system, user = _P.build_messages(cfg, info, idle_sec, recent)
+
+        self._pro_testing = True
+        self._pro_test_btn.setEnabled(False)
+        self._pro_test_welcome_btn.setEnabled(False)
+        self._pro_test_cancel_btn.show()
+        self._pro_test_cancel_btn.setEnabled(True)
+        self._pro_set_test_out("…正在调用模型（前台：%s）" % (info.get("proc") or "未知"),
+                               "#8a8f9c")
+
+        # 预览要发送的内容（可折叠显示在结果里）
+        preview = user if len(user) <= 300 else user[:300] + "…"
+
+        import threading
+        self._pro_test_seq = getattr(self, "_pro_test_seq", 0) + 1
+        seq = self._pro_test_seq
+
+        def work():
+            t0 = time.time()
+            text, err = _P.call_chat(base, key, model, system, user, timeout=45)
+            dt = time.time() - t0
+            if seq != getattr(self, "_pro_test_seq", 0):
+                return          # 已取消/作废
+            self._pro_test_done.emit(seq, text, err, dt, preview, welcome,
+                                     bool(self._pro_test_real.isChecked()))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_pro_test_done(self, seq, text, err, dt, preview, welcome, real):
+        if seq != getattr(self, "_pro_test_seq", 0):
+            return
+        self._pro_testing = False
+        self._pro_test_btn.setEnabled(True)
+        self._pro_test_welcome_btn.setEnabled(True)
+        self._pro_test_cancel_btn.hide()
+
+        if err:
+            self._pro_set_test_out(
+                "✗ 调用失败（%.1fs）：%s\n\n【发送内容】\n%s" % (dt, err, preview),
+                "#c0392b")
+            return
+        line = ""
+        try:
+            import proactive as _P
+            line = _P.clean_reply(text)
+        except Exception:
+            line = (text or "").strip()
+        if not line:
+            self._pro_set_test_out(
+                "模型返回 [SKIP]（表示这次没什么值得说的，实际运行时会静默）\n"
+                "耗时 %.1fs\n\n【原始返回】\n%s\n\n【发送内容】\n%s"
+                % (dt, (text or "（空）")[:200], preview),
+                "#d08a00")
+            return
+        self._pro_set_test_out(
+            "✓ %.1fs\n\n【宠物会说】\n%s\n\n【发送内容】\n%s"
+            % (dt, line, preview), "#1a7f37")
+        # 真实弹气泡（走测试专用路径，不计入每日次数、不写记忆）
+        if real:
+            try:
+                pet = self.app.main_pet
+                if pet is not None:
+                    pet.say(line)
+                    # 与正式主动搭话一致：8 秒
+                    pet.bubble_until = pet.t * TICK / 1000.0 + 8.0
+                    pet.update()
+            except Exception:
+                pass
+
+    def _pro_cancel_test(self):
+        self._pro_test_seq = getattr(self, "_pro_test_seq", 0) + 1
+        self._pro_testing = False
+        self._pro_test_btn.setEnabled(True)
+        self._pro_test_welcome_btn.setEnabled(True)
+        self._pro_test_cancel_btn.hide()
+        self._pro_set_test_out("已取消（已发出的请求无法中断，结果会被丢弃）",
+                               "#8a8f9c")
 
     def _pro_refresh_status(self):
         try:
