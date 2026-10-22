@@ -1202,6 +1202,35 @@ class PetApp(QObject):
             if not line:
                 log("[主动] 模型返回 SKIP（静默）")
                 return
+            # 防幻觉：书名号里的专有名词若不在观察/窗口信息里，重生成一次
+            bad, words = PRO.looks_hallucinated(line, user2)
+            if bad:
+                log("[主动] 疑似幻觉（%s），重生成一次" % "、".join(words[:3]))
+                retry_hint = ("\n\n【重要】上一次你提到了"
+                              + "、".join(words[:3])
+                              + "，但提供的画面信息里没有这些。"
+                              "不要编造作品名/歌名/游戏名，只用上面出现过的内容，"
+                              "或者只描述你确实看到的部分。")
+                text2, err2 = PRO.call_chat(base, key, model, system,
+                                            user2 + retry_hint, timeout=timeout)
+                if not err2:
+                    line2 = PRO.clean_reply(text2)
+                    if line2:
+                        bad2, _w2 = PRO.looks_hallucinated(line2, user2)
+                        if not bad2:
+                            line = line2        # 重试干净就采用
+                        else:
+                            # 还编：把可疑书名号换成中性词
+                            line = PRO.strip_hallucinated(line2, _w2)
+                            log("[主动] 重试仍有幻觉，已做中性化处理")
+                    else:
+                        log("[主动] 重试返回 SKIP，本次不搭话")
+                        return
+                else:
+                    # 重试失败：保留原回复并中性化
+                    line = PRO.strip_hallucinated(line, words)
+            if not line:
+                return
             if rid != getattr(self, "_pro_req_id", 0):
                 return
             self.pro_active_say.emit(line, bool(welcome))
