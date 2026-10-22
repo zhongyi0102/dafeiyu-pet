@@ -11,6 +11,8 @@
 
 本模块只依赖标准库 + requests + Pillow，不依赖 UI。
 """
+import re
+import logging
 import base64
 import io
 import threading
@@ -217,18 +219,36 @@ def suggest_models(provider_name, listed_models):
     return filter_and_rank(merged), False
 
 
+def _version_key(name):
+    """从模型名提取版本号元组，用于「同档内从新到旧」排序。
+
+    例：glm-5.3-flash → (5, 3)
+        glm-4.6v-flash → (4, 6)
+        glm-4v-flash   → (4, 0)
+    取不到版本号的返回 (0, 0)。
+    """
+    m = re.search(r"(\d+)(?:\.(\d+))?", name or "")
+    if not m:
+        return (0, 0)
+    major = int(m.group(1))
+    minor = int(m.group(2)) if m.group(2) else 0
+    return (major, minor)
+
+
+
 def filter_and_rank(models):
-    """剔除明显非对话模型，并按用户要求排序。
+    """剔除明显非对话模型，并按「档位 → 版本号从新到旧」排序。
 
-    剔除规则：
-      1) 命中 VISION_EXCLUDE_WORDS（含 ocr / autoglm 等）→ 剔除
-      2) 纯文本 GLM：名字形如 glm-5.3 / glm-4.6 / glm-5
-         （glm-<数字>[.<数字>]，且不含 v、不含 flash）→ 剔除
+    剔除：
+      1) 命中 VISION_EXCLUDE_WORDS（含 ocr / autoglm）
+      2) 纯文本 GLM（glm-<数字>[.<数字>]，无 v、无 flash）
 
-    排序规则（数字越小越前）：
-      1) 名字含 "-flash" 且其后不是 "x" → 最前（如 glm-5.3-flash-0901 也算）
-      2) 含 "flashx" 或其它 → 次之
-      3) 含 turbo / thinking / pro → 最后
+    排序（升序）：
+      档位 0：含 "-flash" 且其后不是 "x"（含 glm-5.3-flash-0901）
+      档位 1：含 "flashx"
+      档位 2：其它
+      档位 3：含 turbo / thinking / pro（无论有没有 flash，一律最后）
+    同档内：版本号从新到旧 → 偏好分 → 名字
     """
     from petcore.consts import (VISION_EXCLUDE_WORDS, VISION_PREFER_WORDS,
                                 VISION_RANK_LAST_WORDS, _VISION_PLAINTEXT_GLM)
@@ -238,28 +258,30 @@ def filter_and_rank(models):
         low = n.lower()
         if any(w in low for w in VISION_EXCLUDE_WORDS):
             continue
-        # 纯文本 GLM（无 v、无 flash）
         if _VISION_PLAINTEXT_GLM.match(low) and "v" not in low and "flash" not in low:
             continue
         if n in seen:
             continue
         seen.add(n)
-        # ---- 主排序档位 ----
-        if "-flash" in low and not low.split("-flash", 1)[1].startswith("x"):
+        # ---- 主排序档位（thinking/turbo/pro 优先判断）----
+        if any(w in low for w in VISION_RANK_LAST_WORDS):
+            tier = 3
+        elif "-flash" in low and not low.split("-flash", 1)[1].startswith("x"):
             tier = 0
         elif "flashx" in low:
             tier = 1
-        elif any(w in low for w in VISION_RANK_LAST_WORDS):
-            tier = 3
         else:
             tier = 2
+        # ---- 偏好分 ----
         score = 0
         for i, w in enumerate(VISION_PREFER_WORDS):
             if w in low:
                 score = max(score, len(VISION_PREFER_WORDS) - i)
-        out.append((tier, -score, n))
-    out.sort(key=lambda x: (x[0], x[1], x[2]))
-    return [n for _t, _s, n in out]
+        out.append((tier, _version_key(n), score, n))
+
+    # 档位 → 版本号（从新到旧）→ 偏好分（高到低）→ 名字
+    out.sort(key=lambda x: (x[0], -x[1][0], -x[1][1], -x[2], x[3]))
+    return [n for _t, _v, _s, n in out]
 
 
 def verify_model(base, key, model, timeout=None):

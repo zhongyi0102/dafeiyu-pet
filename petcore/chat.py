@@ -1445,7 +1445,7 @@ class ChatWindow(QWidget):
             self._start_chat_stream()
             return
         self.token_label.setText("正在整理前情摘要…")
-        _b2, _k3, _m2 = self.pet.app._chat_cfg()
+        _b2, _k3, _m2 = self.pet._chat_cfg()
         self.summary_worker = SummaryWorker(
             self.summary, old, key, base_url=_b2, model=_m2)
         self.summary_worker.done.connect(lambda text, c=cut: self._on_summary_done(text, c))
@@ -1469,7 +1469,7 @@ class ChatWindow(QWidget):
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
         messages = self._build_request_messages()
         self.token_label.setText("本次　生成中…")
-        _base, _key2, _model = self.pet.app._chat_cfg()
+        _base, _key2, _model = self.pet._chat_cfg()
         self.worker = ChatWorker(
             messages, key,
             max_tokens=self.pet.cfg.get("max_tokens", MAX_TOKENS_DEFAULT),

@@ -1867,21 +1867,27 @@ class SettingsWindow(QDialog):
         self._refresh_rule_state()
 
     def _refresh_rule_state(self):
-        """规则状态：默认 / 已保存 / 未保存。"""
+        """规则状态：默认（跟随代码） / 已自定义。"""
+        from petcore.consts import is_default_vision_system
         try:
             cur = (self.vision_rule_edit.toPlainText() or "").strip()
-        except Exception:
+        except Exception as ex:
+            log("[设置] 读规则文本框失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
             return
-        saved = self._saved_rule().strip()
-        dft = VISION_SYSTEM_DEFAULT.strip()
-        cur_n = cur or dft
-        if cur_n == saved:
-            if saved == dft:
+        saved = (self.app.cfg.get("look_screen") or {}).get("vision_system") or ""
+        # 配置里有副本且不是默认 → 已自定义
+        if saved.strip() and not is_default_vision_system(saved):
+            if cur == saved.strip():
+                self._rule_section.set_state("已自定义", "#1a7f37")
+            else:
+                self._rule_section.set_state("未保存", "#d08a00")
+        else:
+            # 配置里没副本 → 默认
+            if not cur or is_default_vision_system(cur):
                 self._rule_section.set_state("默认", "#8a8f9c")
             else:
-                self._rule_section.set_state("已保存", "#1a7f37")
-        else:
-            self._rule_section.set_state("未保存", "#d08a00")
+                self._rule_section.set_state("未保存", "#d08a00")
 
 
     def _refresh_advanced_summary(self):
@@ -1934,38 +1940,45 @@ class SettingsWindow(QDialog):
 
 
     def _save_vision_rule(self):
-        """把规则写进配置（与请求共用同一份 vision_system）。"""
+        """保存规则：等于任一默认值就存空串（不存副本），否则存自定义文本。"""
+        from petcore.consts import is_default_vision_system
         text = (self.vision_rule_edit.toPlainText() or "").strip()
-        if not text:
-            text = VISION_SYSTEM_DEFAULT
+        if not text or is_default_vision_system(text):
+            saved = ""          # 不存副本，跟随默认
+        else:
+            saved = text[:8000]
         ls = self._vision_cfg_dict()
-        ls["vision_system"] = text[:8000]
+        ls["vision_system"] = saved
         self.app.cfg["look_screen"] = ls
         self.app.save_cfg()
         self._on_vision_rule_edited()
-        self._set_vision_status("✓ 识别规则已保存", "ok")
+        self._set_vision_status(
+            "✓ 已保存（跟随默认）" if not saved else "✓ 已保存自定义规则", "ok")
+
 
     def _reset_vision_rule(self):
-        """恢复默认规则（二次确认，避免误覆盖）。"""
+        """恢复默认 = 清除配置里的副本（之后自动跟随代码里的最新默认值）。"""
         ans = QMessageBox.question(
             self, "恢复默认规则",
-            "确定把识别规则恢复成内置默认吗？\n你当前编辑的内容会丢失。",
+            "确定把识别规则恢复成内置默认吗？\n"
+            "（会清除你自定义的副本，之后默认规则更新时自动跟随）",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if ans != QMessageBox.StandardButton.Yes:
             return
+        # 清空副本
+        ls = self._vision_cfg_dict()
+        ls["vision_system"] = ""
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        # 界面回填最新默认值
         self.vision_rule_edit.blockSignals(True)
         self.vision_rule_edit.setPlainText(VISION_SYSTEM_DEFAULT)
         self.vision_rule_edit.blockSignals(False)
-        ls = self._vision_cfg_dict()
-        ls["vision_system"] = VISION_SYSTEM_DEFAULT
-        self.app.cfg["look_screen"] = ls
-        self.app.save_cfg()
         self._on_vision_rule_edited()
-        self._set_vision_status("✓ 已恢复默认规则", "ok")
+        self._set_vision_status("✓ 已恢复默认（副本已清除，将跟随新版默认）", "ok")
 
 
-    # ---------- 聊天模型配置 ----------
     def _chat_cfg_dict(self):
         """从配置读聊天三项（空则回落内置默认，供迁移带入）。"""
         base, key, model = self.app._chat_cfg_raw()
@@ -2213,12 +2226,24 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_chat_timeout(self, token):
-        """硬性总超时到点：令牌作废 + 复位 + 提示。"""
+        """硬性总超时：保留已找到的模型，提示验证被中断。"""
         if getattr(self, "_chat_token", 0) != token:
             return
+        found = [self.chat_model.itemText(i) for i in range(self.chat_model.count())]
+        found = [m for m in found if m]
         self._reset_chat_test_ui()
-        self._set_chat_status("✗ 识别超时（60 秒）", "err")
-        log("[聊天识别] 硬性总超时 60 秒，已丢弃结果")
+        if found:
+            self._set_chat_status(
+                "⚠ 已找到 %d 个，验证被超时中断" % len(found), "err")
+            # 已找到的保留在下拉框，并保存
+            try:
+                self._save_chat_cfg()
+            except Exception as ex:
+                log("[聊天识别] 超时后保存失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
+        else:
+            self._set_chat_status("✗ 识别超时（60 秒），未找到可用模型", "err")
+        log("[聊天识别] 硬性总超时，保留 %d 个已找到的模型" % len(found))
 
 
     def _on_chat_base_found(self, base, provider, stale):
@@ -2226,6 +2251,13 @@ class SettingsWindow(QDialog):
             return
         self.chat_base.setText(base)
         self._set_chat_status("识别中…（服务商：%s，正在取模型列表）" % provider, "info")
+        # 探测完成 → 验证阶段重新计 60 秒
+        try:
+            self._chat_deadline_timer.start(60000)
+        except Exception as ex:
+            log("[聊天识别] 重启超时定时器失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
 
     def _on_chat_model_found(self, model, stale):
         if stale():
@@ -2726,12 +2758,18 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_vision_timeout(self, token):
-        """硬性总超时到点：令牌作废 + 复位 + 提示。"""
+        """硬性总超时：保留已找到的模型，提示验证被中断。"""
         if getattr(self, "_vision_token", 0) != token:
             return
+        found = [self.vision_model.itemText(i) for i in range(self.vision_model.count())]
+        found = [m for m in found if m]
         self._reset_vision_test_ui()
-        self._set_vision_status("✗ 识别超时（60 秒）", "err")
-        log("[视觉识别] 硬性总超时 60 秒，已丢弃结果")
+        if found:
+            self._set_vision_status(
+                "⚠ 已找到 %d 个，验证被超时中断" % len(found), "err")
+        else:
+            self._set_vision_status("✗ 识别超时（60 秒），未找到可用模型", "err")
+        log("[视觉识别] 硬性总超时，保留 %d 个已找到的模型" % len(found))
 
 
     def _on_vision_progress(self, n, stale):
@@ -2744,6 +2782,13 @@ class SettingsWindow(QDialog):
             return
         self.vision_base.setText(base)
         self._set_vision_status("识别中…（服务商：%s，正在取模型列表）" % provider, "info")
+        # 探测完成 → 验证阶段重新计 60 秒
+        try:
+            self._vision_deadline_timer.start(60000)
+        except Exception as ex:
+            log("[视觉识别] 重启超时定时器失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
 
     def _on_vision_model_found(self, model, stale):
         if stale():
@@ -2776,13 +2821,25 @@ class SettingsWindow(QDialog):
                 "✗ 这个 Key 下没有可用的视觉模型（已试 %s 个）" % (total or 0), "err")
             return
 
-        # ★ 并行验证的到达顺序是随机的，这里按规则重排一次：
-        #   以 -flash 结尾最前 → flashx/其它 → 含 turbo/thinking/pro 最后
+        # ★ 并行验证的到达顺序是随机的，这里按规则重排一次。
+        # 优先用 screen_vision.pick_vision_model（识别 glm-4.6v / glm-5v 等），
+        # 失败则退回 petcore.vision.filter_and_rank。
+        ranked_found = raw_found
         try:
-            from petcore.vision import filter_and_rank
-            ranked_found = filter_and_rank(raw_found)
-        except Exception:
-            ranked_found = raw_found
+            import screen_vision as _SV
+            ranked_found = _SV.pick_vision_model(list(raw_found))
+            # pick_vision_model 会把非视觉模型也保留（-1 分排最后），
+            # 这里只保留它认为能用的（分数 >= 0 的排前面部分）
+            if not ranked_found:
+                ranked_found = list(raw_found)
+        except Exception as ex:
+            log("[设置] pick_vision_model 失败，退回 filter_and_rank: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            try:
+                from petcore.vision import filter_and_rank
+                ranked_found = filter_and_rank(raw_found)
+            except Exception:
+                ranked_found = list(raw_found)
         if len(ranked_found) != n:
             ranked_found = raw_found
         log("验证通过 %d 个，排序后：%s" % (n, ", ".join(ranked_found)))

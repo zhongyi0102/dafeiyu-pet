@@ -2,3 +2,8 @@ PySide6>=6.5
 requests
 psutil
 pynvml
+Pillow
+pywin32
+
+# 可选：本地 OCR（不装则跳过 OCR，功能照常）
+# rapidocr-onnxruntime

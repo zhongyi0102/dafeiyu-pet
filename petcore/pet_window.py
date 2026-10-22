@@ -727,13 +727,21 @@ class PetWindow(QWidget):
             words = self.bubble_text
             lines = []
             cur = ""
+            # 避头尾：这些标点不能出现在行首（否则出现「句号掉行」）
+            NO_LINE_START = "。，、；：？！）】》」』…—·.,;:?!)]}>"
             for ch in words:
                 if fm.horizontalAdvance(cur + ch) > max_w - 20:
-                    lines.append(cur)
-                    cur = ch
+                    # 若当前字符是标点、且上一行还有字，把上一行末字挪下来
+                    if ch in NO_LINE_START and len(cur) > 1:
+                        lines.append(cur[:-1])
+                        cur = cur[-1] + ch
+                    else:
+                        lines.append(cur)
+                        cur = ch
                 else:
                     cur += ch
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             # 行数上限：超出气泡区就截断（末尾加省略号）
             max_lines = max(1, (max_h - 14) // max(1, fm.height()))
             if len(lines) > max_lines:

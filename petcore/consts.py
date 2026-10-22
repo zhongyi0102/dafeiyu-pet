@@ -10,6 +10,7 @@ import datetime
 import html
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 import random
@@ -69,17 +70,8 @@ except Exception:
     GPU_AVAILABLE = False
 
 
-def log(msg, level=logging.INFO):
-    try:
-        LOG.log(level, msg)
-    except Exception:
-        pass
 
 
-DS_BASE_URL = "https://api.deepseek.com/v1"
-DS_MODEL = "deepseek-chat"
-
-# 注意：这是一段**固定字符串**，不会每次变化 —— 保证前缀缓存稳定。
 DEFAULT_PERSONA = (
     '你是桌面宠物"大肥鱼"，一只傲娇又可爱的鲸鱼娘，称呼用户为"主人"或"笨蛋主人"。\n'
     "说话嘴上嫌弃、心里在意：先别扭地哼一声，再小声关心主人，被夸或被戳到会害羞结巴。\n"
@@ -88,7 +80,17 @@ DEFAULT_PERSONA = (
     "你是桌宠，看不到主人的屏幕和桌面，不知道的事不要编造。\n"
     "每次回复控制在 80 字以内，除非主人明确要求详细回答。"
 )
-# 回复长度风格：只改这一句固定文字，其余不变（切换后前缀缓存失效一次属正常）
+
+DS_BASE_URL = "https://api.deepseek.com/v1"
+
+DS_MODEL = "deepseek-chat"
+
+MAX_TOKENS_DEFAULT = 400
+
+MAX_TOKENS_MAX = 2000
+
+MAX_TOKENS_MIN = 200
+
 REPLY_STYLES = {
     "brief":  "每次回复控制在 80 字以内，除非主人明确要求详细回答。",
     "normal": "每次回复控制在 200 字以内，除非主人明确要求详细回答。",
@@ -100,11 +102,6 @@ REPLY_STYLE_CHOICES = (
     ("详细（不限）", "detail"),
 )
 REPLY_STYLE_DEFAULT = "brief"
-# max_tokens 默认值与可调范围
-MAX_TOKENS_DEFAULT = 400
-MAX_TOKENS_MIN = 200
-MAX_TOKENS_MAX = 2000
-
 
 def reply_style_suffix(style):
     """返回该风格要追加在 system 末尾的固定句（detail 返回空串）。"""
@@ -226,6 +223,42 @@ LOG = logging.getLogger("dafeiyu")
 _LOG_READY = False
 
 
+# ===== Key 脱敏（日志/状态栏输出前统一调用）=====
+# 注意：****xxxx 只在前面有 key / api key / apikey 字样时才替换，避免误伤普通文字
+_SECRET_PATTERNS = (
+    # sk-xxx
+    (re.compile(r"sk-[A-Za-z0-9_\-]{8,}"), "***"),
+    # AIza...（Google）
+    (re.compile(r"AIza[0-9A-Za-z_\-]{10,}"), "***"),
+    # 智谱：32 位 hex . 16~48 位
+    (re.compile(r"\b[0-9a-fA-F]{32}\.[A-Za-z0-9]{16,48}\b"), "***"),
+    # 服务商回显的 ****xxxx —— 必须有 key / api key / apikey 前缀
+    (re.compile(r"(?i)\b(api[\s_]?key|key)\b[^\n]{0,20}?\*{2,}[A-Za-z0-9]{2,}"), "***"),
+    # Bearer <token>
+    (re.compile(r"Bearer\s+[A-Za-z0-9_\-\.]{8,}"), "Bearer ***"),
+)
+
+
+def mask_secrets(text):
+    """把文本里形如 Key 的片段替换成 ***。
+
+    所有写日志、显示状态栏的地方都应先过这个函数。
+    """
+    if not text:
+        return text
+    out = str(text)
+    for pat, repl in _SECRET_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+
+
+# 日志去重：同一 (消息, 级别) 在窗口期内只记一次
+_LOG_DEDUP = {}
+_LOG_DEDUP_WINDOW = 60.0     # 秒
+_LOG_DEDUP_MAX = 500         # 最多记多少条指纹，防止无限增长
+
+
 def _setup_logging():
     global _LOG_READY
     if _LOG_READY:
@@ -237,14 +270,34 @@ def _setup_logging():
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         LOG.addHandler(handler)
         LOG.setLevel(logging.INFO)
-    except Exception:
-        pass
+    except Exception as ex:
+        # 不能静默：日志系统本身坏了必须能看见（写到 stderr，不含 Key）
+        try:
+            sys.__stderr__.write("[logging] 初始化失败: %s: %s\n"
+                                 % (type(ex).__name__, ex))
+        except Exception:
+            pass
 
 
 def log(msg, level=logging.INFO):
+    """写日志。相同消息在 60 秒内只记一次；写入前自动脱敏 Key。"""
     try:
         _setup_logging()
-        LOG.log(level, msg)
+        safe = mask_secrets(msg)          # ← 写入前脱敏
+        key = (str(safe)[:200], int(level))
+        now = time.time()
+        last = _LOG_DEDUP.get(key)
+        if last is not None and (now - last) < _LOG_DEDUP_WINDOW:
+            return          # 窗口期内重复，跳过
+        if len(_LOG_DEDUP) > _LOG_DEDUP_MAX:
+            _LOG_DEDUP.clear()
+        _LOG_DEDUP[key] = now
+        LOG.log(level, safe)
+        for _h in LOG.handlers:
+            try:
+                _h.flush()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -420,9 +473,35 @@ LOOK_SCREEN_ANTI_HALLUCINATION_HELP = (
 
 # 视觉请求 system 的默认内容（可在设置页「视觉 → 识别规则」修改）
 # 注意：描述风格的长度句由程序自动追加在最末尾，不属于这段
+# 视觉提示词默认值（通用版，可在设置页修改）
+# 结构：角色 + 长度上限 + 输出格式（场景/主要内容/关键信息/状态/证据）
 VISION_SYSTEM_DEFAULT = (
-    "你是屏幕观察员。客观描述画面内容和用户可能在做的事，"
-    "不使用任何角色语气，不评论。\n"
+    "你是屏幕观察员，只客观描述，不评价、不扮演角色。总共不超过150字。\n"
+    "先判断用户此刻最可能在做什么、状态如何（专注/摸鱼/卡住/放松），"
+    "再列出支撑判断的2到3个画面证据。\n"
+    "屏幕文字以【参考文字】为准，不要自己抄录；大段文字最多引用5个字。\n"
+    "没有的项写“无”。严格按下面格式输出：\n"
+    "场景：（音乐播放器/写代码/看视频/游戏/聊天/网页/文档/桌面等）\n"
+    "主要内容：（一句话，有歌名、标题、文件名就写出来）\n"
+    "关键信息：（最多3条，如数字、报错、人物）\n"
+    "状态：（一句话，用户在做什么、什么状态）\n"
+    "证据：（2到3条，用分号隔开）"
+)
+
+# 历史版本的默认规则（用于启动时自动清除过期副本）
+# 新增默认值时，把旧版追加进来，这样老配置的副本会被识别并清掉
+VISION_SYSTEM_DEFAULTS_HISTORY = (
+    # v1.1.0 之前：只有 5 条规则
+    "你是屏幕观察员。客观描述画面内容和用户可能在做的事，不使用任何角色语气，不评论。\n"
+    "识别时严格遵守以下规则，避免臆编：\n"
+    "1. 只描述画面里真实可见的内容，一个字都不推测。\n"
+    "2. 不凭外观猜测作品名、游戏名、动画名、人物名、门派名、地名；"
+    "但画面里有文字明确写出来的，可以直接引用。\n"
+    "3. 不编造画面外的剧情、前后文、角色关系。\n"
+    "4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
+    "5. 不确定的部分直接跳过，宁少勿编。",
+    # 加了第 6 条，但第 4 条还是旧写法
+    "你是屏幕观察员。客观描述画面内容和用户可能在做的事，不使用任何角色语气，不评论。\n"
     "识别时严格遵守以下规则，避免臆编：\n"
     "1. 只描述画面里真实可见的内容，一个字都不推测。\n"
     "2. 不凭外观猜测作品名、游戏名、动画名、人物名、门派名、地名；"
@@ -430,9 +509,34 @@ VISION_SYSTEM_DEFAULT = (
     "3. 不编造画面外的剧情、前后文、角色关系。\n"
     "4. 画面里有什么字就抄什么字，没有的字不会发明。\n"
     "5. 不确定的部分直接跳过，宁少勿编。\n"
+    "6. 密码、验证码、账号、银行卡号、身份证号等敏感信息不要抄写，写成[已省略]。",
+
+    # v1.1.0 的五条规则版（无格式要求）
+    "你是屏幕观察员。客观描述画面内容和用户可能在做的事，"
+    "不使用任何角色语气，不评论。\n"
+    "识别时严格遵守以下规则，避免臆编：\n"
+    "1. 只描述画面里真实可见的内容，一个字都不推测。\n"
+    "2. 不凭外观猜测作品名、游戏名、动画名、人物名、门派名、地名；"
+    "但画面里有文字明确写出来的，可以直接引用。\n"
+    "3. 不编造画面外的剧情、前后文、角色关系。\n"
+    "4. 除第 6 条外，画面里有什么字就抄什么字，没有的字不会发明。\n"
+    "5. 不确定的部分直接跳过，宁少勿编。\n"
     "6. 密码、验证码、账号、银行卡号、身份证号等敏感信息不要抄写，"
-    "写成[已省略]。"
-)
+    "写成[已省略]。",)
+
+
+def is_default_vision_system(text):
+    """判断给定规则文本是否等于任一历史默认值（含当前默认）。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if t == VISION_SYSTEM_DEFAULT.strip():
+        return True
+    for old in VISION_SYSTEM_DEFAULTS_HISTORY:
+        if t == old.strip():
+            return True
+    return False
+
 # 视觉请求的 user 消息固定部分（配合 system 使用）
 VISION_USER_PROMPT = "描述这张屏幕截图。"
 # 视觉描述请求：只描述可见内容（两步流程第一步用）
@@ -2068,6 +2172,7 @@ def default_config():
         "ds_api_key": "",
         "chat_base": "",          # 聊天接口地址（空则用 DS_BASE_URL）
         "chat_model": "",         # 聊天模型（空则用 DS_MODEL）
+        "chat_migrated": False,   # 是否已完成旧配置迁移（只做一次）
         "city": "汕头",
         "birthday": "",
         "animation_mode": "auto",
@@ -2602,6 +2707,12 @@ def migrate_and_validate(raw):
             issues.append(key)
         else:
             changed = True
+
+    # chat_migrated：旧配置迁移标记（只做一次）
+    _cm = raw.get("chat_migrated")
+    if isinstance(_cm, bool):
+        cfg["chat_migrated"] = _cm
+
 
     # chat_base / chat_model：聊天接口地址与模型（字符串，空则用内置默认）
     for _ck in ("chat_base", "chat_model"):

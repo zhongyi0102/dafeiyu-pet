@@ -8,6 +8,7 @@ import base64
 import ctypes
 import datetime
 import html
+import io
 import logging
 import psutil
 import json
@@ -51,6 +52,11 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
 # ===== 常量 / 配置 / 工具（已拆分到 petcore.consts）=====
 from petcore.consts import *          # noqa: F401,F403
 # import * 不会导入下划线开头的名字，这里显式补全
+from petcore.consts import mask_secrets, is_default_vision_system  # noqa: F401
+
+# 看看屏幕增强模块（场景分类 / OCR / 预处理 / 看屏记忆 / 视觉模型排序）
+import screen_vision as SV   # noqa: E402
+
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
                             CONFIG_PATH, CHAT_PATH, MEMORY_PATH, LOG_PATH,
                             GPU_AVAILABLE,
@@ -457,7 +463,12 @@ class SeasonalEffect:
         p.restore()
 
 
-def _http_error_message(status, body):
+def _http_error_message(status, body, kind="chat"):
+    """把 HTTP 错误转成用户可读文案。**所有输出都经过 mask_secrets 脱敏。**
+
+    kind="chat"  → 提示去「设置 → 聊天」（聊天 Key）
+    kind="vision"→ 提示去「设置 → 视觉」（视觉 Key）
+    """
     msg = ""
     try:
         data = json.loads(body)
@@ -466,21 +477,26 @@ def _http_error_message(status, body):
     except Exception:
         msg = (body or "")[:200]
     low = (msg or "").lower()
+
+    def _key_hint():
+        if kind == "vision":
+            return "请到 设置 →「视觉」重新填写视觉 Key。"
+        return "请到 设置 →「聊天」→「聊天模型」重新填写聊天 Key。"
+
     if status == 401 or "authentication" in low or "invalid api key" in low or "api key" in low:
-        return "API Key 无效或已失效。请右键桌宠 →「设置 Key」重新填写。"
+        return "API Key 无效或已失效。" + _key_hint()
     if status == 402 or "insufficient" in low or "balance" in low:
-        return "账户余额不足（HTTP 402）。请先到 platform.deepseek.com 充值。"
+        return "账户余额不足（HTTP 402）。请先充值。"
     if status == 429:
         return "请求太频繁或额度用尽（HTTP 429），稍等一会儿再试。"
     if status and status >= 500:
-        return f"DeepSeek 服务器出错了（HTTP {status}）：{msg or '稍后再试'}"
-    return f"请求失败（HTTP {status}）：{msg or '未知错误'}"
+        return mask_secrets("服务器出错了（HTTP %s）：%s" % (status, msg or "稍后再试"))
+    return mask_secrets("请求失败（HTTP %s）：%s" % (status, msg or "未知错误"))
 
 
 # ===== 聊天（已拆分到 petcore.chat）=====
 from petcore.chat import (MemoryStore, ChatWorker, SummaryWorker,   # noqa: F401
                           ChatBubble, ChatWindow, MemoryDialog)
-
 
 class RpsPanel(QFrame):
     """猜拳小面板：石头剪刀布，宠物随机出（全局唯一，归属 PetApp）"""
@@ -712,20 +728,48 @@ class PetApp(QObject):
 
     # 看看屏幕 → 聊天窗口（跨线程安全：worker 线程只 emit）
     look_to_chat = Signal(str, str, str)
+
+    # 天气查询结果回主线程（worker 线程只 emit）
+    weather_done = Signal(str, int)
     """全局唯一的东西：配置、托盘、菜单、聊天、记忆、提醒、节日、截屏守卫、
     系统监控、小游戏、用量。持有 1~N 个 PetWindow。"""
 
     def __init__(self):
         self.cfg, migrated = load_config_safe()
+        super().__init__()
+        self.pets = []
+        # 看屏记忆（放用户数据目录，不放项目目录）
+        try:
+            self._screen_memory = SV.ScreenMemory(
+                os.path.join(APP_DIR, "screen_memory.json"), keep=3)
+        except Exception as ex:
+            log("[看看屏幕] 初始化 ScreenMemory 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            self._screen_memory = None
+        # OCR 引擎首次加载很慢，后台预热（不阻塞界面线程）
+        try:
+            if SV.ocr_available():
+                SV.warmup_ocr(blocking=False)
+                log("[看看屏幕] OCR 后台预热已启动")
+            else:
+                log("[看看屏幕] 未安装 rapidocr，OCR 已跳过（功能照常）")
+        except Exception as ex:
+            log("[看看屏幕] OCR 预热失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
         # 旧配置迁移（一次性写入 chat_base / chat_model，运行时不再回落）
         try:
             self._migrate_chat_cfg()
         except Exception as ex:
             log("[聊天] 迁移失败: %s: %s" % (type(ex).__name__, ex), logging.WARNING)
-        super().__init__()
-        self.pets = []
+        # 清除过期的默认规则副本（默认规则变化时自动跟随新版）
+        try:
+            self._purge_default_vision_system()
+        except Exception as ex:
+            log("[视觉] 清除默认规则副本失败: %s: %s" % (type(ex).__name__, ex), logging.WARNING)
         # 看看屏幕结果回主线程写聊天（worker 线程只 emit）
         self.look_to_chat.connect(self._on_look_to_chat)
+        self.weather_done.connect(self._on_weather_done)
         self.main_pet = None
         self.chat_window = None
         self.memory_dialog = None
@@ -2623,21 +2667,45 @@ class PetApp(QObject):
             return ""
 
     # ---------- 看看屏幕：框选截图 ----------
-    def _migrate_chat_cfg(self):
-        """旧配置迁移：只有 ds_api_key 时，一次性写入 chat_base / chat_model 并保存。
+    def _purge_default_vision_system(self):
+        """启动时：如果配置里的规则副本等于任一历史默认值，清除它。
 
-        运行时不再悄悄回落，之后所有读取都走配置里的实际值。
+        这样默认规则变化时，未自定义过的用户自动跟随新版。
         """
-        if (self.cfg.get("chat_base") or "").strip():
-            return   # 已经迁移过
+        ls = self.cfg.get("look_screen")
+        if not isinstance(ls, dict):
+            return
+        cur = (ls.get("vision_system") or "").strip()
+        if not cur:
+            return
+        if is_default_vision_system(cur):
+            ls["vision_system"] = ""
+            self.cfg["look_screen"] = ls
+            try:
+                self.save_cfg()
+                log("[视觉] 已清除过期的默认规则副本，将跟随新版默认")
+            except Exception as ex:
+                log("[视觉] 清除规则副本后保存失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
+
+
+    def _migrate_chat_cfg(self):
+        """旧配置迁移：**只做一次**。
+
+        用 chat_migrated 标记保证：迁移后即使手动清空 chat_base，
+        重启也不会再根据 ds_api_key 重新写入。
+        """
+        if self.cfg.get("chat_migrated"):
+            return   # 已迁移过，不再动
         key = (self.cfg.get("ds_api_key") or "").strip()
         if not key:
-            return   # 没 Key，无需迁移
+            return   # 没 Key，无需迁移（下次有 Key 时再做）
         self.cfg["chat_base"] = DS_BASE_URL
         self.cfg["chat_model"] = DS_MODEL
+        self.cfg["chat_migrated"] = True
         try:
             self.save_cfg()
-            log("[聊天] 旧配置迁移：chat_base / chat_model 已写入配置")
+            log("[聊天] 旧配置迁移完成（chat_migrated=True）")
         except Exception as ex:
             log("[聊天] 迁移保存失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -2685,18 +2753,17 @@ class PetApp(QObject):
     def _vision_system_cfg(self):
         """视觉请求的 system 文本。
 
-        结构：识别规则（可编辑，来自配置）+ 空行 + 描述风格长度句（自动追加）。
-        长度句不存进配置，也不受文本框内容影响。
+        结构：识别规则（可编辑）+ 空行 + 描述风格长度句（自动追加）。
+        配置里只在用户自定义时才存副本；副本等于历史默认值时视为默认。
         """
         ls = self.cfg.get("look_screen") or {}
         body = (ls.get("vision_system") or "").strip()
-        if not body:
+        if not body or is_default_vision_system(body):
             body = VISION_SYSTEM_DEFAULT
         suffix = vision_style_suffix(ls.get("style") or VISION_STYLE_DEFAULT)
         if suffix:
             return body + chr(10) + chr(10) + suffix
         return body
-
 
     def _vision_limits(self):
         """视觉请求限制：返回 (max_side, quality, timeout)。"""
@@ -2763,26 +2830,41 @@ class PetApp(QObject):
             return None, 1.0
 
     def _begin_region_select(self, pet=None):
-        """右键「看看屏幕」入口：检查 → 隐藏 → 框选 → 后续流程。"""
+        """右键「看看屏幕」入口：记录前台窗口 → 检查 → 隐藏 → 框选 → 后续流程。
+
+        关键：get_fg_info() 必须在框选开始前调用，否则拿到的是截图工具窗口。
+        """
         speaker = pet or self.main_pet
+
+        # ① 先记前台窗口（此刻焦点还在用户的应用上）
+        try:
+            self._look_fg_info = SV.get_fg_info()
+            log("[看看屏幕] 前台窗口: %s / %s"
+                % (self._look_fg_info[0] or "无", self._look_fg_info[1] or "无"))
+        except Exception as ex:
+            self._look_fg_info = ("", "")
+            log("[看看屏幕] 取前台窗口失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+        # ② 视觉配置检查
         ok, tip = self._vision_ready_check()
         if not ok:
             self.say_main(tip)
             return
 
-        # 冷却（防止连点反复弹遮罩）
+        # ③ 冷却（防止连点反复弹遮罩）
         now = time.time()
         if now - getattr(self, "_look_last", 0.0) < LOOK_SCREEN_COOLDOWN:
             self.say_main("别急，%d 秒后再看～" % int(LOOK_SCREEN_COOLDOWN))
             return
         self._look_last = now
 
-        # 记住原本可见的宠物，稍后恢复
+        # ④ 记住原本可见的宠物，稍后恢复
         self._look_was_visible = [w for w in self.pets if w.isVisible()]
         for w in self._look_was_visible:
             self.set_visible(w.pet_id, False, "capture")
 
-        # 等窗口真正消失后再截底图（否则会拍到桌宠）
+        # ⑤ 等窗口真正消失后再截底图（否则会拍到桌宠）
         QTimer.singleShot(150, lambda: self._do_region_select())
 
     def _do_region_select(self):
@@ -2890,92 +2972,103 @@ class PetApp(QObject):
             self.say_main("瞧不清呢……")
 
     def _run_look_screen(self, image):
-        """两步流程：视觉模型描述 → 交给聊天模型按人设回复。"""
-        # 截图数据容器：闭包可读，线程结束统一释放
-        holder = {"jpg": None}
+        """两步流程：analyze_screen（视觉+OCR+场景）→ 聊天模型按人设回复。
+
+        analyze_screen 内部会：
+          - 按前台窗口/标题分类场景，选对应提示词
+          - 预处理图片（小选区放大）
+          - 非聊天场景做 OCR，结果作为【参考文字】给视觉模型
+          - 组装给聊天模型的消息（含上次看屏 + 避免重复的角度）
+        """
         base, key, model = self._vision_cfg()
-        suffix, vis_tokens = self._vision_style_cfg()
+        _side, _quality, _timeout = self._vision_limits()
+        _suffix, vis_tokens = self._vision_style_cfg()
         speaker = self.main_pet
         if speaker is not None:
             speaker.say("看看中…")
 
-        # 转 JPEG 只在内存里
-        buf = QBuffer()
-        buf.open(QIODevice.OpenModeFlag.WriteOnly)
-        _side, _quality, _timeout = self._vision_limits()
-        image.save(buf, "JPEG", _quality)
-        holder["jpg"] = bytes(buf.data())
-        buf.close()
-        image = None
+        # QImage → PIL.Image（只在内存）
+        holder = {"pil": None, "fg": getattr(self, "_look_fg_info", ("", ""))}
+        try:
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            image.save(buf, "PNG")          # 无损转出，后面由 SV 统一压 JPEG
+            raw_png = bytes(buf.data())
+            buf.close()
+            image = None
+            from PIL import Image as _PILImage
+            holder["pil"] = _PILImage.open(io.BytesIO(raw_png)).convert("RGB")
+        except Exception as ex:
+            log("[看看屏幕] 图片转换失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            self.say_main("截图处理失败了呢……")
+            return
 
-        # system = 识别规则（可编辑）+ 自动追加的长度句；user = 固定指令
-        sys_prompt = self._vision_system_cfg()
-        user_prompt = VISION_USER_PROMPT
+        # 用户自定义视觉提示词（空则 None，交给场景提示词）
+        _rule = (self.cfg.get("look_screen") or {}).get("vision_system") or ""
+        _override = None
+        if _rule.strip() and not is_default_vision_system(_rule):
+            _override = _rule.strip()
 
-
-        def run():
-            desc = ""
-            try:
-                b64 = base64.b64encode(holder["jpg"]).decode("ascii")
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image_url",
-                         "image_url": {"url": "data:image/jpeg;base64," + b64}},
-                    ]}],
-                    "max_tokens": vis_tokens,
-                }
-                r = requests.post(
+        def vision_call(messages):
+            """视觉请求（OpenAI 兼容 messages），返回字符串。temperature=0.2。"""
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": vis_tokens,
+                "temperature": 0.2,
+            }
+            r = requests.post(
+                vision_join(base, "chat/completions"),
+                headers={"Authorization": "Bearer " + key,
+                         "Content-Type": "application/json"},
+                json=payload, timeout=_timeout)
+            if r.status_code != 200:
+                raise RuntimeError(_http_error_message(r.status_code, r.text,
+                                                      kind="vision"))
+            d = r.json()
+            ch = (d.get("choices") or [{}])[0]
+            msg = ch.get("message") or {}
+            txt = (msg.get("content") or "").strip()
+            if not txt and ch.get("finish_reason") == "length":
+                # token 不够，加大重试一次
+                payload["max_tokens"] = min(VISION_TOKENS_MAX, vis_tokens * 2)
+                r2 = requests.post(
                     vision_join(base, "chat/completions"),
                     headers={"Authorization": "Bearer " + key,
                              "Content-Type": "application/json"},
                     json=payload, timeout=_timeout)
-                if r.status_code != 200:
-                    msg = _http_error_message(r.status_code, r.text)
-                    self.say_main(msg)
-                    self._look_screen_to_chat("(框选)", msg, ok=False)
+                if r2.status_code == 200:
+                    m2 = (r2.json().get("choices") or [{}])[0].get("message") or {}
+                    txt = (m2.get("content") or "").strip()
+            if not txt:
+                reason = (msg.get("reasoning_content") or "").strip()
+                if reason:
+                    txt = reason.split(chr(10))[-1].strip()[:80]
+            return txt
+
+        def run():
+            try:
+                pil = holder["pil"]
+                fg = holder["fg"]
+                if pil is None:
                     return
-                data = r.json()
-                try:
-                    ch = data["choices"][0]
-                    m = ch.get("message") or {}
-                    desc = (m.get("content") or "").strip()
-                    reason = (m.get("reasoning_content") or "").strip()
-                    fin = ch.get("finish_reason")
-                except Exception:
-                    desc, reason, fin = "", "", None
-                if not desc and fin == "length":
-                    payload["max_tokens"] = min(VISION_TOKENS_MAX, vis_tokens * 2)
-                    log("[看看屏幕] 视觉 token 不足，加大到 %d 重试" % payload["max_tokens"])
-                    r2 = requests.post(
-                        vision_join(base, "chat/completions"),
-                        headers={"Authorization": "Bearer " + key,
-                                 "Content-Type": "application/json"},
-                        json=payload, timeout=_timeout)
-                    if r2.status_code == 200:
-                        try:
-                            m2 = r2.json()["choices"][0].get("message") or {}
-                            desc = (m2.get("content") or "").strip()
-                        except Exception as ex:
-                            log("[%s] %s 失败: %s: %s"
-                                % (__name__, "_run_look_screen", type(ex).__name__, ex),
-                                logging.WARNING)
-                if not desc and reason:
-                    desc = reason.strip().split("\n")[-1].strip()[:80]
-                if not desc:
-                    msg = "我看了半天，没看出啥……"
-                    self.say_main(msg)
+                chat_msg, scene, state = SV.analyze_screen(
+                    pil, fg, self._screen_memory, vision_call,
+                    is_selection=True,
+                    vision_system_override=_override)
+                holder["pil"] = None
+                log("[看看屏幕] 场景=%s 状态=%s" % (scene, (state or "")[:30]))
+                if not chat_msg:
+                    self.say_main("我看了半天，没看出啥……")
                     return
-                # ---- 第二步：交给聊天模型按人设回复 ----
-                self._look_screen_to_chat_desc(desc)
+                self._look_screen_to_chat_desc(chat_msg, scene, state)
             except Exception as ex:
-                log("[看看屏幕] 失败: %s" % ex, logging.WARNING)
+                log("[看看屏幕] analyze_screen 失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
                 self.say_main("瞧不清呢……%s" % str(ex)[:30])
             finally:
-                holder["jpg"] = None   # 释放截图数据
+                holder["pil"] = None
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -3113,21 +3206,23 @@ class PetApp(QObject):
             return False
 
 
-    def _look_screen_to_chat_desc(self, desc):
-        """把视觉描述交给聊天模型，用大肥鱼人设回一句（并同步聊天）。"""
-        line = ("[屏幕观察] 以下是我看到的画面内容（仅此而已，不是剧情、不是某部作品）。你就当作我也在看着主人的屏幕，用你的口吻说一句关于这画面的话：" + chr(10) + desc)
-        # 用聊天模型按人设回应
+    def _look_screen_to_chat_desc(self, chat_msg, scene="general", state=""):
+        """把 analyze_screen 组装好的消息交给聊天模型，用大肥鱼人设回一句。"""
         try:
-            self._ask_chat_for_look(line, desc)
+            self._ask_chat_for_look(chat_msg, chat_msg, scene=scene, state=state)
         except Exception as ex:
-            log("[看看屏幕] 交给聊天失败: %s" % ex, logging.WARNING)
-            self.say_main(desc[:80])
+            log("[看看屏幕] 交给聊天失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            self.say_main(chat_msg[:80])
 
-    def _ask_chat_for_look(self, line, desc):
+    def _ask_chat_for_look(self, line, desc, scene="general", state=""):
         """把 [屏幕观察] 交给聊天模型，用大肥鱼人设回一句。
 
-        聊天 Key 不可用（未配置/失效/网络错误）时降级：
-        直接把视觉描述包成一句人设口吻的话显示，而不是报错。
+        - system 末尾追加 CHAT_LOOK_RULES（只在看屏路径）
+        - temperature 0.8
+        - 回复经 postprocess_reply 处理
+        - 成功后 mem.save(scene, state, reply)
+        聊天 Key 不可用（未配置/失效/网络错误）时降级显示视觉描述。
         """
         key = (self.cfg.get("ds_api_key") or "").strip()
         if not key:
@@ -3142,12 +3237,15 @@ class PetApp(QObject):
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "_ask_chat_for_look", type(ex).__name__, ex),
                 logging.WARNING)
+        # 只在看屏路径追加规则
+        sys_text = sys_text + SV.CHAT_LOOK_RULES
         messages = [
             {"role": "system", "content": sys_text},
             {"role": "user", "content": line},
         ]
         max_tokens = int(self.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
         base_url, _ck, model = self._chat_cfg()
+        mem = self._screen_memory
 
         def run():
             text = ""
@@ -3158,7 +3256,8 @@ class PetApp(QObject):
                     headers={"Authorization": "Bearer " + key,
                              "Content-Type": "application/json"},
                     json={"model": model, "messages": messages,
-                          "max_tokens": max_tokens},
+                          "max_tokens": max_tokens,
+                          "temperature": 0.8},
                     timeout=120)
                 if r.status_code == 200:
                     try:
@@ -3172,8 +3271,14 @@ class PetApp(QObject):
                 why = str(ex)[:40]
                 log("[看看屏幕] 聊天请求失败（%s），降级显示视觉描述" % why)
             if text:
+                text = SV.postprocess_reply(text)
                 self.say_main(text)
                 self._look_screen_to_chat("(框选)", text, ok=True, desc=desc)
+                try:
+                    mem.save(scene, state, text)
+                except Exception as ex:
+                    log("[看看屏幕] 保存看屏记忆失败: %s: %s"
+                        % (type(ex).__name__, ex), logging.WARNING)
             else:
                 self._look_fallback(desc, why)
 
@@ -3191,53 +3296,51 @@ class PetApp(QObject):
 
 
     def _get_weather(self, pet=None):
+        """查看天气：网络请求放子线程，结果通过信号回主线程。"""
         speaker = pet or self.main_pet
-        try:
-            city = self.cfg.get("city", "汕头")
-            log("天气请求城市: %s" % city)
+        city = self.cfg.get("city", "汕头")
+        log("天气请求城市: %s" % city)
+        if speaker is not None:
+            speaker.say("让我看看天气…")
+        self._weather_req_id = getattr(self, "_weather_req_id", 0) + 1
+        rid = self._weather_req_id
 
-            url = f"https://wttr.in/{city}?format=j1"
-
-            r = requests.get(
-                url,
-                timeout=10,
-                headers={
-                    "User-Agent": "Mozilla/5.0"
+        def work():
+            text = ""
+            try:
+                r = requests.get(
+                    "https://wttr.in/%s?format=j1" % city,
+                    timeout=10,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                log("天气接口状态: %s" % r.status_code)
+                data = r.json()
+                weather = data["current_condition"][0]
+                temp = weather["temp_C"]
+                weather_map = {
+                    "Sunny": "晴", "Clear": "晴",
+                    "Partly cloudy": "多云", "Cloudy": "阴",
+                    "Light rain": "小雨", "Moderate rain": "中雨",
+                    "Heavy rain": "大雨",
                 }
-            )
+                raw_weather = weather["weatherDesc"][0]["value"]
+                desc = weather_map.get(raw_weather, raw_weather)
+                text = "%s今天%s°，天气%s……带伞了没，笨蛋" % (city, temp, desc)
+            except Exception as ex:
+                log("天气错误: %s: %s" % (type(ex).__name__, ex), logging.WARNING)
+                text = "天气查不到了……不是我不肯说，是它坏了"
+            self.weather_done.emit(text, rid)
 
-            log("天气接口状态: %s" % r.status_code)
-            log("天气接口返回(前500字符): %s" % (r.text[:500]), logging.DEBUG)
+        import threading
+        threading.Thread(target=work, daemon=True).start()
 
-            data = r.json()
+    def _on_weather_done(self, text, rid):
+        """主线程：显示天气结果（丢弃过期的旧请求）。"""
+        if rid != getattr(self, "_weather_req_id", 0):
+            return
+        if text:
+            self.say_main(text)
 
-            weather = data["current_condition"][0]
-
-            temp = weather["temp_C"]
-
-            weather_map = {
-                "Sunny": "晴",
-                "Clear": "晴",
-                "Partly cloudy": "多云",
-                "Cloudy": "阴",
-                "Light rain": "小雨",
-                "Moderate rain": "中雨",
-                "Heavy rain": "大雨"
-            }
-
-            raw_weather = weather["weatherDesc"][0]["value"]
-
-            desc = weather_map.get(raw_weather, raw_weather)
-
-            if speaker is not None:
-                speaker.say(f"{city}今天{temp}°，天气{desc}……带伞了没，笨蛋")
-
-        except Exception as e:
-            log("天气错误: %r" % e, logging.WARNING)
-            if speaker is not None:
-                speaker.say("天气查不到了……不是我不肯说，是它坏了")
-
-    # ---------- 菜单 ----------
     def build_menu(self, pet=None):
         """宠物右键菜单：只保留常用项，其余全部进「设置…」。
 

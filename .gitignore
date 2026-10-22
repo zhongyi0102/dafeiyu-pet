@@ -4,8 +4,12 @@ config.json.bak
 chats.json
 chats.json.bak
 memory.json
+screen_memory.json
+screen_memory.json.bak
 error.log
 error.log.*
+*.log
+*.log.*
 
 # 虚拟环境
 .venv/
