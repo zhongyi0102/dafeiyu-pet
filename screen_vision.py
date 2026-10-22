@@ -37,6 +37,14 @@ def get_fg_info():
 
 COMMON_RULES = (
     "你是屏幕观察员,只客观描述,不评价、不扮演角色。总共不超过180字。\n"
+    "【铁律·必须遵守】\n"
+    "1. 只写这张截图里真正看到的东西。画面里没有的文字、作品名、人名、"
+    "门派名、地名、剧情、前因后果,一律不要写,不要凭风格猜。\n"
+    "2. 不要推测剧情、角色关系、人物生死、情绪动机。"
+    "只看到画面,不等于知道故事;看不出来就写“不确定”。\n"
+    "3. 不要把字幕或一句话当成完整剧情去演绎。"
+    "字幕只当“画面上有一句这样的字”,不要推断谁死了、谁要做什么。\n"
+    "4. 拿不准的一律写“不确定”,宁可少写也不要编。\n"
     "先判断用户此刻最可能在做什么、状态如何(专注/摸鱼/卡住/放松),"
     "再列出支撑判断的2到3个画面证据。\n"
     "屏幕文字以【参考文字】为准,不要自己抄录;大段文字最多引用5个字。\n"
@@ -47,8 +55,9 @@ COMMON_RULES = (
 )
 
 FORMAT_TAIL = (
-    "理解:(用1到2句话说清:这是什么、想表达什么或发生了什么、"
-    "画面里最值得一说的一个细节;看不懂就写\"看不懂\")\n"
+    "理解:(用1到2句说清:这张图是什么、画面上明确发生了什么、"
+    "最值得一说的一个可见细节。只描述看得见的,不推断剧情和人物命运;"
+    "看不懂就写\"看不懂\")\n"
     "状态:(一句话,用户在做什么、什么状态)\n"
     "证据:(2到3条,用分号隔开)\n"
 )
@@ -305,18 +314,62 @@ class ScreenMemory:
 
 def extract_state(vision_text):
     """从视觉输出里取“状态:”那一行,存进记忆。"""
-    m = re.search(r"状态[::]\s*(.+)", vision_text)
+    m = re.search(r"状态[：:]\s*(.+)", vision_text)
     return m.group(1).strip() if m else vision_text.strip()[:40]
 
 
 def extract_understanding(vision_text):
     """从视觉输出里取“理解:”那一行(可能跨行,取到下一个字段为止)。"""
     m = re.search(
-        r"理解[::]\s*(.+?)(?=\n(?:状态|证据|场景|歌名|歌词|画面类型|主要内容|关键信息)[::]|\Z)",
+        r"理解[：:]\s*(.+?)(?=\n\s*(?:状态|证据|场景|歌名|歌词|画面类型|"
+        r"主要内容|关键信息)[：:]|\Z)",
         vision_text, re.S)
     if not m:
         return ""
     return " ".join(m.group(1).split()).strip()
+
+
+# 剧情推测词：视觉模型的「理解」里出现这些，说明它在编故事
+_STORY_WORDS = (
+    "离世", "死了", "已死", "去世", "身亡", "丧事", "办丧", "烧纸",
+    "遗体", "棺材", "临终", "遗言", "后事", "下葬", "葬礼",
+    "剧情", "故事讲", "讲述", "接下来会", "暗示", "铺垫", "伏笔",
+    "似乎已经", "好像已经", "应该是在交代", "看来是", "想必",
+)
+
+# 允许的上下文（避免误伤正常描述）
+_STORY_OK = ("不确定", "看不懂")
+
+
+def looks_story_guess(understanding):
+    """检查「理解」里是否在推断剧情/人物命运。返回 (可疑, 命中词列表)。"""
+    t = (understanding or "").strip()
+    if not t:
+        return False, []
+    # 已经明确说"不确定/看不懂"的，不算编造
+    if any(k in t for k in _STORY_OK):
+        return False, []
+    hits = [w for w in _STORY_WORDS if w in t]
+    return bool(hits), hits
+
+
+def sanitize_understanding(understanding):
+    """把「理解」里明显推断剧情的那句去掉，只保留可见描述。"""
+    t = (understanding or "").strip()
+    if not t:
+        return t
+    # 按句号/分号切，逐句过滤含剧情推测词的
+    parts = re.split(r"(?<=[。；;!?！？])", t)
+    keep = []
+    for seg in parts:
+        s = seg.strip()
+        if not s:
+            continue
+        if any(w in s for w in _STORY_WORDS):
+            continue
+        keep.append(s)
+    out = "".join(keep).strip()
+    return out or "看不懂"
 
 
 def reply_head(text):
@@ -411,11 +464,27 @@ def analyze_screen(img, fg_info, mem, vision_call, is_selection=True,
     state = extract_state(vision_text)
     understand = extract_understanding(vision_text)
 
+    # 防幻觉：如果「理解」在推断剧情/人物命运，清洗掉那部分
+    story_hits = []
+    if understand:
+        bad, story_hits = looks_story_guess(understand)
+        if bad:
+            clean_u = sanitize_understanding(understand)
+            # 把原文里的「理解：/理解:」行替换成清洗后的版本（全角半角都认）
+            vision_text = re.sub(
+                r"理解[：:]\s*.+?(?=\n\s*(?:状态|证据|场景|歌名|歌词|画面类型|"
+                r"主要内容|关键信息)[：:]|\Z)",
+                "理解：" + clean_u, vision_text, flags=re.S)
+            understand = clean_u
+
     # ── 第二步:给带人设的聊天模型的消息 ──
     parts = ["[屏幕观察]", f"窗口标题:{title or '无'}", vision_text.strip()]
     # 把「理解」原文单独再强调一次（视觉输出里已有，但聊天模型容易只看状态）
     if understand:
         parts.append(f"画面理解:{understand}")
+    if story_hits:
+        parts.append("（注意：上面只描述看得见的画面，不要补剧情、"
+                     "不要推断人物命运）")
     last = mem.last_summary()
     if last:
         parts.append(last)
@@ -439,6 +508,9 @@ CHAT_LOOK_RULES = (
     "开头和句式每次都不同,不要连续用“哼”“笨蛋主人”“才不是”开头。\n"
     "- 傲娇是调味,不是每句都要有:嘴上嫌弃,话里能看出关心。\n"
     "- 看不懂就坦率说“这是什么呀”,不要硬编。\n"
+    "- 只依据【屏幕观察】里明确写出的内容说话。里面没提到的作品名、"
+    "人物名、剧情、角色生死、关系,一律不许自己补,不许猜。\n"
+    "- 观察里写了“不确定”的,就当作不知道,别提。\n"
     "- 只有观察结果明确写了歌名/作品名才能用《》;歌词和猜测的名字不加书名号。\n"
     "- 如果有“上次看屏”信息且相关,可自然带一句,不相关就不提。\n"
     "- 不说“注意休息”“适当运动”这类放哪都成立的话。\n"
