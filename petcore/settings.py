@@ -75,6 +75,9 @@ class CollapsibleSection(QWidget):
         super().__init__(parent)
         self._expanded = bool(expanded)
         self._title_text = title
+        self._state_text = ""
+        self._state_color = "#8a8f9c"
+        self._summary_text = ""
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -144,13 +147,31 @@ class CollapsibleSection(QWidget):
     def toggle(self):
         self.set_expanded(not self._expanded)
 
+    def set_summary(self, text):
+        """收起时标题行右侧显示的当前值摘要（展开时隐藏）。"""
+        self._summary_text = text or ""
+        self._refresh_header_tail()
+
+    def _refresh_header_tail(self):
+        """标题行右侧：展开显示 state，收起显示 summary（无 summary 则显示 state）。"""
+        if not self._expanded and self._summary_text:
+            self._state_lab.setText(self._summary_text)
+        else:
+            self._state_lab.setText(self._state_text)
+        self._state_lab.setStyleSheet(
+            "color:%s;font-size:11px;" % self._state_color)
+
+
     def set_state(self, text, color="#8a8f9c"):
-        """标题行右侧状态小字。"""
-        self._state_lab.setText(text or "")
-        self._state_lab.setStyleSheet("color:%s;font-size:11px;" % color)
+        """标题行右侧状态小字（展开时显示）。"""
+        self._state_text = text or ""
+        self._state_color = color
+        self._refresh_header_tail()
+
 
     def _apply_visibility(self):
         self._arrow.setText("▾" if self._expanded else "▸")
+        self._refresh_header_tail()
         self.body.setVisible(self._expanded)
 
 
@@ -1491,45 +1512,9 @@ class SettingsWindow(QDialog):
         self._title(lay, "视觉",
                     "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
 
+        _rowh = 30
 
-        # ---- 识别规则（视觉请求 system，可收缩，默认收起）----
-        _r_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_rule", False))
-        self._rule_section = CollapsibleSection("识别规则", expanded=_r_exp)
-        self._rule_section.toggled.connect(
-            lambda on: self._save_section_state("vision_rule", on))
-
-        _rule_hint = QLabel("这段会作为视觉请求的 system，长度句自动追加在末尾")
-        _rule_hint.setWordWrap(True)
-        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        self._rule_section.body_add(_rule_hint)
-
-        self.vision_rule_edit = QTextEdit()
-        self.vision_rule_edit.setFixedHeight(120)   # 约 6 行
-        self.vision_rule_edit.setPlaceholderText("留空则使用内置默认规则")
-        self.vision_rule_edit.setStyleSheet(
-            "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
-            "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
-        self.vision_rule_edit.textChanged.connect(self._on_vision_rule_edited)
-        self._rule_section.body_add(self.vision_rule_edit)
-
-        _rrow = QHBoxLayout()
-        self._vision_rule_save = QPushButton("保存规则")
-        self._vision_rule_save.clicked.connect(self._save_vision_rule)
-        _rrow.addWidget(self._vision_rule_save)
-        self._vision_rule_reset = QPushButton("恢复默认")
-        self._vision_rule_reset.clicked.connect(self._reset_vision_rule)
-        _rrow.addWidget(self._vision_rule_reset)
-        _rrow.addStretch(1)
-        self._rule_section.body_add_layout(_rrow)
-
-        lay.addWidget(self._rule_section)
-        self._refresh_rule_state()
-
-
-
-
-
-        # 全部字段放进同一个 QFormLayout（标签右对齐、同宽；控件左对齐）
+        # 全部基础字段放进同一个 QFormLayout
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -1537,8 +1522,6 @@ class SettingsWindow(QDialog):
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(6)
         form.setContentsMargins(22, 0, 0, 0)
-
-        _rowh = 30
 
         # 1) 视觉 Key（占满整行，右侧只留「显示/隐藏」）
         self.vision_key = QLineEdit()
@@ -1584,6 +1567,71 @@ class SettingsWindow(QDialog):
         self.vision_style.currentIndexChanged.connect(self._on_vision_style_changed)
         form.addRow("描述风格", self.vision_style)
 
+        lay.addLayout(form)
+
+        # 风格灰字：紧贴「描述风格」控件下方
+        self._vision_style_hint = QLabel("")
+        self._vision_style_hint.setWordWrap(True)
+        self._vision_style_hint.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._vision_style_hint)
+
+        # ---- 识别规则（视觉请求 system，可收缩，默认收起）----
+        _r_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_rule", False))
+        self._rule_section = CollapsibleSection("识别规则", expanded=_r_exp)
+        self._rule_section.toggled.connect(
+            lambda on: self._save_section_state("vision_rule", on))
+
+        _rule_hint = QLabel("这段会作为视觉请求的 system，长度句自动追加在末尾")
+        _rule_hint.setWordWrap(True)
+        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        self._rule_section.body_add(_rule_hint)
+
+        self.vision_rule_edit = QTextEdit()
+        self.vision_rule_edit.setFixedHeight(120)   # 约 6 行
+        self.vision_rule_edit.setPlaceholderText("留空则使用内置默认规则")
+        self.vision_rule_edit.setStyleSheet(
+            "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
+            "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
+        self.vision_rule_edit.textChanged.connect(self._on_vision_rule_edited)
+        self._rule_section.body_add(self.vision_rule_edit)
+
+        _rrow = QHBoxLayout()
+        self._vision_rule_save = QPushButton("保存规则")
+        self._vision_rule_save.clicked.connect(self._save_vision_rule)
+        _rrow.addWidget(self._vision_rule_save)
+        self._vision_rule_reset = QPushButton("恢复默认")
+        self._vision_rule_reset.clicked.connect(self._reset_vision_rule)
+        _rrow.addWidget(self._vision_rule_reset)
+        _rrow.addStretch(1)
+        self._rule_section.body_add_layout(_rrow)
+
+        lay.addWidget(self._rule_section)
+        self._refresh_rule_state()
+
+        # ---- 高级设置（可收缩，默认收起）----
+        _a_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_advanced", False))
+        self._advanced_section = CollapsibleSection("高级设置", expanded=_a_exp)
+        self._advanced_section.toggled.connect(
+            lambda on: self._save_section_state("vision_advanced", on))
+
+        _af = QFormLayout()
+        _af.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _af.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        _af.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        _af.setHorizontalSpacing(10)
+        _af.setVerticalSpacing(4)
+        _af.setContentsMargins(22, 0, 0, 0)
+
+        # 四项放进同一个 QFormLayout：标签列同宽 → 滑块起点、数字框左边缘自动对齐
+        _af = QFormLayout()
+        _af.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _af.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        _af.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        _af.setHorizontalSpacing(10)
+        _af.setVerticalSpacing(8)
+        _af.setContentsMargins(22, 0, 0, 0)
+
         # 5) 单次上限
         self._vision_tokens_field, self.vision_tokens_slider, self.vision_tokens_spin = \
             self._tokens_field(
@@ -1591,7 +1639,8 @@ class SettingsWindow(QDialog):
                     or VISION_TOKENS_DEFAULT),
                 VISION_TOKENS_MIN, VISION_TOKENS_MAX, 50,
                 lambda v: self._on_vision_tokens_changed(int(v)), "tokens")
-        form.addRow("单次上限", self._vision_tokens_field)
+        _af.addRow("单次上限", self._vision_tokens_field)
+
         # 6) 图片最长边
         self._vision_side_field, self.vision_side_slider, self.vision_side_spin = \
             self._tokens_field(
@@ -1599,12 +1648,7 @@ class SettingsWindow(QDialog):
                     or LOOK_SCREEN_SIDE_DEFAULT),
                 LOOK_SCREEN_SIDE_MIN, LOOK_SCREEN_SIDE_MAX, LOOK_SCREEN_SIDE_STEP,
                 lambda v: self._on_vision_limit_changed("max_side", int(v)), "px")
-        form.addRow("图片最长边", self._vision_side_field)
-        self._vision_side_field.setToolTip(
-            "最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。")
-        self.vision_side_slider.setToolTip(
-            "最长边越大越清晰，但越费 token；2048 适合看细节，512 最省。")
-        self.vision_side_spin.setToolTip("截图长边上限（像素）")
+        _af.addRow("图片最长边", self._vision_side_field)
 
         # 7) 图片质量
         self._vision_quality_field, self.vision_quality_slider, self.vision_quality_spin = \
@@ -1613,45 +1657,34 @@ class SettingsWindow(QDialog):
                     or LOOK_SCREEN_QUALITY_DEFAULT),
                 LOOK_SCREEN_QUALITY_MIN, LOOK_SCREEN_QUALITY_MAX, 5,
                 lambda v: self._on_vision_limit_changed("quality", int(v)), "")
-        form.addRow("图片质量", self._vision_quality_field)
-        self._vision_quality_field.setToolTip(
-            "JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。")
-        self.vision_quality_slider.setToolTip(
-            "JPEG 压缩质量（60~95）。越低越省 token，但文字/线条会糊。")
-        self.vision_quality_spin.setToolTip("JPEG 质量")
+        _af.addRow("图片质量", self._vision_quality_field)
 
-        # 8) 请求超时
+        # 8) 请求超时（宽度与数字框一致）
         self.vision_timeout_spin = QSpinBox()
         self.vision_timeout_spin.setRange(LOOK_SCREEN_TIMEOUT_MIN, LOOK_SCREEN_TIMEOUT_MAX)
         self.vision_timeout_spin.setSingleStep(5)
         self.vision_timeout_spin.setSuffix(" 秒")
-        self.vision_timeout_spin.setFixedWidth(120)
+        self.vision_timeout_spin.setFixedWidth(96)
         self.vision_timeout_spin.setValue(
             int((self.app.cfg.get("look_screen") or {}).get("timeout")
                 or LOOK_SCREEN_TIMEOUT_DEFAULT))
         self.vision_timeout_spin.valueChanged.connect(
             lambda v: self._on_vision_limit_changed("timeout", int(v)))
-        form.addRow("请求超时", self.vision_timeout_spin)
-        self.vision_timeout_spin.setToolTip(
-            "视觉模型多久没响应就放弃（10~120 秒）。"
-            "模型带思考过程时建议调大。")
+        _af.addRow("请求超时", self.vision_timeout_spin)
 
-        lay.addLayout(form)
+        self._advanced_section.body_add_layout(_af)
 
-        # 风格灰字（当前追加句）
-        self._vision_style_hint = QLabel("")
-        self._vision_style_hint.setWordWrap(True)
-        self._vision_style_hint.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._vision_style_hint)
+        # 四项说明灰字（样式与聊天页一致，随折叠区显示/隐藏）
+        self._advanced_section.body_add(self._hint_label(
+            "视觉模型单次最多输出多少 token（中文约 1.5 字/token）。"
+            "「描述风格」决定说多长，这个值决定最多能说多长；带思考过程的模型请调大。"))
+        self._advanced_section.body_add(self._hint_label(
+            "截图缩放后的最长边。越大越清晰，也越费 token；512 最省，2048 适合看细节。"))
+        self._advanced_section.body_add(self._hint_label(
+            "JPEG 压缩质量（60~95）。越低上传越快，但文字和线条会变模糊。"))
+        self._advanced_section.body_add(self._hint_label(
+            "多久没响应就放弃（10~120 秒）。带思考过程的模型建议调大。"))
 
-        # 视觉上限说明
-        _vt_tip = ("视觉模型单次最多输出多少 token。"
-                   "描述风格决定「说多长」，这个值决定「最多能说多长」。"
-                   "若所选模型带思考过程，请调大。")
-        self._vision_tokens_field.setToolTip(_vt_tip)
-        self.vision_tokens_slider.setToolTip(_vt_tip)
-        self.vision_tokens_spin.setToolTip(_vt_tip)
 
         # 按钮：保存 / 测试 / 取消 / 清空
         vbtn_row = QHBoxLayout()
@@ -1682,8 +1715,11 @@ class SettingsWindow(QDialog):
             "color:#8a8f9c;font-size:11px;margin-left:22px;")
         lay.addWidget(self._vision_hint)
         self._vision_fill_from_cfg()
+        self._refresh_advanced_summary()
 
         lay.addStretch(1)
+
+
     # ---------- 识别规则（视觉 system） ----------
     def _rule_from_widget(self):
         """从文本框读规则（空则回落默认）。"""
@@ -1718,6 +1754,19 @@ class SettingsWindow(QDialog):
                 self._rule_section.set_state("已保存", "#1a7f37")
         else:
             self._rule_section.set_state("未保存", "#d08a00")
+
+
+    def _refresh_advanced_summary(self):
+        """高级设置收起时显示的摘要：上限 · 最长边 · 质量 · 超时。"""
+        try:
+            mt = int(round(self.vision_tokens_spin.value()))
+            side = int(round(self.vision_side_spin.value()))
+            qual = int(round(self.vision_quality_spin.value()))
+            tout = int(self.vision_timeout_spin.value())
+            self._advanced_section.set_summary(
+                "上限 %d · 最长边 %d · 质量 %d · 超时 %d 秒" % (mt, side, qual, tout))
+        except Exception:
+            pass
 
 
     def _on_persona_edited(self):
@@ -1840,6 +1889,7 @@ class SettingsWindow(QDialog):
         ls[key] = int(value)
         self.app.cfg["look_screen"] = ls
         self.app.save_cfg()
+        self._refresh_advanced_summary()
 
     def _limits_from_widget(self):
         """从控件读三项限制（保存时用）。"""
@@ -2021,6 +2071,7 @@ class SettingsWindow(QDialog):
         if getattr(self, "_vision_filling", False):
             return
         self._save_vision_extra()
+        self._refresh_advanced_summary()
 
 
     def _on_vision_model_changed(self, *_a):
