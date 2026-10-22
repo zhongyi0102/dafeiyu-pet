@@ -6,6 +6,7 @@ chats.json.bak
 memory.json
 screen_memory.json
 screen_memory.json.bak
+proactive_state.json
 error.log
 error.log.*
 *.log
