@@ -531,6 +531,27 @@
   - 未收录的罕见描述走**模糊兜底**（按 thunder/snow/rain/fog 等关键词猜），
     连兜底都认不出的**只报温度**，绝不再把英文露给用户
 
+### 新增（Added）
+
+- **情绪反馈：聊天内容自动触发对应动作**（新增 `MOOD_ACTIONS` 映射表）
+  - 8 种情绪：害羞→`idle_shy2`、开心→`idle_dance`、生气→`idle_mad`、
+    难过→`idle_rubeye`、困→`idle_yawn`、惊讶→`idle_scare`、
+    想玩→`idle_play`、聊音乐→`idle_music`
+  - 按关键词本地判断（不额外消耗 token），同时看「用户说的话」和「宠物回复」
+  - 每种情绪独立冷却 20~25 秒 + 全局冷却 20 秒，避免连发消息反复播
+  - 只在 `thinking` / `working` 时让路；`success` / `error` 终态可以被情绪覆盖
+    （播情绪动作时会停掉 work_hold_timer 并重置 work_state，不会被强制打断）
+  - 修复 `_on_done` 里 `_turn_user_text` 已被清空导致只用回复文本判断的问题
+
+### 说明（Notes）
+
+- 核实并确认**已有的真实状态绑定**（无需改动，此前已完整实现）：
+  - 聊天过程 6 档工作状态 → `work_think` / `work_busy` / `work_wait` /
+    `work_ok` / `work_err`（`set_work_state` + `WORK_STATES`）
+  - 余额查询 6 档 → `bal_full` / `bal_good` / `bal_ok` / `bal_low` /
+    `bal_empty` / `bal_zero`（`BALANCE_TIERS` + `_report_balances`）
+  - 节日/食物 30 个 event 动作已由节日与喂食流程调用
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。

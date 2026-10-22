@@ -1545,6 +1545,7 @@ class ChatWindow(QWidget):
         self._scroll_bottom()
 
     def _on_done(self, full, usage):
+        _turn_user = self._turn_user_text or ""
         self.pet.set_work_state("success")
         if not self.busy:
             return
@@ -1565,6 +1566,13 @@ class ChatWindow(QWidget):
         first = self._first_sentence(full)
         if first:
             self.pet.say(first)
+        # 情绪反馈：按这轮对话内容播一个对应动作
+        # （_mood_action 内部会停掉 work_hold_timer 并重置 work_state，
+        #   所以能覆盖掉 work_ok）
+        try:
+            self.pet._mood_action(_turn_user, full)
+        except Exception:
+            pass
 
     def _rollback_user_turn(self):
         """失败时把这一轮已写盘的 user 消息撤回，避免历史里出现连续两条 user"""

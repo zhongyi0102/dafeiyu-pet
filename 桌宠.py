@@ -2164,6 +2164,52 @@ class PetApp(QObject):
             log("应用功能开关失败(%s): %s" % (key, ex), logging.WARNING)
 
     # ---------- 工作状态联动 ----------
+    def _mood_action(self, user_text, reply_text):
+        """按聊天内容判断情绪，播一个对应动作（带冷却，不打断工作状态动画）。
+
+        user_text: 用户这轮说的话
+        reply_text: 宠物这轮的回复
+        返回命中的情绪名或 ""。
+        """
+        try:
+            # 只在「真正在干活」时让路；success/error 是终态，情绪可以覆盖
+            if getattr(self, "_work_state", "idle") in ("thinking", "working"):
+                return ""
+            now = time.time()
+            last = getattr(self, "_mood_last", 0.0)
+            text = ((user_text or "") + " " + (reply_text or "")).lower()
+            if not text.strip():
+                return ""
+            for name, keys, act, cool in MOOD_ACTIONS:
+                if not any(k.lower() in text for k in keys):
+                    continue
+                # 该情绪自己的冷却
+                cd = getattr(self, "_mood_cd", {})
+                if now - float(cd.get(name, 0.0)) < cool:
+                    return ""
+                # 全局冷却
+                if now - last < MOOD_COOLDOWN_DEFAULT:
+                    return ""
+                pet = self.main_pet
+                if pet is None or act not in ACTIONS:
+                    return ""
+                # 停掉 success/error 的回 idle 定时器，避免 2.2s 后把情绪动作打断
+                try:
+                    self._work_hold_timer.stop()
+                except Exception:
+                    pass
+                self._work_state = "idle"
+                pet._start_chain_action(act)
+                cd[name] = now
+                self._mood_cd = cd
+                self._mood_last = now
+                log("[情绪] %s -> %s" % (name, act))
+                return name
+        except Exception as ex:
+            log("[情绪] 判断失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+        return ""
+
     def set_work_state(self, state):
         """切换工作状态（thinking/working/waiting/success/error/idle）。
 
