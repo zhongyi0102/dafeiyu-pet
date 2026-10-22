@@ -1685,6 +1685,9 @@ class SettingsWindow(QDialog):
         self._advanced_section.body_add(self._hint_label(
             "多久没响应就放弃（10~120 秒）。带思考过程的模型建议调大。"))
 
+        # 高级设置加入页面（放在识别规则之后、按钮之前）
+        lay.addWidget(self._advanced_section)
+
 
         # 按钮：保存 / 测试 / 取消 / 清空
         vbtn_row = QHBoxLayout()
