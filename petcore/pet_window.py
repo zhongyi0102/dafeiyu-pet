@@ -558,8 +558,12 @@ class PetWindow(QWidget):
         """保留接口：镜头补偿现在只做平移，缩放恒为 1。"""
         return 1.0
 
-    def _start_frame_anim(self, action):
-        """开始播放某动作的帧序列（返回是否成功）。"""
+    def _start_frame_anim(self, action, start_index=0):
+        """开始播放某动作的帧序列（返回是否成功）。
+
+        start_index: 从第几帧开始播（情绪动作用来跳过与待机几乎相同的
+        开头帧，直接呈现最有表现力的部分）。
+        """
         frames = self._frame_list(action)
         if not frames:
             return False
@@ -570,7 +574,10 @@ class PetWindow(QWidget):
         except Exception:
             fps = FRAME_ANIM_FPS_DEFAULT
         self._frame_action = action
-        self._frame_index = 0
+        try:
+            self._frame_index = max(0, min(int(start_index), len(frames) - 1))
+        except Exception:
+            self._frame_index = 0
         self._frame_elapsed = 0.0
         self._frame_fps = fps
         self._frame_loop = bool(spec.get("loop", True))

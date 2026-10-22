@@ -2200,6 +2200,16 @@ class PetApp(QObject):
                     pass
                 self._work_state = "idle"
                 pet._start_chain_action(act)
+                # 情绪动作要「一眼看出来」：跳过与待机几乎一样的开头帧，
+                # 直接从 25% 处起播（害羞的蹲下捂脸、跳舞的抬手都在前中段）
+                frames = pet._frame_list(act) or []
+                if frames:
+                    try:
+                        pet._start_frame_anim(act, start_index=len(frames) // 4)
+                    except Exception:
+                        pass
+                # 情绪动作播短一点（6 秒），尽快回到待机，避免拖沓
+                pet.chain_dur = min(pet.chain_dur, 6.0)
                 cd[name] = now
                 self._mood_cd = cd
                 self._mood_last = now
