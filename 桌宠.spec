@@ -17,11 +17,82 @@ datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ("psutil", "requests", "pynvml"):
+# 基础依赖
+for pkg in ("psutil", "requests", "pynvml", "PIL", "yaml"):
     tmp = collect_all(pkg)
     datas += tmp[0]
     binaries += tmp[1]
     hiddenimports += tmp[2]
+
+# ===== OCR（rapidocr-onnxruntime）=====
+# 模型文件（.onnx，13MB）+ yaml 配置 + 字典，必须作为 datas 打进去，
+# 否则运行时找不到模型会直接失败。
+import os as _os
+import rapidocr_onnxruntime as _rr
+_RR_DIR = _os.path.dirname(_rr.__file__)
+
+# 整个包目录（含 models/ 下的 onnx、config.yaml、字体等）
+for _root, _dirs, _files in _os.walk(_RR_DIR):
+    for _f in _files:
+        if _f.endswith((".onnx", ".yaml", ".yml", ".txt", ".ttf", ".ttc")):
+            _src = _os.path.join(_root, _f)
+            _rel = _os.path.relpath(_src, _os.path.dirname(_RR_DIR))
+            datas.append((_src, _os.path.dirname(_rel)))
+
+# OCR 依赖的纯 Python 包
+for pkg in ("rapidocr_onnxruntime", "onnxruntime", "cv2",
+            "shapely", "pyclipper", "six"):
+    try:
+        tmp = collect_all(pkg)
+        datas += tmp[0]
+        binaries += tmp[1]
+        hiddenimports += tmp[2]
+    except Exception:
+        # cv2 / onnxruntime 用 collect_all 可能失败，退回 collect_submodules
+        try:
+            hiddenimports += collect_submodules(pkg)
+        except Exception:
+            pass
+
+# numpy 是 OCR 的硬依赖，必须收集（下面 excludes 里已移除）
+for pkg in ("numpy",):
+    tmp = collect_all(pkg)
+    datas += tmp[0]
+    binaries += tmp[1]
+    hiddenimports += tmp[2]
+
+# 显式加入 onnxruntime 的核心二进制
+try:
+    import onnxruntime as _ort
+    _ORT_DIR = _os.path.dirname(_ort.__file__)
+    for _sub in ("capi",):
+        _d = _os.path.join(_ORT_DIR, _sub)
+        if _os.path.isdir(_d):
+            for _f in _os.listdir(_d):
+                if _f.endswith((".dll", ".pyd")):
+                    binaries.append((_os.path.join(_d, _f), "onnxruntime/" + _sub))
+except Exception:
+    pass
+
+# 显式加入 cv2 的核心二进制（cv2.pyd）
+# 排除 opencv_videoio_ffmpeg*.dll（29MB 视频解码器，OCR 用不到）
+try:
+    import cv2 as _cv
+    _CV_DIR = _os.path.dirname(_cv.__file__)
+    for _f in _os.listdir(_CV_DIR):
+        if not _f.endswith((".pyd", ".dll")):
+            continue
+        if _f.startswith("opencv_videoio_ffmpeg"):
+            continue        # 视频解码器，OCR 不需要
+        binaries.append((_os.path.join(_CV_DIR, _f), "cv2"))
+except Exception:
+    pass
+
+# 过滤掉 onnxruntime 的测试数据集（*.onnx 样例文件，OCR 不需要）
+datas = [(s, d) for (s, d) in datas
+         if not (("onnxruntime" in d or "onnxruntime" in s)
+                 and _os.path.basename(s) in ("sigmoid.onnx", "logreg_iris.onnx",
+                                              "mul_1.onnx"))]
 
 # 收集 petcore 子模块（PyInstaller 不会自动发现动态 import）
 hiddenimports += collect_submodules("petcore")
@@ -41,7 +112,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "PIL", "scipy", "pandas"],
+    # numpy / PIL 是 OCR 硬依赖，不能排除
+    excludes=["tkinter", "matplotlib", "scipy", "pandas",
+              # cv2 的视频解码器（29MB），OCR 不用
+              "cv2.gapi"],
     noarchive=False,
     optimize=0,
 )

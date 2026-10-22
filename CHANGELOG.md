@@ -340,6 +340,26 @@
   实测把「晴天」(0.634)、「周杰伦」(0.703) 等关键歌名全过滤掉。
   降到 0.5 并提成常量 `OCR_MIN_CONF`
 
+### 变更（Changed）
+
+- **OCR 从可选依赖改为正式依赖**：`rapidocr-onnxruntime` 写进 `requirements.txt`，
+  所有用户开箱即用
+  - 打包配置把 rapidocr 的 3 个 onnx 模型（13MB）、4 个 yaml、onnxruntime
+    的 DLL/pyd、cv2/shapely/pyclipper/numpy 全部打进 exe
+  - `excludes` 移除 `numpy` / `PIL`（OCR 硬依赖）
+  - 排除 cv2 的视频解码器 `opencv_videoio_ffmpeg*.dll`（29MB，OCR 用不到）
+  - exe 体积 351.49 MB → 446.14 MB（+94.65 MB / +26.9%）
+
+### 修复（Fixed）
+
+- **OCR 漏检大字号标题**：`run_ocr()` 原为整图一次识别，实测在元素较多的
+  截图里检测模型会漏掉关键标题（网易云歌名「晴天」整条丢失，但单独裁剪
+  同一块又能识别）。现在改为：
+  1. 先用调低的 `box_thresh=0.3` / `unclip_ratio=2.0` 跑整图
+  2. 大图（长边>640）且结果偏少时，上下两半各跑一次合并
+  3. 去重后按置信度过滤
+  实测全屏 OCR 从「漏掉晴天」变成完整识别，耗时反而从 0.40s 降到 0.35s
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。

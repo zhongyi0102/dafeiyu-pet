@@ -127,7 +127,14 @@ OCR_MIN_CONF = 0.5
 def run_ocr(img: Image.Image, max_chars=400, min_conf=None):
     """返回识别到的文字，没装 OCR 或失败返回空串。
 
-    min_conf 默认用 OCR_MIN_CONF（0.5）。太低会混入噪声，太高会丢关键信息。
+    【小改说明】原版直接整图跑 RapidOCR，实测在「元素较多」的截图里
+    检测模型会漏掉大字号标题（例如网易云的歌名「晴天」整条丢失），
+    但把同一块单独裁剪出来又能识别。
+
+    现在改为：
+      1. 先用调低的 box_thresh 跑整图（多数情况足够）
+      2. 如果大图（长边>640）且结果偏少，再上下两半各跑一次合并
+    这样既保持速度，又避免漏掉关键标题。
     """
     global _ocr_engine
     th = OCR_MIN_CONF if min_conf is None else float(min_conf)
@@ -136,14 +143,40 @@ def run_ocr(img: Image.Image, max_chars=400, min_conf=None):
             from rapidocr_onnxruntime import RapidOCR
             _ocr_engine = RapidOCR()
         import numpy as np
-        result, _ = _ocr_engine(np.array(img.convert("RGB")))
-        texts = [r[1] for r in (result or []) if float(r[2]) > th]
-        return " | ".join(texts)[:max_chars]
+
+        img = img.convert("RGB")
+        w, h = img.size
+
+        def _one(im):
+            """跑一次，返回 [(文字, 置信度)]。"""
+            try:
+                res, _ = _ocr_engine(np.array(im), box_thresh=0.3,
+                                     unclip_ratio=2.0)
+            except TypeError:
+                # 老版本 RapidOCR 不支持这些参数
+                res, _ = _ocr_engine(np.array(im))
+            return [(r[1], float(r[2])) for r in (res or [])]
+
+        items = _one(img)
+
+        # 大图且结果偏少 → 上下两半再跑一次，补齐漏检
+        if max(w, h) > 640 and len(items) < 6:
+            half = h // 2
+            for box in ((0, 0, w, half), (0, half, w, h)):
+                items += _one(img.crop(box))
+
+        # 去重 + 按门槛过滤
+        seen = set()
+        out = []
+        for text, conf in items:
+            t = (text or "").strip()
+            if not t or conf <= th or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+        return " | ".join(out)[:max_chars]
     except Exception:
         return ""
-
-
-# ───────────────────────── 3. 图片预处理 ─────────────────────────
 
 def warmup_ocr(blocking=False):
     """预热 OCR 引擎（首次加载很慢）。
