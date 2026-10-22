@@ -70,6 +70,7 @@ class SettingsWindow(QDialog):
         ("reminder", "提醒"),
         ("balance", "余额"),
         ("chat", "聊天"),
+        ("visual", "视觉"),
         ("memory", "记忆"),
         ("general", "通用"),
         ("about", "关于"),
@@ -153,6 +154,7 @@ class SettingsWindow(QDialog):
         self._build_reminder_page(self._pages["reminder"])
         self._build_balance_page(self._pages["balance"])
         self._build_chat_page(self._pages["chat"])
+        self._build_visual_page(self._pages["visual"])
         self._build_general_page(self._pages["general"])
         self._build_memory_page(self._pages["memory"])
         self._build_about_page(self._pages["about"])
@@ -1373,12 +1375,15 @@ class SettingsWindow(QDialog):
         hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
         lay.addWidget(hint2)
 
-        # ---- 看看屏幕 ----
-        line_v = QFrame()
-        line_v.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line_v)
-        self._title(lay, "看看屏幕",
-                    "填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
+
+        lay.addStretch(1)
+        self._refresh_chat_hint()
+
+    # ---------- 看看屏幕：视觉配置 ----------
+    def _build_visual_page(self, lay):
+        self._title(lay, "视觉",
+                    "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
+
 
         # 反幻觉规则（展示给用户看，说明识别时会遵守什么）
         _anti = QLabel(LOOK_SCREEN_ANTI_HALLUCINATION_HELP)
@@ -1539,9 +1544,6 @@ class SettingsWindow(QDialog):
         self._vision_fill_from_cfg()
 
         lay.addStretch(1)
-        self._refresh_chat_hint()
-
-    # ---------- 看看屏幕：视觉配置 ----------
     def _vision_provider_name(self):
         """从当前地址判断服务商名（用于选默认模型）。"""
         base = (self.vision_base.text() or "").strip().lower()
