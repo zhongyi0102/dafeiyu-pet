@@ -2072,6 +2072,8 @@ def default_config():
         "physics": dict(DEFAULT_PHYSICS),
         "balance": {"auto": False, "provider": "auto", "interval_min": BALANCE_MIN_INTERVAL_MIN,
                     "last_value": None, "last_time": None},
+        # 设置页可收缩区块的展开状态（只影响显示，不影响配置读写）
+        "ui_sections": {"persona": True, "vision_rule": False},
         "seasonal_fx": {"auto": True},
         "features": _default_features(),
         "frame_anim": {"enabled": True, "max_cache": FRAME_ANIM_MAX_CACHE},
@@ -2589,6 +2591,14 @@ def migrate_and_validate(raw):
             issues.append(key)
         else:
             changed = True
+
+    # ui_sections：设置页可收缩区块状态（只影响显示）
+    _us = raw.get("ui_sections")
+    if isinstance(_us, dict):
+        for _k2 in ("persona", "vision_rule"):
+            if isinstance(_us.get(_k2), bool):
+                cfg["ui_sections"][_k2] = _us[_k2]
+
 
     # balance.provider：余额来源（auto / deepseek / zhipu）
     _bp = raw.get("balance")

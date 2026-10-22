@@ -59,6 +59,102 @@ class _VisionBus(QObject):
 
 
 
+class CollapsibleSection(QWidget):
+    """可收缩区块：标题行（箭头 + 标题 + 状态小字）+ 内容区。
+
+    行为：
+      - 点击标题行切换展开/收起，箭头 ▾ / ▸
+      - 收起只隐藏内容，不影响内部控件的读写
+      - 状态小字由外部通过 set_state() 更新
+      - 展开状态可持久化（由外部读写配置）
+    """
+
+    toggled = Signal(bool)   # True=展开
+
+    def __init__(self, title, parent=None, expanded=True):
+        super().__init__(parent)
+        self._expanded = bool(expanded)
+        self._title_text = title
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ---- 标题行（整行可点）----
+        self._header = QPushButton()
+        self._header.setCheckable(False)
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header.setStyleSheet(
+            "QPushButton{border:none;background:transparent;text-align:left;"
+            "padding:6px 2px;}")
+        self._header.clicked.connect(self.toggle)
+        self._header.setToolTip("点击展开 / 收起")
+
+        hrow = QHBoxLayout(self._header)
+        hrow.setContentsMargins(2, 0, 8, 0)
+        hrow.setSpacing(6)
+        self._arrow = QLabel("▾")
+        self._arrow.setStyleSheet("color:#5a6070;font-size:12px;")
+        self._arrow.setFixedWidth(12)
+        hrow.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._title_lab = QLabel(title)
+        f = QFont()
+        f.setPointSize(11)
+        f.setBold(True)
+        self._title_lab.setFont(f)
+        self._title_lab.setStyleSheet("color:#2f3542;")
+        hrow.addWidget(self._title_lab, 0, Qt.AlignmentFlag.AlignVCenter)
+        hrow.addStretch(1)
+        self._state_lab = QLabel("")
+        self._state_lab.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        hrow.addWidget(self._state_lab, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addWidget(self._header)
+
+        # ---- 内容区（外部往里 addWidget）----
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(6)
+        outer.addWidget(self.body)
+
+        self._apply_visibility()
+
+    # ---------- 对外 ----------
+    def body_add(self, w):
+        self.body_layout.addWidget(w)
+        return w
+
+    def body_add_layout(self, l):
+        self.body_layout.addLayout(l)
+        return l
+
+    def is_expanded(self):
+        return self._expanded
+
+    def set_expanded(self, on, emit=True):
+        on = bool(on)
+        if on == self._expanded:
+            self._apply_visibility()
+            return
+        self._expanded = on
+        self._apply_visibility()
+        if emit:
+            self.toggled.emit(on)
+
+    def toggle(self):
+        self.set_expanded(not self._expanded)
+
+    def set_state(self, text, color="#8a8f9c"):
+        """标题行右侧状态小字。"""
+        self._state_lab.setText(text or "")
+        self._state_lab.setStyleSheet("color:%s;font-size:11px;" % color)
+
+    def _apply_visibility(self):
+        self._arrow.setText("▾" if self._expanded else "▸")
+        self.body.setVisible(self._expanded)
+
+
+
 class SettingsWindow(QDialog):
     """统一设置窗口：左侧分页，右侧内容。所有入口都从这里进（右键「设置…」/ 托盘）。"""
 
@@ -1316,13 +1412,21 @@ class SettingsWindow(QDialog):
         self._style_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
         lay.addWidget(self._style_hint)
 
-        # ---- 人设 ----
+        # ---- 人设（可收缩）----
         line2 = QFrame()
         line2.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line2)
-        self._title(lay, "人设",
-                    "这段会作为 system 的开头发给模型。固定不变才有利于前缀缓存；"
-                    "改完缓存会失效一次，建议新开一个对话。")
+
+        _p_exp = bool((self.app.cfg.get("ui_sections") or {}).get("persona", True))
+        self._persona_section = CollapsibleSection("人设", expanded=_p_exp)
+        self._persona_section.toggled.connect(
+            lambda on: self._save_section_state("persona", on))
+        _p_desc = QLabel(
+            "这段会作为 system 的开头发给模型。固定不变才有利于前缀缓存；"
+            "改完缓存会失效一次，建议新开一个对话。")
+        _p_desc.setWordWrap(True)
+        _p_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        self._persona_section.body_add(_p_desc)
 
         self.persona_edit = QTextEdit()
         self.persona_edit.setFixedHeight(150)
@@ -1331,7 +1435,8 @@ class SettingsWindow(QDialog):
             "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
             "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
         self.persona_edit.setPlainText(self.app.cfg.get("persona") or DEFAULT_PERSONA)
-        lay.addWidget(self.persona_edit)
+        self.persona_edit.textChanged.connect(self._on_persona_edited)
+        self._persona_section.body_add(self.persona_edit)
 
         prow = QHBoxLayout()
         save_btn = QPushButton("保存人设")
@@ -1340,15 +1445,17 @@ class SettingsWindow(QDialog):
         reset_btn = QPushButton("恢复默认")
         reset_btn.clicked.connect(self._reset_persona)
         prow.addWidget(reset_btn)
-        self._persona_state = QLabel("")
-        self._persona_state.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        prow.addWidget(self._persona_state, 1)
-        lay.addLayout(prow)
+        prow.addStretch(1)
+        self._persona_section.body_add_layout(prow)
 
         self._persona_hint = QLabel("")
         self._persona_hint.setWordWrap(True)
         self._persona_hint.setStyleSheet("color:#d08a00;font-size:11px;margin-left:2px;")
-        lay.addWidget(self._persona_hint)
+        self._persona_section.body_add(self._persona_hint)
+
+        lay.addWidget(self._persona_section)
+        self._refresh_persona_state()
+
 
         # 聊天 system 摘要（放在人设区下方）
         self._chat_preview = QLabel("")
@@ -1385,23 +1492,16 @@ class SettingsWindow(QDialog):
                     "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。")
 
 
-        # ---- 识别规则（视觉请求 system，可编辑）----
-        self._vision_rule_title = QPushButton("识别规则")
-        self._vision_rule_title.setCheckable(True)
-        self._vision_rule_title.setChecked(True)   # 默认展开
-        self._vision_rule_title.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._vision_rule_title.setStyleSheet(
-            "QPushButton{border:none;background:transparent;text-align:left;"
-            "font-weight:600;font-size:13px;color:#2f3542;padding:4px 0;}"
-            "QPushButton:hover{color:#1a7f37;}")
-        self._vision_rule_title.setToolTip("点击展开 / 收起")
-        self._vision_rule_title.clicked.connect(self._toggle_vision_rule)
-        lay.addWidget(self._vision_rule_title)
+        # ---- 识别规则（视觉请求 system，可收缩，默认收起）----
+        _r_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_rule", False))
+        self._rule_section = CollapsibleSection("识别规则", expanded=_r_exp)
+        self._rule_section.toggled.connect(
+            lambda on: self._save_section_state("vision_rule", on))
 
         _rule_hint = QLabel("这段会作为视觉请求的 system，长度句自动追加在末尾")
         _rule_hint.setWordWrap(True)
-        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(_rule_hint)
+        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        self._rule_section.body_add(_rule_hint)
 
         self.vision_rule_edit = QTextEdit()
         self.vision_rule_edit.setFixedHeight(120)   # 约 6 行
@@ -1409,23 +1509,22 @@ class SettingsWindow(QDialog):
         self.vision_rule_edit.setStyleSheet(
             "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
             "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
-        lay.addWidget(self.vision_rule_edit)
+        self.vision_rule_edit.textChanged.connect(self._on_vision_rule_edited)
+        self._rule_section.body_add(self.vision_rule_edit)
 
         _rrow = QHBoxLayout()
-        _rrow.addSpacing(22)
         self._vision_rule_save = QPushButton("保存规则")
         self._vision_rule_save.clicked.connect(self._save_vision_rule)
         _rrow.addWidget(self._vision_rule_save)
         self._vision_rule_reset = QPushButton("恢复默认")
         self._vision_rule_reset.clicked.connect(self._reset_vision_rule)
         _rrow.addWidget(self._vision_rule_reset)
-        self._vision_rule_state = QLabel("")
-        self._vision_rule_state.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _rrow.addWidget(self._vision_rule_state, 1)
-        lay.addLayout(_rrow)
+        _rrow.addStretch(1)
+        self._rule_section.body_add_layout(_rrow)
 
-        # 编辑时实时提示「已修改」
-        self.vision_rule_edit.textChanged.connect(self._on_vision_rule_edited)
+        lay.addWidget(self._rule_section)
+        self._refresh_rule_state()
+
 
 
 
@@ -1599,34 +1698,61 @@ class SettingsWindow(QDialog):
         ls = self.app.cfg.get("look_screen") or {}
         return (ls.get("vision_system") or "").strip() or VISION_SYSTEM_DEFAULT
 
-    def _toggle_vision_rule(self):
-        """折叠 / 展开规则文本框。"""
-        show = self._vision_rule_title.isChecked()
-        self.vision_rule_edit.setVisible(show)
-        self._vision_rule_save.setVisible(show)
-        self._vision_rule_reset.setVisible(show)
-        self._vision_rule_state.setVisible(show)
-
     def _on_vision_rule_edited(self):
-        """实时提示：默认 / 已修改未保存。"""
+        """实时刷新规则区块的状态小字。"""
+        self._refresh_rule_state()
+
+    def _refresh_rule_state(self):
+        """规则状态：默认 / 已保存 / 未保存。"""
         try:
             cur = (self.vision_rule_edit.toPlainText() or "").strip()
         except Exception:
-            cur = ""
-        saved = self._saved_rule()
-        if not cur or cur == VISION_SYSTEM_DEFAULT.strip():
-            if saved == VISION_SYSTEM_DEFAULT.strip():
-                self._vision_rule_state.setText("默认")
-                self._vision_rule_state.setStyleSheet("color:#8a8f9c;font-size:11px;")
+            return
+        saved = self._saved_rule().strip()
+        dft = VISION_SYSTEM_DEFAULT.strip()
+        cur_n = cur or dft
+        if cur_n == saved:
+            if saved == dft:
+                self._rule_section.set_state("默认", "#8a8f9c")
             else:
-                self._vision_rule_state.setText("已修改（未保存）")
-                self._vision_rule_state.setStyleSheet("color:#d08a00;font-size:11px;")
-        elif cur == saved:
-            self._vision_rule_state.setText("已保存")
-            self._vision_rule_state.setStyleSheet("color:#1a7f37;font-size:11px;")
+                self._rule_section.set_state("已保存", "#1a7f37")
         else:
-            self._vision_rule_state.setText("已修改（未保存）")
-            self._vision_rule_state.setStyleSheet("color:#d08a00;font-size:11px;")
+            self._rule_section.set_state("未保存", "#d08a00")
+
+
+    def _on_persona_edited(self):
+        """人设改动时刷新状态。"""
+        self._refresh_persona_state()
+
+    def _refresh_persona_state(self):
+        """人设状态：默认 / 已保存 / 未保存。"""
+        try:
+            cur = (self.persona_edit.toPlainText() or "").strip()
+        except Exception:
+            return
+        saved = (self.app.cfg.get("persona") or "").strip()
+        cur_n = cur or DEFAULT_PERSONA.strip()
+        saved_n = saved or DEFAULT_PERSONA.strip()
+        if cur_n == saved_n:
+            if saved_n == DEFAULT_PERSONA.strip():
+                self._persona_section.set_state("默认", "#8a8f9c")
+            else:
+                self._persona_section.set_state("已保存", "#1a7f37")
+        else:
+            self._persona_section.set_state("未保存", "#d08a00")
+
+    def _save_section_state(self, name, expanded):
+        """把区块展开状态写进配置（只影响显示）。"""
+        try:
+            sec = self.app.cfg.get("ui_sections")
+            if not isinstance(sec, dict):
+                sec = {}
+            sec[str(name)] = bool(expanded)
+            self.app.cfg["ui_sections"] = sec
+            self.app.save_cfg()
+        except Exception as ex:
+            log("保存区块状态失败: %s" % ex, logging.WARNING)
+
 
     def _save_vision_rule(self):
         """把规则写进配置（与请求共用同一份 vision_system）。"""
@@ -2267,7 +2393,7 @@ class SettingsWindow(QDialog):
             self.app.cfg["persona"] = text[:4000]
         self.app.save_cfg()
         self._persona_hint.setText("已保存。前缀缓存会失效一次，建议新开一个对话。")
-        self._persona_state.setText("自定义" if self.app.cfg["persona"] else "默认")
+        self._refresh_persona_state()
         self.app.say_main("人设已保存")
         self._refresh_chat_hint()
         log("[聊天] 人设已更新（%d 字）" % len(text))
@@ -2278,7 +2404,7 @@ class SettingsWindow(QDialog):
         self.app.save_cfg()
         self.persona_edit.setPlainText(DEFAULT_PERSONA)
         self._persona_hint.setText("已恢复默认人设。前缀缓存会失效一次，建议新开一个对话。")
-        self._persona_state.setText("默认")
+        self._refresh_persona_state()
         self.app.say_main("人设已恢复默认")
         self._refresh_chat_hint()
 
@@ -2308,8 +2434,6 @@ class SettingsWindow(QDialog):
                 "当前风格下，system 末尾会追加：%s"
                 % (("「" + suffix + "」") if suffix else "（不追加，不限长度）"))
             persona_txt = persona_from_cfg(self.app.cfg)
-            self._persona_state.setText(
-                "自定义" if (self.app.cfg.get("persona") or "").strip() else "默认")
             try:
                 mem_n = len(self.app.memory.items)
             except Exception:
