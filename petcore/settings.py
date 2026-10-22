@@ -1784,6 +1784,13 @@ class SettingsWindow(QDialog):
             lambda on: self._set_vision_save_desc(bool(on)),
             "关闭时只用于这一次回复，不写入聊天记录。")
 
+        # 把截图原图也存进聊天记录（默认关闭）
+        self._vision_save_shot = self._check(
+            self._advanced_section.body_layout, "把截图原图也存进聊天记录",
+            bool((self.app.cfg.get("look_screen") or {}).get("save_shot", False)),
+            lambda on: self._set_vision_save_shot(bool(on)),
+            "开启后聊天记录里会显示这次框选的截图（缩略图，点击可看大图）。")
+
 
         # 高级设置加入页面（放在识别规则之后、按钮之前）
         lay.addWidget(self._advanced_section)
@@ -2348,6 +2355,15 @@ class SettingsWindow(QDialog):
         self.app.cfg["look_screen"] = ls
         self.app.save_cfg()
 
+
+    def _set_vision_save_shot(self, on):
+        """保存截图原图开关：写入 look_screen.save_shot。"""
+        ls = self._vision_cfg_dict()
+        ls["save_shot"] = bool(on)
+        self.app.cfg["look_screen"] = ls
+        self.app.save_cfg()
+        self._set_vision_status(
+            "✓ 已%s把截图原图存进聊天记录" % ("开启" if on else "关闭"), "ok")
 
     def _on_vision_limit_changed(self, key, value):
         """三项限制（最长边/质量/超时）改动后立即保存。"""

@@ -2258,6 +2258,7 @@ def default_config():
                         "max_tokens": VISION_TOKENS_DEFAULT,
                         "vision_system": VISION_SYSTEM_DEFAULT,
                         "save_desc": False,
+                        "save_shot": False,
                         "max_side": LOOK_SCREEN_SIDE_DEFAULT,
                         "quality": LOOK_SCREEN_QUALITY_DEFAULT,
                         "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
@@ -2684,6 +2685,11 @@ def migrate_and_validate(raw):
     _sd = ls.get("save_desc") if isinstance(ls, dict) else None
     if isinstance(_sd, bool):
         cfg["look_screen"]["save_desc"] = _sd
+
+    # look_screen.save_shot：是否把截图原图也存进聊天记录（默认 False）
+    _ss = ls.get("save_shot") if isinstance(ls, dict) else None
+    if isinstance(_ss, bool):
+        cfg["look_screen"]["save_shot"] = _ss
 
 
     # look_screen.vision_system（识别规则，字符串，空则回落默认）

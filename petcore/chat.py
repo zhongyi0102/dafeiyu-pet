@@ -249,7 +249,7 @@ class SummaryWorker(QThread):
 class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
-    def __init__(self, role, text=""):
+    def __init__(self, role, text="", image_path=None):
         super().__init__()
         self.role = role
         self.setObjectName("Bubble")
@@ -262,6 +262,29 @@ class ChatBubble(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*CHAT_BUBBLE_PAD)
         lay.setSpacing(0)
+        # 截图缩略图（可选）：放在文字上方，点击放大
+        self.image_label = None
+        if image_path:
+            try:
+                pm = QPixmap(image_path)
+                if not pm.isNull():
+                    thumb = pm.scaled(260, 180,
+                                      Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                    self.image_label = QLabel()
+                    self.image_label.setPixmap(thumb)
+                    self.image_label.setCursor(Qt.CursorShape.PointingHandCursor)
+                    self.image_label.setToolTip("点击查看大图")
+                    self.image_label.setStyleSheet(
+                        "border-radius:6px;border:1px solid #dfe3ec;")
+                    self._full_image_path = image_path
+                    self.image_label.mousePressEvent = (
+                        lambda e, p=image_path: self._show_full_image(p))
+                    lay.addWidget(self.image_label)
+                    lay.addSpacing(6)
+            except Exception as ex:
+                log("[聊天] 气泡图片加载失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
         lay.addWidget(self.label)
         self._plain = ""
         self._style()
@@ -1010,6 +1033,32 @@ class ChatWindow(QWidget):
         self.empty_state.raise_()
         self.empty_state.hide()
 
+    def _show_full_image(self, path):
+        """点缩略图 → 弹窗看大图。"""
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("截图")
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(8, 8, 8, 8)
+            lab = QLabel()
+            pm = QPixmap(path)
+            if pm.isNull():
+                lab.setText("图片读不出来")
+            else:
+                screen = QApplication.primaryScreen().availableGeometry()
+                max_w = int(screen.width() * 0.8)
+                max_h = int(screen.height() * 0.8)
+                if pm.width() > max_w or pm.height() > max_h:
+                    pm = pm.scaled(max_w, max_h,
+                                   Qt.AspectRatioMode.KeepAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+                lab.setPixmap(pm)
+            lay.addWidget(lab)
+            dlg.exec()
+        except Exception as ex:
+            log("[聊天] 查看大图失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
     def _update_empty_state(self):
         """无消息时显示居中的头像+欢迎语；有消息后隐藏。"""
         try:
@@ -1104,8 +1153,8 @@ class ChatWindow(QWidget):
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _add_bubble(self, role, text):
-        b = ChatBubble(role, text)
+    def _add_bubble(self, role, text, image_path=None):
+        b = ChatBubble(role, text, image_path=image_path)
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1145,16 +1194,17 @@ class ChatWindow(QWidget):
                 % (__name__, "_remove_bubble", type(ex).__name__, ex),
                 logging.WARNING)
 
-    def render_message(self, role, text):
-        return self._add_bubble(role, text)
+    def render_message(self, role, text, image_path=None):
+        return self._add_bubble(role, text, image_path=image_path)
 
-    def append_external(self, role, text, notice=None):
+    def append_external(self, role, text, notice=None, image_path=None):
         """外部功能（如「看看屏幕」）把消息追加到当前会话。
 
         作用：
           - 写入 self.messages 并落盘 → 下次打开还在，可继续追问
           - 立刻在界面上显示气泡
           - 可选在消息前插一条 notice（提示气泡，不入会话历史）
+          - image_path: 本地图片路径，给了就在气泡里显示缩略图（点击放大）
 
         返回写入的消息对象；无当前会话时返回 None。
         """
@@ -1165,10 +1215,12 @@ class ChatWindow(QWidget):
         if not text:
             return None
         msg = {"role": role, "content": text}
+        if image_path:
+            msg["image"] = str(image_path)
         self.messages.append(msg)
         if notice:
             self._add_bubble("note", notice)
-        self._add_bubble(role, text)
+        self._add_bubble(role, text, image_path=image_path)
         self.save_history()
         self._update_empty_state()
         return msg

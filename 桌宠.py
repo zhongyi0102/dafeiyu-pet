@@ -3219,6 +3219,44 @@ class PetApp(QObject):
             self._restore_after_select()
             self.say_main("瞧不清呢……")
 
+    def _save_look_shot(self, pil_img):
+        """把这次看屏的截图存到用户数据目录，返回路径（失败返回 ""）。
+
+        只在「把截图原图也存进聊天记录」开启时调用。
+        文件名带时间戳，最多保留最近 50 张，避免无限增长。
+        """
+        try:
+            import os as _os
+            d = _os.path.join(APP_DIR, "look_shots")
+            _os.makedirs(d, exist_ok=True)
+            fn = time.strftime("%Y%m%d_%H%M%S") + ".jpg"
+            path = _os.path.join(d, fn)
+            img = pil_img
+            w, h = img.size
+            mx = max(w, h)
+            if mx > 1600:
+                s = 1600.0 / mx
+                img = img.resize((max(1, int(w * s)), max(1, int(h * s))))
+            img.save(path, "JPEG", quality=85)
+            # 只保留最近 50 张
+            try:
+                files = sorted(
+                    (_os.path.join(d, f) for f in _os.listdir(d)
+                     if f.lower().endswith((".jpg", ".png"))),
+                    key=lambda x: _os.path.getmtime(x))
+                for old in files[:-50]:
+                    try:
+                        _os.remove(old)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return path
+        except Exception as ex:
+            log("[看看屏幕] 保存截图失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return ""
+
     def _run_look_screen(self, image):
         """两步流程：analyze_screen（视觉+OCR+场景）→ 聊天模型按人设回复。
 
@@ -3236,7 +3274,8 @@ class PetApp(QObject):
             speaker.say("看看中…")
 
         # QImage → PIL.Image（只在内存）
-        holder = {"pil": None, "fg": getattr(self, "_look_fg_info", ("", ""))}
+        holder = {"pil": None, "fg": getattr(self, "_look_fg_info", ("", "")),
+                  "shot_path": ""}
         try:
             buf = QBuffer()
             buf.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -3246,6 +3285,10 @@ class PetApp(QObject):
             image = None
             from PIL import Image as _PILImage
             holder["pil"] = _PILImage.open(io.BytesIO(raw_png)).convert("RGB")
+            # 「把截图原图也存进聊天记录」开启时，落盘一份
+            _ls_cfg = self.cfg.get("look_screen") or {}
+            if _ls_cfg.get("save_shot"):
+                holder["shot_path"] = self._save_look_shot(holder["pil"])
         except Exception as ex:
             log("[看看屏幕] 图片转换失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -3310,7 +3353,9 @@ class PetApp(QObject):
                 if not chat_msg:
                     self.say_main("我看了半天，没看出啥……")
                     return
-                self._look_screen_to_chat_desc(chat_msg, scene, state)
+                self._look_screen_to_chat_desc(
+                    chat_msg, scene, state,
+                    shot_path=holder.get("shot_path") or "")
             except Exception as ex:
                 log("[看看屏幕] analyze_screen 失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
@@ -3320,7 +3365,8 @@ class PetApp(QObject):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _look_screen_to_chat(self, title, text, ok=True, desc=None):
+    def _look_screen_to_chat(self, title, text, ok=True, desc=None,
+                             shot_path=""):
         """把「看看屏幕」的结果写进聊天（**线程安全入口**）。
 
         可能在 worker 线程被调用，因此只 emit 信号；
@@ -3328,7 +3374,7 @@ class PetApp(QObject):
         """
         try:
             self.look_to_chat.emit(str(title or ""), str(text or ""),
-                                   str(desc or ""))
+                                   str(desc or "") + "\x00" + str(shot_path or ""))
             return True
         except Exception as ex:
             log("[看看屏幕] 发信号失败: %s" % ex, logging.WARNING)
@@ -3338,11 +3384,19 @@ class PetApp(QObject):
         """主线程：把结果写进聊天窗口/文件。
 
         默认**不写**「[屏幕解析] …」到历史（只用于本次回复）；
-        高级设置里开启「保存屏幕描述到聊天记录」后才写。
+        高级设置里开启「保存屏幕描述到聊天记录」后才写描述；
+        开启「把截图原图也存进聊天记录」后，还会带一张截图缩略图。
         """
         try:
+            # desc 里可能带 \x00 分隔的截图路径
+            shot_path = ""
+            if isinstance(desc, str) and "\x00" in desc:
+                desc, shot_path = desc.split("\x00", 1)
             user_line = "[看看屏幕] %s" % (title or "框选")
             save_desc = bool((self.cfg.get("look_screen") or {}).get("save_desc", False))
+            save_shot = bool((self.cfg.get("look_screen") or {}).get("save_shot", False))
+            if not save_shot:
+                shot_path = ""
             pairs = []
             if desc and save_desc:
                 pairs.append(("user", "[屏幕解析] " + desc))
@@ -3352,19 +3406,24 @@ class PetApp(QObject):
             cw = self.chat_window
             if cw is not None:
                 for role, content in pairs:
-                    cw.append_external(role, content)
-                log("[看看屏幕] 已同步到聊天（描述%s写入）"
-                    % ("已" if (desc and save_desc) else "未"))
+                    # 截图挂在第一条 user 消息上
+                    img = shot_path if (role == "user"
+                                        and content == user_line) else None
+                    cw.append_external(role, content, image_path=img)
+                log("[看看屏幕] 已同步到聊天（描述%s写入，截图%s）"
+                    % ("已" if (desc and save_desc) else "未",
+                       "已" if shot_path else "未"))
                 return
-            if self._append_pairs_to_chat_file(pairs):
-                log("[看看屏幕] 已写入聊天记录（描述%s写入）"
-                    % ("已" if (desc and save_desc) else "未"))
+            if self._append_pairs_to_chat_file(pairs, shot_path=shot_path):
+                log("[看看屏幕] 已写入聊天记录（描述%s写入，截图%s）"
+                    % ("已" if (desc and save_desc) else "未",
+                       "已" if shot_path else "未"))
         except Exception as ex:
             log("[看看屏幕] 写聊天失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
 
-    def _append_pairs_to_chat_file(self, pairs):
+    def _append_pairs_to_chat_file(self, pairs, shot_path=""):
         """不开聊天窗口，把多条 (role, content) 追加到 chats.json 当前会话。
 
         文件不存在时自动创建（首次使用也能看到记录）。
@@ -3406,7 +3465,12 @@ class PetApp(QObject):
             for role, content in pairs:
                 content = (content or "").strip()
                 if content:
-                    msgs.append({"role": role, "content": content})
+                    item = {"role": role, "content": content}
+                    # 截图挂在第一条 user 消息上
+                    if (shot_path and role == "user"
+                            and content.startswith("[看看屏幕]")):
+                        item["image"] = shot_path
+                    msgs.append(item)
             stamp = time.strftime("%Y-%m-%d %H:%M:%S")
             sess["updated"] = stamp
             data["updated"] = stamp
@@ -3454,16 +3518,19 @@ class PetApp(QObject):
             return False
 
 
-    def _look_screen_to_chat_desc(self, chat_msg, scene="general", state=""):
+    def _look_screen_to_chat_desc(self, chat_msg, scene="general", state="",
+                                  shot_path=""):
         """把 analyze_screen 组装好的消息交给聊天模型，用大肥鱼人设回一句。"""
         try:
-            self._ask_chat_for_look(chat_msg, chat_msg, scene=scene, state=state)
+            self._ask_chat_for_look(chat_msg, chat_msg, scene=scene, state=state,
+                                    shot_path=shot_path)
         except Exception as ex:
             log("[看看屏幕] 交给聊天失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
             self.say_main(chat_msg[:80])
 
-    def _ask_chat_for_look(self, line, desc, scene="general", state=""):
+    def _ask_chat_for_look(self, line, desc, scene="general", state="",
+                           shot_path=""):
         """把 [屏幕观察] 交给聊天模型，用大肥鱼人设回一句。
 
         - system 末尾追加 CHAT_LOOK_RULES（只在看屏路径）
@@ -3556,7 +3623,8 @@ class PetApp(QObject):
             if text:
                 text = SV.postprocess_reply(text)
                 self.say_main(text)
-                self._look_screen_to_chat("(框选)", text, ok=True, desc=desc)
+                self._look_screen_to_chat("(框选)", text, ok=True, desc=desc,
+                                          shot_path=shot_path)
                 try:
                     mem.save(scene, state, text)
                 except Exception as ex:
