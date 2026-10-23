@@ -2267,6 +2267,18 @@ class PetApp(QObject):
             t = VOICE.strip_actions(text)
             if not t:
                 return "", 0.0, "没有可念的内容"
+
+            # 优先用本地翻唱曲库（真旋律 + 伴奏）
+            _name, _song = VOICE.pick_song(t)
+            if _song and os.path.exists(_song):
+                import wave as _wave
+                try:
+                    with _wave.open(_song, "rb") as _w:
+                        _sec = _w.getnframes() / float(_w.getframerate() or 1)
+                except Exception:
+                    _sec = 0.0
+                log("[语音] 使用翻唱曲库：%s（%.1f 秒）" % (_name, _sec))
+                return _song, _sec, ""
             if len(t) > 2000:
                 t = t[:2000]
             # 按引擎合成（voxcpm 很慢，synthesize 内部已放宽超时）
