@@ -238,12 +238,14 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
     try:
         import subprocess
         d = os.path.dirname(script)
-        # 不用 cmd start（引号解析脆弱：标题/程序边界易错，弹
-        # 「Windows 找不到文件 'dafeiyu-voice'」）。
-        # CREATE_NEW_CONSOLE 本身就会开新控制台窗口，直接 Popen 即可。
+        # 后台静默启动：不弹黑窗口（CREATE_NO_WINDOW），
+        # 日志重定向到文件，出错时可查
+        log_path = os.path.join(d, "rvc_server.log")
+        logf = open(log_path, "ab")
         subprocess.Popen(
             [SERVER_PY, "-u", script],
-            cwd=d, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            cwd=d, stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as ex:
         return False, "启动失败: %s: %s" % (type(ex).__name__, ex)
     # 等服务就绪 + 模型预加载完成（否则首个转换请求会撞上加载期）
