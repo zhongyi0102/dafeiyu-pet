@@ -4,20 +4,20 @@ r"""rvc_convert_cli.py — 单个音频文件的 RVC 换音色（命令行）
 用 RVC 官方 VC 流程（与 rvc_server.py 一致）。
 
 用法：
-  E:\AI\engines\rvc311\Scripts\python.exe rvc_convert_cli.py <输入音频> <输出wav> \
+  E:\AI\dafeiyu-voice\engines\rvc311\Scripts\python.exe rvc_convert_cli.py <输入音频> <输出wav> \
       [--pitch 0] [--speaker 0]
 
 依赖：
-  E:\AI\src\rvc-src（官方源码 + rmvpe + hubert_base）
-  E:\AI\models\rvc\xiaoxiao.pth（音色）
+  E:\AI\dafeiyu-voice\src\rvc-src（官方源码 + rmvpe + hubert_base）
+  E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.pth（音色）
 """
 import argparse
 import os
 import sys
 
-RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\src\rvc-src")
+RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\dafeiyu-voice\src\rvc-src")
 MODEL_PATH = os.environ.get(
-    "RVC_MODEL", r"E:\AI\models\rvc\xiaoxiao.pth")
+    "RVC_MODEL", r"E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.pth")
 
 
 def log(msg):

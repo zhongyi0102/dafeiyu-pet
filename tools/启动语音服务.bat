@@ -12,7 +12,7 @@ REM        就说明好了，这个窗口不要关。
 REM ============================================================
 
 REM 模型路径
-set RVC_MODEL=E:\AI\models\rvc\xiaoxiao.safetensors
+set RVC_MODEL=E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.safetensors
 REM 监听地址（只本机用就改成 127.0.0.1 更安全）
 set RVC_HOST=127.0.0.1
 set RVC_PORT=9880
@@ -26,7 +26,7 @@ echo.
 echo  首次转换约 10 秒（加载模型），之后同句 1 秒内。
 echo  关掉这个窗口语音就停了。
 echo ============================================
-"E:\AI\engines\rvc311\Scripts\python.exe" -u rvc_server.py
+"E:\AI\dafeiyu-voice\engines\rvc311\Scripts\python.exe" -u rvc_server.py
 echo.
 echo 服务已退出。
 pause

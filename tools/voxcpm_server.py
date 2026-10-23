@@ -5,7 +5,7 @@ r"""voxcpm_server.py — VoxCPM2 语音服务（高质量语音 / 音色克隆�
   rvc_server.py   : Edge-TTS 生成的语音 → RVC 换成晓晓音色（快，2 秒）
   voxcpm_server.py: 文本 → VoxCPM2 直接生成（慢，3 分钟，48kHz 高音质）
 
-运行环境：E:\AI\engines\voxcpm-env（Python 3.11 + torch CPU）
+运行环境：E:\AI\dafeiyu-voice\engines\voxcpm-env（Python 3.11 + torch CPU）
 模型：openbmb/VoxCPM2（首次运行自动下载，约 5GB）
 
 接口：
@@ -24,7 +24,7 @@ import time
 
 HOST = os.environ.get("VOX_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VOX_PORT", "9881"))
-HF_HOME = os.environ.get("HF_HOME", r"E:\AI\models\hf-cache")
+HF_HOME = os.environ.get("HF_HOME", r"E:\AI\dafeiyu-voice\models\hf-cache")
 # 默认音色描述（大肥鱼：傲娇鲸鱼少女）
 DEFAULT_CONTROL = os.environ.get(
     "VOX_CONTROL",

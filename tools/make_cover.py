@@ -8,7 +8,7 @@ r"""make_cover.py — AI 翻唱流水线（UVR5 人声分离 + RVC 换音色）
   4. 混音输出成品
 
 用法：
-  E:\AI\engines\rvc311\Scripts\python.exe make_cover.py <歌曲文件> [--out 目录]
+  E:\AI\dafeiyu-voice\engines\rvc311\Scripts\python.exe make_cover.py <歌曲文件> [--out 目录]
 
 输出：
   <out>/vocals.wav      分离出的人声
@@ -22,13 +22,13 @@ import subprocess
 import sys
 import tempfile
 
-RVC_ENV = r"E:\AI\engines\rvc311\Scripts\python.exe"
+RVC_ENV = r"E:\AI\dafeiyu-voice\engines\rvc311\Scripts\python.exe"
 RVC_MODEL = os.environ.get(
-    "RVC_MODEL", r"E:\AI\models\rvc\xiaoxiao.pth")
+    "RVC_MODEL", r"E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.pth")
 # UVR 模型：MDX-Net 人声分离（质量好，CPU 可跑）
 UVR_MODEL = os.environ.get(
     "UVR_MODEL", "UVR-MDX-NET-Inst_HQ_3.onnx")
-UVR_DIR = os.environ.get("UVR_DIR", r"E:\AI\models\uvr")
+UVR_DIR = os.environ.get("UVR_DIR", r"E:\AI\dafeiyu-voice\models\uvr")
 
 
 def log(msg):

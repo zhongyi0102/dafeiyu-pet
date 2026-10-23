@@ -6,11 +6,11 @@ r"""rvc_server.py — 桌宠语音服务（用 RVC 官方推理流程）
   RMS 包络混合、特征索引），导致合成声音和文本内容完全对不上。
   官方 infer/vc/modules.py 的 VC.vc_single() 是训练时配套的完整流程。
 
-运行环境：E:\AI\engines\rvc311（Python 3.11 + torch 2.14 CPU）
+运行环境：E:\AI\dafeiyu-voice\engines\rvc311（Python 3.11 + torch 2.14 CPU）
 依赖模型：
-  E:\AI\src\rvc-src\assets\rmvpe\rmvpe.pt        172.8 MB（F0 提取）
-  E:\AI\src\rvc-src\assets\hubert_base\           180.4 MB（内容特征）
-  E:\AI\models\rvc\xiaoxiao.safetensors        52.6 MB（音色）
+  E:\AI\dafeiyu-voice\src\rvc-src\assets\rmvpe\rmvpe.pt        172.8 MB（F0 提取）
+  E:\AI\dafeiyu-voice\src\rvc-src\assets\hubert_base\           180.4 MB（内容特征）
+  E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.safetensors        52.6 MB（音色）
 
 接口：
   GET  /health                  -> {"ok": true, "loaded": bool, ...}
@@ -23,9 +23,9 @@ import tempfile
 import threading
 import time
 
-RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\src\rvc-src")
+RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\dafeiyu-voice\src\rvc-src")
 MODEL_PATH = os.environ.get(
-    "RVC_MODEL", r"E:\AI\models\rvc\xiaoxiao.pth")
+    "RVC_MODEL", r"E:\AI\dafeiyu-voice\models\rvc\xiaoxiao.pth")
 HOST = os.environ.get("RVC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RVC_PORT", "9880"))
 SPEAKER_ID = int(os.environ.get("RVC_SPEAKER", "0"))
