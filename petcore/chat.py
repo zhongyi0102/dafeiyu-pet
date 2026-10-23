@@ -1816,7 +1816,10 @@ class ChatWindow(QWidget):
         style = self.pet.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.pet.cfg)
         sys_text = build_system_prompt(style, persona)
-        # 唱歌场景：追加"必须真的唱出歌词"的指令
+        # 唱歌场景：**联网搜真实歌词**，搜到就直接用（跳过模型）
+        # 搜不到才回退到"让模型写歌词"
+        self._sing_lyrics = None
+        self._sing_title = ""
         try:
             _last_user = ""
             for m in reversed(self.messages):
@@ -1825,9 +1828,30 @@ class ChatWindow(QWidget):
                     break
             import pet_voice as _V
             if _V.is_sing_request(_last_user):
-                sys_text = sys_text + build_sing_hint("")
-        except Exception:
-            pass
+                import lyrics as _LY
+                # 从用户话里提取歌名（去掉"唱""给我听"等）
+                _q = _V.strip_actions(_last_user)
+                for w in ("唱一首", "唱个", "唱一段", "唱首", "来一首", "来首",
+                          "哼一首", "哼一段", "哼个", "唱歌", "给我听",
+                          "给我", "听", "吧", "好吗", "好不好"):
+                    _q = _q.replace(w, " ")
+                _q = " ".join(_q.split()).strip()
+                if _q:
+                    _text, _name, _artist = _LY.build_sing_text(_q)
+                    if _text:
+                        self._sing_lyrics = _text
+                        self._sing_title = ("%s - %s" % (_name, _artist)
+                                            if _artist else _name)
+                        log("[歌词] 搜到《%s》%d 行，跳过模型"
+                            % (self._sing_title, len(_text.splitlines())))
+                    else:
+                        log("[歌词] 没搜到 %r 的歌词，回退让模型写" % _q)
+                        sys_text = sys_text + build_sing_hint("")
+                else:
+                    sys_text = sys_text + build_sing_hint("")
+        except Exception as ex:
+            self._sing_lyrics = None
+            log("[歌词] 搜索异常: %s" % ex, logging.WARNING)
         msgs = [{"role": "system", "content": self.pet.memory.system_content(sys_text)}]
         if self.summary:
             msgs.append({"role": "system",
@@ -1868,6 +1892,17 @@ class ChatWindow(QWidget):
     def _start_chat_stream(self):
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
         messages = self._build_request_messages()
+        # 搜到真实歌词：跳过模型，直接用歌词当回复
+        if getattr(self, "_sing_lyrics", None):
+            _lyr = self._sing_lyrics
+            self._sing_lyrics = None
+            log("[歌词] 用搜到的歌词直接回复（不调模型）")
+            try:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self._on_done(_lyr, None))
+            except Exception:
+                self._on_done(_lyr, None)
+            return
         self.token_label.setText("本次　生成中…")
         _base, _key2, _model = self.pet._chat_cfg()
         self.worker = ChatWorker(
