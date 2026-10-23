@@ -260,6 +260,11 @@ class ChatBubble(QFrame):
         self.label.setWordWrap(True)
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # 右键菜单挂在 label 上（事件发生在 label，QFrame 的
+        # contextMenuEvent 收不到）；系统默认菜单只有 Copy/Select All
+        self.label.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.label.customContextMenuRequested.connect(self._label_menu)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*CHAT_BUBBLE_PAD)
         lay.setSpacing(0)
@@ -342,26 +347,33 @@ class ChatBubble(QFrame):
             self.role = "error"
             self._style()
 
-    def plain_text(self):
-        return self._plain
-
-    def contextMenuEvent(self, ev):
-        """气泡右键：复制全文 / 复制选中 / 播放语音。"""
+    def _label_menu(self, pos):
+        """气泡文字右键菜单：复制选中/复制全文/播放语音。"""
         from PySide6.QtWidgets import QMenu
-        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication, QCursor
         menu = QMenu(self)
-        sel = self.label.selectedText() if hasattr(self.label, "selectedText") else ""
+        sel = ""
+        try:
+            sel = self.label.selectedText()
+        except Exception:
+            pass
         if sel:
             menu.addAction("复制选中",
                            lambda: QGuiApplication.clipboard().setText(sel))
-        menu.addAction("复制全文",
-                       lambda: QGuiApplication.clipboard().setText(self._plain or ""))
+        if self._plain:
+            menu.addAction("复制全文",
+                           lambda: QGuiApplication.clipboard().setText(
+                               self._plain))
         if self.voice_btn is not None:
             menu.addSeparator()
             menu.addAction("播放语音", self._play_voice)
         if menu.actions():
-            menu.exec(ev.globalPos())
-        ev.accept()
+            menu.exec(QCursor.pos())
+
+    def plain_text(self):
+        return self._plain
+
+
 
     def _play_voice(self):
         """播放这条语音（复用全局 VoicePlayer，避免多播放器抢音频）。"""

@@ -2272,7 +2272,19 @@ class PetApp(QObject):
             wav, err = VOICE.tts_rvc(cfg.get("url"), t,
                                      timeout=cfg.get("timeout", 120))
             if err or not wav:
-                return "", 0.0, err or "空音频"
+                # 服务没启动时自动拉起一次再重试（QQ 式无感体验）
+                if ("refused" in (err or "") or "ConnectionError" in (err or "")
+                        or "Max retries" in (err or "")):
+                    log("[语音] 服务未启动，尝试自动启动…")
+                    ok, smsg = VOICE.start_server(cfg.get("url") or
+                                                  "http://127.0.0.1:9880",
+                                                  wait=45)
+                    if ok:
+                        wav, err = VOICE.tts_rvc(
+                            cfg.get("url"), t,
+                            timeout=cfg.get("timeout", 120))
+                if err or not wav:
+                    return "", 0.0, err or "空音频"
             import os as _os
             d = _os.path.join(APP_DIR, "voice_cache")
             _os.makedirs(d, exist_ok=True)
