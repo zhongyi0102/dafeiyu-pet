@@ -3192,10 +3192,16 @@ class SettingsWindow(QDialog):
         self._voice_vol.valueChanged.connect(from_slider)
         self._voice_vol_box.valueChanged.connect(from_box)
 
-        # 测试
+        # 服务管理 + 测试
         lay.addSpacing(8)
         trow = QHBoxLayout()
         trow.setContentsMargins(22, 0, 0, 0)
+        self._voice_start_btn = QPushButton("启动语音服务")
+        self._voice_start_btn.setToolTip(
+            "在本机拉起 RVC 语音转换服务（独立窗口）。"
+            "启动后语音功能才能用。")
+        self._voice_start_btn.clicked.connect(self._voice_start_server)
+        trow.addWidget(self._voice_start_btn)
         self._voice_test_btn = QPushButton("测试语音")
         self._voice_test_btn.setToolTip("让宠物念一句测试台词")
         self._voice_test_btn.clicked.connect(self._voice_test)
@@ -3235,6 +3241,52 @@ class SettingsWindow(QDialog):
                 % (cfg.get("url"), cfg.get("volume", 80)))
         except Exception:
             pass
+
+    def _voice_start_server(self):
+        """启动语音服务：子线程拉起 + 轮询，结果写状态栏。"""
+        btn = getattr(self, "_voice_start_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        self._voice_status.setText("…正在启动语音服务（首次需加载模型）")
+
+        import threading
+        import pet_voice as V
+
+        result = {}
+
+        def work():
+            try:
+                ok, msg = V.start_server(
+                    self.app.voice_cfg().get("url") or
+                    "http://127.0.0.1:9880", wait=40)
+                result["ok"] = ok
+                result["msg"] = msg
+            except Exception as ex:
+                result["ok"] = False
+                result["msg"] = "%s: %s" % (type(ex).__name__, ex)
+            # 轮询标志位（QTimer 只能在主线程用）
+            self._voice_srv_result = result
+
+        threading.Thread(target=work, daemon=True).start()
+
+        # 用现有测试结果信号轮询（1 秒一次，直到拿到结果）
+        self._voice_srv_poll = self.startTimer(1000)
+
+    def timerEvent(self, ev):
+        """轮询语音服务启动结果。"""
+        res = getattr(self, "_voice_srv_result", None)
+        if res is not None:
+            self.killTimer(self._voice_srv_poll)
+            self._voice_srv_result = None
+            btn = getattr(self, "_voice_start_btn", None)
+            if btn is not None:
+                btn.setEnabled(True)
+            if res.get("ok"):
+                self._voice_status.setText(
+                    "✓ %s——现在可以点「测试语音」了" % res.get("msg"))
+            else:
+                self._voice_status.setText("✗ %s" % res.get("msg"))
+        super().timerEvent(ev)
 
     def _voice_test(self):
         """测试语音：子线程走完整链路，成功则真的播放，失败给明确原因。"""

@@ -159,6 +159,70 @@ def edge_tts_wav(text, voice="zh-CN-XiaoxiaoNeural", speed=1.0):
     return data, ""
 
 
+
+
+# ---------- 语音服务管理 ----------
+# 服务脚本路径（exe 版：解包目录/tools；源码版：项目/tools）
+def _server_script():
+    import sys
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+        cand = os.path.join(base, "tools", "rvc_server.py")
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "tools", "rvc_server.py")
+
+
+SERVER_PY = r"E:\AI\rvc311\Scripts\python.exe"
+SERVER_PORT_DEFAULT = 9880
+
+
+def is_server_running(url="http://127.0.0.1:9880", timeout=2.0):
+    """检查语音服务是否在线（/health）。"""
+    import requests
+    try:
+        s = requests.Session()
+        s.trust_env = False
+        r = s.get(url.rstrip("/") + "/health", timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def start_server(url="http://127.0.0.1:9880", wait=20):
+    """拉起语音服务（独立窗口）。返回 (ok, msg)。
+
+    ok=True 时服务已就绪；False 时 msg 说明原因。
+    """
+    if is_server_running(url):
+        return True, "服务已在运行"
+    script = _server_script()
+    if not os.path.exists(script):
+        return False, "找不到服务脚本：%s" % script
+    if not os.path.exists(SERVER_PY):
+        return False, "找不到服务 Python：%s" % SERVER_PY
+    try:
+        import subprocess
+        d = os.path.dirname(script)
+        # 不用 cmd start（引号解析脆弱：标题/程序边界易错，弹
+        # 「Windows 找不到文件 'dafeiyu-voice'」）。
+        # CREATE_NEW_CONSOLE 本身就会开新控制台窗口，直接 Popen 即可。
+        subprocess.Popen(
+            [SERVER_PY, "-u", script],
+            cwd=d, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    except Exception as ex:
+        return False, "启动失败: %s: %s" % (type(ex).__name__, ex)
+    # 等服务就绪
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if is_server_running(url):
+            return True, "服务已启动"
+        time.sleep(0.5)
+    return False, "启动超时（%d 秒），请查看弹出的服务窗口" % wait
+
+
+
 def rvc_convert(url, wav_bytes, timeout=120):
     """把基准语音发给服务做 RVC 音色转换。返回 (wav_bytes, err)。
 
