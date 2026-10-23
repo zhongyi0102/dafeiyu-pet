@@ -195,6 +195,7 @@ class SettingsWindow(QDialog):
 
     # 主动搭话测试结果回主线程（worker 线程只 emit）
     _pro_test_done = Signal(object, str, str, float, str, bool, bool)
+    _voice_test_done = Signal(object, str, float)   # 测试语音：wav, err, 耗时
 
     PAGES = [
         ("features", "功能开关"),
@@ -3130,8 +3131,9 @@ class SettingsWindow(QDialog):
     # ---------- 语音页 ----------
     def _build_voice_page(self, lay):
         self._title(lay, "语音",
-                    "让宠物把说的话念出来。需要先启动 tools/启动语音服务.bat"
-                    "（Edge-TTS 生成 + RVC 转成晓晓音色）。")
+                    "让宠物把说的话念出来（日常聊天不出声，只有叫它唱歌/"
+                    "念出来时才发声）。使用前先双击 tools\\启动语音服务.bat，"
+                    "听到 \"Uvicorn running\" 即就绪。")
         cfg = self.app.voice_cfg()
 
         self._voice_enabled = self._check(
@@ -3208,6 +3210,11 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._voice_status)
         self._refresh_voice_status()
         lay.addStretch(1)
+        # 测试结果从子线程切回主线程
+        try:
+            self._voice_test_done.connect(self._on_voice_test_done)
+        except Exception:
+            pass
 
     def _set_voice(self, patch):
         try:
@@ -3230,21 +3237,54 @@ class SettingsWindow(QDialog):
             pass
 
     def _voice_test(self):
-        """念一句测试台词（走完整链路，结果写状态栏）。"""
+        """测试语音：子线程走完整链路，成功则真的播放，失败给明确原因。"""
         cfg = self.app.voice_cfg()
         if not cfg.get("enabled"):
             self._voice_status.setText("先勾选「启用语音」再测试")
             return
-        self._voice_status.setText("…正在请求语音服务（首次约 15 秒）")
+        url = (cfg.get("url") or "").strip()
+        if not url:
+            self._voice_status.setText("✗ 请先填服务地址")
+            return
+        btn = getattr(self, "_voice_test_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        self._voice_status.setText("…正在生成（首次约 12 秒，请稍等）")
+
+        import threading
+
+        def work():
+            import pet_voice as V
+            t0 = time.time()
+            out, err = V.tts_rvc(url, "哼，笨蛋主人，听见了吗？")
+            dt = time.time() - t0
+            self._voice_test_done.emit(out, err, dt)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_voice_test_done(self, out, err, dt):
+        """测试结果回主线程：成功播放，失败显示原因。"""
+        btn = getattr(self, "_voice_test_btn", None)
+        if btn is not None:
+            btn.setEnabled(True)
+        if err:
+            hint = ""
+            if "refused" in err or "ConnectionError" in err:
+                hint = "语音服务没启动？请运行 tools\\启动语音服务.bat"
+            elif "edge-tts" in err or "bing" in err:
+                hint = "Edge-TTS 联网失败，检查网络/代理"
+            # 错误本体可能已带提示，不重复拼接
+            if hint and hint not in err:
+                err = "%s（%s）" % (err.split("（")[0].rstrip("：: "), hint)
+            self._voice_status.setText("✗ 失败：%s" % err[:140])
+            return
         try:
-            ok = self.app.speak_voice("哼，笨蛋主人，听见了吗？")
-            if not ok:
-                self._voice_status.setText(
-                    "✗ 请求未发出（服务地址为空或冷却中）")
-            else:
-                self._voice_status.setText("…已发送，正在生成（看日志确认）")
+            self.app._voice_player._play_bytes(
+                out, self.app.voice_cfg().get("volume", 80))
+            self._voice_status.setText(
+                "✓ 成功（%.1f 秒，%d 字节）——应该能听到声音了" % (dt, len(out)))
         except Exception as ex:
-            self._voice_status.setText("✗ 失败：%s" % ex)
+            self._voice_status.setText("✓ 生成成功，但播放失败：%s" % ex)
 
     # ---------- 主动搭话页 ----------
     def _build_proactive_page(self, lay):
