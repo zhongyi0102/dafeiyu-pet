@@ -2271,10 +2271,16 @@ def default_config():
             "cooldown_min": 15,
             "daily_max": 8,
         },
-        # 语音（Edge-TTS + RVC 音色转换，走外部推理服务）
+        # 语音（引擎可选：Edge-TTS+RVC 或 VoxCPM2，走外部推理服务）
         "voice": {
             "enabled": False,        # 默认关，服务没起不请求
-            "url": "http://127.0.0.1:9880",
+            # engine: "edge" = Edge-TTS + RVC（快，约 2 秒）
+            #         "voxcpm" = VoxCPM2 直出（慢，48kHz 高音质，能克隆音色）
+            "engine": "edge",
+            "url": "http://127.0.0.1:9880",       # RVC 服务
+            "vox_url": "http://127.0.0.1:9881",   # VoxCPM2 服务
+            "vox_steps": 24,                      # VoxCPM 推理步数
+            "vox_control": "",                    # 空=用服务端默认音色
             "timeout": 25,
             "volume": 80,
         },
@@ -2683,10 +2689,28 @@ def migrate_and_validate(raw):
     elif pc is not None:
         issues.append("proactive_cfg")
 
-    # voice：语音服务配置
+    # voice：语音服务配置（逐字段校验，缺失的用默认值补齐）
     _vc = raw.get("voice")
     if isinstance(_vc, dict):
-        cfg["voice"] = _vc
+        _vd = cfg["voice"]          # default_config 里的完整默认值
+        if isinstance(_vc.get("enabled"), bool):
+            _vd["enabled"] = _vc["enabled"]
+        _eng = _vc.get("engine")
+        if _eng in ("edge", "voxcpm"):
+            _vd["engine"] = _eng
+        for _k in ("url", "vox_url"):
+            _v = _vc.get(_k)
+            if isinstance(_v, str) and _v.strip():
+                _vd[_k] = _v.strip().rstrip("/")
+        if isinstance(_vc.get("vox_control"), str):
+            _vd["vox_control"] = _vc["vox_control"]
+        for _k, _lo, _hi in (("timeout", 5, 120), ("volume", 0, 100),
+                             ("vox_steps", 4, 60)):
+            try:
+                _vd[_k] = max(_lo, min(_hi, int(_vc.get(_k, _vd[_k]))))
+            except Exception:
+                pass
+        cfg["voice"] = _vd
     elif _vc is not None:
         issues.append("voice")
 
