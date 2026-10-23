@@ -4167,10 +4167,14 @@ def main():
     log("---- 启动 ----")
     handle, is_first = acquire_single_instance()
     if not is_first:
-        log("检测到已有实例，本次启动退出")
-        QMessageBox.information(None, "大肥鱼桌宠",
-                                "桌宠已经在运行啦～\n（可以在系统托盘里找大肥鱼）")
-        return
+        # 已有实例：立即退出，**不要弹模态框**——弹框会留住进程，
+        # 造成任务栏出现多个"桌宠"窗口（历史 bug）
+        log("检测到已有实例，本次启动直接退出")
+        try:
+            app.processEvents()
+        except Exception:
+            pass
+        os._exit(0)
     controller = PetApp()
     sys.exit(app.exec())
 

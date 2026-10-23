@@ -251,6 +251,9 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
         return False, "找不到服务脚本：%s" % script
     if not os.path.exists(SERVER_PY):
         return False, "找不到服务 Python：%s" % SERVER_PY
+    # 端口已被占用 = 已有实例在跑，绝不再启动第二个
+    if _port_busy(url):
+        return False, "端口已被占用（可能已有实例在启动中）"
     try:
         import subprocess
         d = os.path.dirname(script)
@@ -281,6 +284,24 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
 
 
 
+def _port_busy(url, timeout=1.0):
+    """端口是否已被监听（用于避免重复启动服务）。"""
+    import socket
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(url if "://" in url else "http://" + url)
+        host = u.hostname or "127.0.0.1"
+        port = u.port or 80
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            return s.connect_ex((host, port)) == 0
+        finally:
+            s.close()
+    except Exception:
+        return False
+
+
 def _vox_script():
     import sys
     if getattr(sys, "frozen", False):
@@ -304,6 +325,8 @@ def start_vox_server(url="http://127.0.0.1:9881", wait=180):
         return False, "找不到服务脚本：%s" % script
     if not os.path.exists(VOX_PY):
         return False, "找不到 VoxCPM 环境：%s" % VOX_PY
+    if _port_busy(url):
+        return False, "端口已被占用（可能已有实例在启动中）"
     try:
         import subprocess
         d = os.path.dirname(script)
