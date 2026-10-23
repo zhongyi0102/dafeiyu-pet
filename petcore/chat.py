@@ -357,11 +357,11 @@ class ChatBubble(QFrame):
             sel = self.label.selectedText()
         except Exception:
             pass
-        if sel:
+        if sel and sel != self._plain:
             menu.addAction("复制选中",
                            lambda: QGuiApplication.clipboard().setText(sel))
         if self._plain:
-            menu.addAction("复制全文",
+            menu.addAction("复制这条消息",
                            lambda: QGuiApplication.clipboard().setText(
                                self._plain))
         if self.voice_btn is not None:
