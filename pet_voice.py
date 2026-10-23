@@ -439,66 +439,6 @@ def voxcpm_tts(vox_url, text, control="", steps=0, timeout=600):
     if not r.content or len(r.content) < 100:
         return None, "空音频"
     return r.content, ""
-
-
-def songs_dir():
-    """翻唱成品目录（放 cover.wav / *.wav 的地方）。"""
-    import sys
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "songs")
-
-
-def list_songs():
-    """列出可用翻唱曲目：返回 [(显示名, 路径)]。"""
-    d = songs_dir()
-    out = []
-    try:
-        if not os.path.isdir(d):
-            return out
-        for f in sorted(os.listdir(d)):
-            if f.lower().endswith((".wav", ".mp3", ".flac", ".m4a")):
-                name = os.path.splitext(f)[0]
-                out.append((name, os.path.join(d, f)))
-    except Exception:
-        pass
-    return out
-
-
-def song_lyrics(song_name):
-    """读曲目同名 .txt 歌词（没有返回空串）。"""
-    d = songs_dir()
-    if not song_name or not os.path.isdir(d):
-        return ""
-    for ext in (".txt", ".lrc"):
-        p = os.path.join(d, song_name + ext)
-        if os.path.exists(p):
-            try:
-                # utf-8-sig 会自动去掉 BOM
-                with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
-                    return f.read().strip()
-            except Exception:
-                return ""
-    return ""
-
-
-def pick_song(text=""):
-    """按文本里的歌名挑一首；没匹配就随机。返回 (名字, 路径) 或 (None, None)。"""
-    songs = list_songs()
-    if not songs:
-        return None, None
-    t = (text or "").lower()
-    # 优先按歌名包含匹配
-    for name, path in songs:
-        if name.lower() and name.lower() in t:
-            return name, path
-    # 退而求其次：随机
-    import random
-    return random.choice(songs)
-
-
 def synthesize(cfg, text):
     """按配置的引擎合成语音。返回 (wav_bytes, err)。"""
     eng = (cfg or {}).get("engine") or "edge"

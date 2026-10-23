@@ -2255,11 +2255,9 @@ class PetApp(QObject):
         self.save_cfg()
         return self.cfg["voice"]
 
-    def make_voice_file(self, text, song_name=None):
+    def make_voice_file(self, text):
         """生成语音文件供聊天里的语音条播放。返回 (path, 秒数, err)。
 
-        song_name: 本轮已定好的歌名（来自 _build_request_messages）。
-                   给了就必须播这首，保证歌词和音频一致。
         与 speak_voice 的区别：不自动播放，只落盘，由用户点语音条播放。
         """
         try:
@@ -2270,18 +2268,6 @@ class PetApp(QObject):
             if not t:
                 return "", 0.0, "没有可念的内容"
 
-            # 优先用本地翻唱曲库（真旋律 + 伴奏）
-            # 指定了歌名就用它（保证和模型写的歌词一致），否则按文本匹配
-            _name, _song = VOICE.pick_song(song_name or t)
-            if _song and os.path.exists(_song):
-                import wave as _wave
-                try:
-                    with _wave.open(_song, "rb") as _w:
-                        _sec = _w.getnframes() / float(_w.getframerate() or 1)
-                except Exception:
-                    _sec = 0.0
-                log("[语音] 使用翻唱曲库：%s（%.1f 秒）" % (_name, _sec))
-                return _song, _sec, ""
             if len(t) > 2000:
                 t = t[:2000]
             # 按引擎合成（voxcpm 很慢，synthesize 内部已放宽超时）

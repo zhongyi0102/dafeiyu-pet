@@ -1816,9 +1816,7 @@ class ChatWindow(QWidget):
         style = self.pet.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.pet.cfg)
         sys_text = build_system_prompt(style, persona)
-        # 唱歌场景：定歌名 → 取歌词 → 歌词直接当回复（跳过模型）
-        self._sing_song = None
-        self._sing_lyrics = None
+        # 唱歌场景：追加"必须真的唱出歌词"的指令
         try:
             _last_user = ""
             for m in reversed(self.messages):
@@ -1827,24 +1825,9 @@ class ChatWindow(QWidget):
                     break
             import pet_voice as _V
             if _V.is_sing_request(_last_user):
-                _name, _path = _V.pick_song(_last_user)
-                if _name:
-                    self._sing_song = _name
-                    _lyr = _V.song_lyrics(_name)
-                    if _lyr:
-                        # 曲库有歌词：直接用，不调模型（100% 一致）
-                        self._sing_lyrics = _lyr
-                        log("[语音] 唱歌：%s（用曲库歌词，跳过模型）" % _name)
-                    else:
-                        sys_text = sys_text + build_sing_hint(_name)
-                        log("[语音] 唱歌：%s（无歌词文件，让模型写）" % _name)
-                else:
-                    sys_text = sys_text + build_sing_hint("")
-            else:
-                self._sing_song = None
-        except Exception as ex:
-            self._sing_song = None
-            log("[语音] 定歌失败: %s" % ex, logging.WARNING)
+                sys_text = sys_text + build_sing_hint("")
+        except Exception:
+            pass
         msgs = [{"role": "system", "content": self.pet.memory.system_content(sys_text)}]
         if self.summary:
             msgs.append({"role": "system",
@@ -1885,19 +1868,6 @@ class ChatWindow(QWidget):
     def _start_chat_stream(self):
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
         messages = self._build_request_messages()
-        # 唱歌且曲库有歌词：**跳过模型**，直接用歌词当回复
-        # （定歌名 -> 取歌词 -> 唱，全程程序控制，保证一致）
-        if getattr(self, "_sing_lyrics", None):
-            _lyr = self._sing_lyrics
-            self._sing_lyrics = None
-            log("[语音] 用曲库歌词直接回复（不调模型）")
-            # 走和正常回复一样的收尾流程
-            try:
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self._on_done(_lyr, None))
-            except Exception:
-                self._on_done(_lyr, None)
-            return
         self.token_label.setText("本次　生成中…")
         _base, _key2, _model = self.pet._chat_cfg()
         self.worker = ChatWorker(
@@ -1949,7 +1919,7 @@ class ChatWindow(QWidget):
             self._turn_user_text = ""
             self._finish_busy()
             # 用本轮已定好的歌名（保证歌词与音频一致）
-            self._gen_voice_bubble(full, getattr(self, "_sing_song", None))
+            self._gen_voice_bubble(full)
             return
 
         if self.current_bubble is None:
@@ -1973,19 +1943,15 @@ class ChatWindow(QWidget):
         except Exception:
             pass
 
-    def _gen_voice_bubble(self, text, song_name=None):
-        """后台生成语音文件，完成后在聊天里插一条 QQ 风格语音条。
-
-        song_name: 本轮已定好的歌名，传给 make_voice_file 保证一致。
-        """
+    def _gen_voice_bubble(self, text):
+        """后台生成语音文件，完成后在聊天里插一条 QQ 风格语音条。"""
         import threading
         self._hide_typing()
 
         def work():
             path, sec, err = "", 0.0, ""
             try:
-                path, sec, err = self.pet.make_voice_file(
-                    text, song_name=song_name)
+                path, sec, err = self.pet.make_voice_file(text)
             except Exception as ex:
                 err = "%s: %s" % (type(ex).__name__, ex)
             self._voice_ready.emit(path or "", float(sec or 0.0),

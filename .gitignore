@@ -1,4 +1,4 @@
-# 运行时生成
+﻿# 运行时生成
 config.json
 config.json.bak
 chats.json
@@ -68,6 +68,4 @@ tools/voxcpm_server.log
 tools/rvc_error.log
 tools/voxcpm_error.log
 
-# 翻唱曲库（体积大且可能含版权素材，不入库）
 # 本地放 songs/*.wav，叫它唱歌时会优先播放
-songs/
