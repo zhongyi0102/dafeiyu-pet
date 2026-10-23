@@ -246,11 +246,57 @@ class SummaryWorker(QThread):
             self.failed.emit("整理前情摘要失败：" + str(ex))
 
 
+def _fmt_time(ts):
+    """时间戳 → 显示文本。
+
+    今天 → 「14:32」
+    昨天 → 「昨天 14:32」
+    今年 → 「10月20日 14:32」
+    更早 → 「2025年10月20日 14:32」
+    """
+    import datetime
+    try:
+        dt = datetime.datetime.fromtimestamp(float(ts))
+    except Exception:
+        return ""
+    now = datetime.datetime.now()
+    hm = dt.strftime("%H:%M")
+    d = dt.date()
+    today = now.date()
+    if d == today:
+        return hm
+    if d == today - datetime.timedelta(days=1):
+        return "昨天 " + hm
+    if d.year == today.year:
+        return "%d月%d日 %s" % (dt.month, dt.day, hm)
+    return "%d年%d月%d日 %s" % (dt.year, dt.month, dt.day, hm)
+
+
+# 相邻两条消息间隔超过这个秒数才插时间分隔线
+TIME_GAP_SEC = 300
+
+
+def _needs_time_divider(prev_ts, cur_ts):
+    """两条消息之间是否要插时间线（间隔 > 5 分钟或跨天）。"""
+    try:
+        a, b = float(prev_ts), float(cur_ts)
+    except Exception:
+        return True
+    if b - a < 0 or b - a >= TIME_GAP_SEC:
+        return True
+    import datetime
+    try:
+        return (datetime.datetime.fromtimestamp(a).date()
+                != datetime.datetime.fromtimestamp(b).date())
+    except Exception:
+        return False
+
+
 class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
     def __init__(self, role, text="", image_path=None, voice_path=None,
-                 voice_sec=0.0):
+                 voice_sec=0.0, ts=None):
         super().__init__()
         self.role = role
         self.setObjectName("Bubble")
@@ -325,6 +371,21 @@ class ChatBubble(QFrame):
                 log("[聊天] 语音条创建失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
         lay.addWidget(self.label)
+        # 消息时间戳（气泡内右下角小字）
+        self.ts = ts
+        self.time_label = None
+        if ts:
+            try:
+                self.time_label = QLabel(_fmt_time(ts))
+                self.time_label.setObjectName("BubbleTime")
+                self.time_label.setStyleSheet(
+                    "color:#a8aebb;font-size:10px;padding:2px 2px 0 0;")
+                if role == "user":
+                    self.time_label.setAlignment(
+                        Qt.AlignmentFlag.AlignRight)
+                lay.addWidget(self.time_label)
+            except Exception:
+                self.time_label = None
         self._plain = ""
         self._style()
         self.set_text(text)
@@ -411,6 +472,29 @@ class ChatBubble(QFrame):
         except Exception as ex:
             log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
+
+
+class TimeDivider(QWidget):
+    """时间分隔线：—— 今天 14:32 ——（居中灰字）。"""
+
+    def __init__(self, ts):
+        super().__init__()
+        from PySide6.QtWidgets import QHBoxLayout
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 10, 0, 10)
+        lay.setSpacing(8)
+        left = QFrame()
+        left.setFrameShape(QFrame.Shape.HLine)
+        left.setStyleSheet("color:#e3e7f0;")
+        right = QFrame()
+        right.setFrameShape(QFrame.Shape.HLine)
+        right.setStyleSheet("color:#e3e7f0;")
+        label = QLabel(_fmt_time(ts))
+        label.setStyleSheet("color:#a8aebb;font-size:11px;")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(left, 1)
+        lay.addWidget(label, 0)
+        lay.addWidget(right, 1)
 
 
 class ChatWindow(QWidget):
@@ -1265,9 +1349,9 @@ class ChatWindow(QWidget):
         sb.setValue(sb.maximum())
 
     def _add_bubble(self, role, text, image_path=None, voice_path=None,
-                    voice_sec=0.0):
+                    voice_sec=0.0, ts=None):
         b = ChatBubble(role, text, image_path=image_path,
-                       voice_path=voice_path, voice_sec=voice_sec)
+                       voice_path=voice_path, voice_sec=voice_sec, ts=ts)
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1289,6 +1373,13 @@ class ChatWindow(QWidget):
             h.addWidget(b)
             h.addStretch(1)
         b._wrap = wrap
+        # 实时消息：与上一条间隔超过 5 分钟就插时间分隔线
+        prev = getattr(self, "_last_msg_ts", None)
+        if ts and (prev is None or _needs_time_divider(prev, ts)):
+            self.msg_layout.insertWidget(
+                self.msg_layout.count() - 1, TimeDivider(ts))
+        if ts:
+            self._last_msg_ts = ts
         self.msg_layout.insertWidget(self.msg_layout.count() - 1, wrap)
         self._update_empty_state()
         self._scroll_bottom()
@@ -1308,12 +1399,13 @@ class ChatWindow(QWidget):
                 logging.WARNING)
 
     def render_message(self, role, text, image_path=None, voice_path=None,
-                       voice_sec=0.0):
+                       voice_sec=0.0, ts=None):
         return self._add_bubble(role, text, image_path=image_path,
-                                voice_path=voice_path, voice_sec=voice_sec)
+                                voice_path=voice_path, voice_sec=voice_sec,
+                                ts=ts)
 
     def append_external(self, role, text, notice=None, image_path=None,
-                        voice_path=None, voice_sec=0.0):
+                        voice_path=None, voice_sec=0.0, ts=None):
         """外部功能（如「看看屏幕」）把消息追加到当前会话。
 
         作用：
@@ -1330,7 +1422,9 @@ class ChatWindow(QWidget):
         text = (text or "").strip()
         if not text:
             return None
-        msg = {"role": role, "content": text}
+        if ts is None:
+            ts = time.time()
+        msg = {"role": role, "content": text, "ts": float(ts)}
         if image_path:
             msg["image"] = str(image_path)
         if voice_path:
@@ -1340,7 +1434,7 @@ class ChatWindow(QWidget):
         if notice:
             self._add_bubble("note", notice)
         self._add_bubble(role, text, image_path=image_path,
-                         voice_path=voice_path, voice_sec=voice_sec)
+                         voice_path=voice_path, voice_sec=voice_sec, ts=ts)
         self.save_history()
         self._update_empty_state()
         return msg
@@ -1367,12 +1461,18 @@ class ChatWindow(QWidget):
         self.current_bubble = None
         self.current_text = ""
         self._clear_bubbles()
+        self._last_msg_ts = None
         total = len(self.messages)
         self._render_from = max(0, total - max(1, self._render_limit))
         if self._render_from > 0:
             self.msg_layout.insertWidget(0, self.load_more_btn)
         for m in self.messages[self._render_from:]:
-            self.render_message(m.get("role", "assistant"), m.get("content", ""))
+            self.render_message(m.get("role", "assistant"),
+                                m.get("content", ""),
+                                image_path=m.get("image"),
+                                voice_path=m.get("voice"),
+                                voice_sec=m.get("voice_sec") or 0.0,
+                                ts=m.get("ts"))
         self._update_empty_state()
         self._scroll_bottom()
 
@@ -1485,7 +1585,7 @@ class ChatWindow(QWidget):
         if not text or self.busy or self._current_session() is None:
             return
         self.input.clear()
-        self.messages.append({"role": "user", "content": text})
+        self.messages.append({"role": "user", "content": text, "ts": time.time()})
         self._maybe_auto_title(text)
         self._turn_user_bubble = self.render_message("user", text)
         self._turn_user_text = text
@@ -1546,7 +1646,7 @@ class ChatWindow(QWidget):
         if self.current_bubble is None and text:
             self.current_bubble = self._add_bubble("assistant", text)
         if text:
-            self.messages.append({"role": "assistant", "content": text})
+            self.messages.append({"role": "assistant", "content": text, "ts": time.time()})
             self._turn_user_bubble = None
             self._turn_user_text = ""
             self.save_history()
@@ -1698,7 +1798,7 @@ class ChatWindow(QWidget):
             self.current_bubble = self._add_bubble("assistant", full)
         else:
             self.current_bubble.set_text(full)
-        self.messages.append({"role": "assistant", "content": full})
+        self.messages.append({"role": "assistant", "content": full, "ts": time.time()})
         self._turn_user_bubble = None
         self._turn_user_text = ""
         self.save_history()
@@ -1749,7 +1849,8 @@ class ChatWindow(QWidget):
                 try:
                     self._add_bubble("assistant", pending)
                     self.messages.append({"role": "assistant",
-                                          "content": pending})
+                                          "content": pending,
+                                          "ts": time.time()})
                     self.save_history()
                     first = self._first_sentence(pending)
                     if first:
@@ -1766,7 +1867,8 @@ class ChatWindow(QWidget):
             if pending:
                 self._add_bubble("assistant", pending)
                 self.messages.append({"role": "assistant",
-                                      "content": pending})
+                                      "content": pending,
+                                      "ts": time.time()})
                 self.save_history()
                 first = self._first_sentence(pending)
                 if first:
