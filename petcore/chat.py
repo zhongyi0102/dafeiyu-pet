@@ -249,7 +249,8 @@ class SummaryWorker(QThread):
 class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
-    def __init__(self, role, text="", image_path=None):
+    def __init__(self, role, text="", image_path=None, voice_path=None,
+                 voice_sec=0.0):
         super().__init__()
         self.role = role
         self.setObjectName("Bubble")
@@ -285,6 +286,39 @@ class ChatBubble(QFrame):
             except Exception as ex:
                 log("[聊天] 气泡图片加载失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
+        # QQ 风格语音条：喇叭 + 时长，点击才播放
+        self.voice_btn = None
+        if voice_path:
+            try:
+                from PySide6.QtWidgets import QPushButton
+                import os as _os
+                self._voice_path = voice_path
+                sec = float(voice_sec or 0.0)
+                # 时长未知时按文件大小估（40k/16bit/单声道 ≈ 80KB/s）
+                if sec <= 0:
+                    try:
+                        sec = max(1.0, _os.path.getsize(voice_path) / 80000.0)
+                    except Exception:
+                        sec = 1.0
+                self._voice_sec = sec
+                w = int(max(90, min(260, 90 + sec * 22)))
+                self.voice_btn = QPushButton("\U0001F50A  %d\"" % int(round(sec)))
+                self.voice_btn.setFixedHeight(34)
+                self.voice_btn.setMinimumWidth(w)
+                self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_btn.setToolTip("点击播放语音")
+                self.voice_btn.setStyleSheet(
+                    "QPushButton{background:#eaf2ff;border:1px solid #c9dcff;"
+                    "border-radius:17px;padding:0 14px;color:#2f6fd0;"
+                    "font-size:13px;text-align:left;}"
+                    "QPushButton:hover{background:#dfeaff;}"
+                    "QPushButton:pressed{background:#d2e2ff;}")
+                self.voice_btn.clicked.connect(self._play_voice)
+                lay.addWidget(self.voice_btn)
+                lay.addSpacing(6)
+            except Exception as ex:
+                log("[聊天] 语音条创建失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
         lay.addWidget(self.label)
         self._plain = ""
         self._style()
@@ -311,16 +345,77 @@ class ChatBubble(QFrame):
     def plain_text(self):
         return self._plain
 
+    def contextMenuEvent(self, ev):
+        """气泡右键：复制全文 / 复制选中 / 播放语音。"""
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QGuiApplication
+        menu = QMenu(self)
+        sel = self.label.selectedText() if hasattr(self.label, "selectedText") else ""
+        if sel:
+            menu.addAction("复制选中",
+                           lambda: QGuiApplication.clipboard().setText(sel))
+        menu.addAction("复制全文",
+                       lambda: QGuiApplication.clipboard().setText(self._plain or ""))
+        if self.voice_btn is not None:
+            menu.addSeparator()
+            menu.addAction("播放语音", self._play_voice)
+        if menu.actions():
+            menu.exec(ev.globalPos())
+        ev.accept()
+
+    def _play_voice(self):
+        """播放这条语音（复用全局 VoicePlayer，避免多播放器抢音频）。"""
+        try:
+            p = getattr(self, "_voice_path", "")
+            if not p or not os.path.exists(p):
+                self.voice_btn.setText("\U0001F50A  文件不见了")
+                return
+            with open(p, "rb") as f:
+                data = f.read()
+            # 播放器在 PetApp 上；气泡本身没有 pet，往上找 ChatWindow
+            owner = self
+            while owner is not None and not hasattr(owner, "pet"):
+                owner = owner.parent()
+            pet = getattr(owner, "pet", None) if owner is not None else None
+            player = getattr(pet, "_voice_player", None) if pet else None
+            if player is None:
+                self.voice_btn.setText("\U0001F50A  播放器不可用")
+                return
+            # 临时置零冷却，允许连点重播
+            old_cd = getattr(player, "_cooldown", 0.0)
+            old_ts = getattr(player, "_last_ok_ts", 0.0)
+            player._cooldown = 0.0
+            player._last_ok_ts = 0.0
+            try:
+                player._play_bytes(data, player._cfg_getter().get("volume", 80))
+            finally:
+                player._cooldown = old_cd
+                player._last_ok_ts = old_ts
+            self.voice_btn.setText("\U0001F50A  播放中…")
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(int(self._voice_sec * 1000) + 300,
+                              lambda: self.voice_btn and self.voice_btn.setText(
+                                  "\U0001F50A  %d\"" % int(round(self._voice_sec))))
+        except Exception as ex:
+            log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
 
 class ChatWindow(QWidget):
+    _voice_ready = Signal(str, float, str, object)   # 语音文件就绪: path, 秒, 原文, 消息
     """聊天窗口：多会话（sessions）+ 气泡列表 + 流式回复；请求/摘要/缓存逻辑沿用原实现。
 
     self.pet 指向 PetApp（全局控制器），不是单只宠物。"""
+
 
     def __init__(self, app):
         super().__init__(None)
         global _CHAT_THEME
         self.pet = app
+        try:
+            self._voice_ready.connect(self._on_voice_ready)
+        except Exception:
+            pass
         self.setObjectName("ChatRoot")
         self.setWindowTitle("大肥鱼 · 聊天")
         self.setMinimumSize(CHAT_MIN_WIDTH, 460)
@@ -458,8 +553,12 @@ class ChatWindow(QWidget):
         # 输入框：2 行起，随内容增高，最多 6 行
         self.input = QTextEdit(right)
         self.input.setObjectName("ChatInput")
-        self.input.setPlaceholderText("输入消息… Enter 发送，Shift+Enter 换行")
+        self.input.setPlaceholderText(
+            "输入消息… Enter 发送，Shift+Enter 换行（支持 Ctrl+C/V/X、右键菜单）")
         self.input.setAcceptRichText(False)
+        # 复制粘贴等标准操作
+        self.input.setUndoRedoEnabled(True)
+        self.input.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self.input.installEventFilter(self)
         self.input.textChanged.connect(self._autosize_input)
         self.input.setFixedHeight(CHAT_INPUT_MIN_H)
@@ -1153,8 +1252,10 @@ class ChatWindow(QWidget):
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _add_bubble(self, role, text, image_path=None):
-        b = ChatBubble(role, text, image_path=image_path)
+    def _add_bubble(self, role, text, image_path=None, voice_path=None,
+                    voice_sec=0.0):
+        b = ChatBubble(role, text, image_path=image_path,
+                       voice_path=voice_path, voice_sec=voice_sec)
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1194,10 +1295,13 @@ class ChatWindow(QWidget):
                 % (__name__, "_remove_bubble", type(ex).__name__, ex),
                 logging.WARNING)
 
-    def render_message(self, role, text, image_path=None):
-        return self._add_bubble(role, text, image_path=image_path)
+    def render_message(self, role, text, image_path=None, voice_path=None,
+                       voice_sec=0.0):
+        return self._add_bubble(role, text, image_path=image_path,
+                                voice_path=voice_path, voice_sec=voice_sec)
 
-    def append_external(self, role, text, notice=None, image_path=None):
+    def append_external(self, role, text, notice=None, image_path=None,
+                        voice_path=None, voice_sec=0.0):
         """外部功能（如「看看屏幕」）把消息追加到当前会话。
 
         作用：
@@ -1217,10 +1321,14 @@ class ChatWindow(QWidget):
         msg = {"role": role, "content": text}
         if image_path:
             msg["image"] = str(image_path)
+        if voice_path:
+            msg["voice"] = str(voice_path)
+            msg["voice_sec"] = float(voice_sec or 0.0)
         self.messages.append(msg)
         if notice:
             self._add_bubble("note", notice)
-        self._add_bubble(role, text, image_path=image_path)
+        self._add_bubble(role, text, image_path=image_path,
+                         voice_path=voice_path, voice_sec=voice_sec)
         self.save_history()
         self._update_empty_state()
         return msg
@@ -1566,11 +1674,12 @@ class ChatWindow(QWidget):
         first = self._first_sentence(full)
         if first:
             self.pet.say(first)
-        # 语音：只有用户明确要求「唱/念出来」时才发声（日常一律文字）
+        # 语音：只有用户明确要求「唱/念出来」时才生成语音条
+        # （QQ 风格：先生成文件，聊天里插一条可点的语音条，不自动播放）
         try:
             import pet_voice as _V
             if _V.is_sing_request(_turn_user):
-                self.pet.speak_voice(full)
+                self._gen_voice_bubble(full)
         except Exception:
             pass
         # 情绪反馈：按这轮对话内容播一个对应动作
@@ -1580,6 +1689,35 @@ class ChatWindow(QWidget):
             self.pet._mood_action(_turn_user, full)
         except Exception:
             pass
+
+    def _gen_voice_bubble(self, text):
+        """后台生成语音文件，完成后在聊天里插一条 QQ 风格语音条。"""
+        import threading
+        self._hide_typing()
+
+        def work():
+            path, sec, err = "", 0.0, ""
+            try:
+                path, sec, err = self.pet.make_voice_file(text)
+            except Exception as ex:
+                err = "%s: %s" % (type(ex).__name__, ex)
+            self._voice_ready.emit(path or "", float(sec or 0.0),
+                                   err or "", text)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_voice_ready(self, path, sec, err, text):
+        """语音文件就绪（主线程）：成功则插语音条，失败则静默记日志。"""
+        if err or not path:
+            log("[语音] 语音条生成失败：%s" % (err or "空路径"))
+            return
+        try:
+            self.append_external("assistant", "\U0001F3B5 唱给你听",
+                                 voice_path=path, voice_sec=sec)
+            log("[语音] 语音条已插入：%s（%.1f 秒）" % (path, sec))
+        except Exception as ex:
+            log("[语音] 插入语音条失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _rollback_user_turn(self):
         """失败时把这一轮已写盘的 user 消息撤回，避免历史里出现连续两条 user"""

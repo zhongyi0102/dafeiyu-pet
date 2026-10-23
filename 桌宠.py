@@ -2255,6 +2255,52 @@ class PetApp(QObject):
         self.save_cfg()
         return self.cfg["voice"]
 
+    def make_voice_file(self, text):
+        """生成语音文件供聊天里的语音条播放。返回 (path, 秒数, err)。
+
+        与 speak_voice 的区别：不自动播放，只落盘，由用户点语音条播放。
+        """
+        try:
+            cfg = self.voice_cfg()
+            if not cfg.get("enabled"):
+                return "", 0.0, "语音未启用"
+            t = VOICE.strip_actions(text)
+            if not t:
+                return "", 0.0, "没有可念的内容"
+            if len(t) > 2000:
+                t = t[:2000]
+            wav, err = VOICE.tts_rvc(cfg.get("url"), t,
+                                     timeout=cfg.get("timeout", 120))
+            if err or not wav:
+                return "", 0.0, err or "空音频"
+            import os as _os
+            d = _os.path.join(APP_DIR, "voice_cache")
+            _os.makedirs(d, exist_ok=True)
+            fn = time.strftime("%Y%m%d_%H%M%S") + ".wav"
+            path = _os.path.join(d, fn)
+            with open(path, "wb") as f:
+                f.write(wav)
+            # 40k / 16bit / 单声道 = 80000 字节每秒（去掉 44 字节头）
+            sec = max(1.0, (len(wav) - 44) / 80000.0)
+            # 只留最近 40 个
+            try:
+                files = sorted(
+                    (_os.path.join(d, x) for x in _os.listdir(d)
+                     if x.lower().endswith(".wav")),
+                    key=lambda x: _os.path.getmtime(x))
+                for old in files[:-40]:
+                    try:
+                        _os.remove(old)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return path, sec, ""
+        except Exception as ex:
+            log("[语音] 生成文件失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return "", 0.0, str(ex)
+
     def speak_voice(self, text):
         """让宠物把这句话说出来（语音服务不可用时静默）。"""
         try:
