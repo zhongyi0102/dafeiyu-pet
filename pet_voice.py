@@ -174,7 +174,7 @@ def edge_tts_wav(text, voice="zh-CN-XiaoxiaoNeural", speed=1.0):
             rate = "+%d%%" % int((speed - 1) * 100)
         elif speed < 1.0:
             rate = "-%d%%" % int((1 - speed) * 100)
-        kwargs = {"rate": rate}
+        kwargs = {"rate": rate, "connect_timeout": 30, "receive_timeout": 90}
         proxy = _detect_proxy()
         if proxy:
             kwargs["proxy"] = proxy
@@ -185,13 +185,21 @@ def edge_tts_wav(text, voice="zh-CN-XiaoxiaoNeural", speed=1.0):
                 buf.write(ch["data"])
         return buf.getvalue()
 
-    try:
-        data = asyncio.run(run())
-    except Exception as ex:
-        return None, "edge-tts: %s: %s" % (type(ex).__name__, str(ex)[:80])
-    if not data:
-        return None, "edge-tts 返回空音频"
-    return data, ""
+    # 重试 2 次（网络抖动很常见）
+    last_err = ""
+    for attempt in range(3):
+        try:
+            data = asyncio.run(run())
+            if data:
+                return data, ""
+            last_err = "返回空音频"
+        except Exception as ex:
+            last_err = "%s: %s" % (type(ex).__name__, str(ex)[:100])
+            log("[语音] edge-tts 第 %d 次失败: %s" % (attempt + 1, last_err))
+        if attempt < 2:
+            import time as _t
+            _t.sleep(1.5 * (attempt + 1))
+    return None, "edge-tts: " + last_err
 
 
 

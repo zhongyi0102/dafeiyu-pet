@@ -25,6 +25,10 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 HEADERS = {"User-Agent": UA, "Referer": "https://music.163.com/"}
 
+# GDStudio 聚合 API（音源提供，支持搜索/歌词/音频 URL）
+GD_BASE = "https://music-api.gdstudio.xyz/api.php"
+GD_HEADERS = {"User-Agent": UA}
+
 # LRC 时间轴：[00:12.34]
 _LRC_RE = re.compile(r"\[[\d:.]+\]")
 # 元信息行（作词/作曲/编曲等）
@@ -63,6 +67,70 @@ def _clean_lrc(lrc_text):
             continue
         out.append(line)
     return out
+
+
+def search_gd(keyword, limit=5, timeout=12):
+    """用 GDStudio 聚合 API 搜歌。返回 [{"id","name","artist"}]。"""
+    import requests
+    try:
+        s = requests.Session()
+        s.trust_env = True
+        r = s.get(GD_BASE, params={
+            "types": "search", "source": "netease",
+            "name": keyword, "count": limit,
+        }, headers=GD_HEADERS, timeout=timeout)
+        data = r.json()
+    except Exception as ex:
+        log("[歌词] GD搜索失败: %s: %s" % (type(ex).__name__, ex))
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for x in data:
+        artists = x.get("artist")
+        if isinstance(artists, list):
+            artists = "/".join(artists)
+        out.append({"id": x.get("id"), "name": x.get("name") or "",
+                    "artist": artists or ""})
+    return out
+
+
+def fetch_gd_lyric(song_id, timeout=12):
+    """用 GDStudio 取歌词（LRC）。失败返回空串。"""
+    import requests
+    try:
+        s = requests.Session()
+        s.trust_env = True
+        r = s.get(GD_BASE, params={
+            "types": "lyric", "source": "netease", "id": song_id,
+        }, headers=GD_HEADERS, timeout=timeout)
+        d = r.json()
+    except Exception as ex:
+        log("[歌词] GD歌词失败: %s: %s" % (type(ex).__name__, ex))
+        return ""
+    if isinstance(d, dict):
+        return d.get("lyric") or d.get("lrc") or ""
+    if isinstance(d, str):
+        return d
+    return ""
+
+
+def fetch_gd_url(song_id, br=128, timeout=15):
+    """用 GDStudio 取音频 URL。失败返回空串。"""
+    import requests
+    try:
+        s = requests.Session()
+        s.trust_env = True
+        r = s.get(GD_BASE, params={
+            "types": "url", "source": "netease", "id": song_id, "br": br,
+        }, headers=GD_HEADERS, timeout=timeout)
+        d = r.json()
+    except Exception as ex:
+        log("[歌词] GD音频失败: %s: %s" % (type(ex).__name__, ex))
+        return ""
+    if isinstance(d, dict):
+        return d.get("url") or ""
+    return ""
 
 
 def search(keyword, limit=5, timeout=12):
@@ -112,7 +180,11 @@ def get_lyrics(query, max_lines=16, timeout=12):
     query = (query or "").strip()
     if not query:
         return "", "", []
-    songs = search(query, timeout=timeout)
+    # 优先 GDStudio（音源提供，支持搜索+歌词+音频）
+    songs = search_gd(query, timeout=timeout)
+    use_gd = bool(songs)
+    if not use_gd:
+        songs = search(query, timeout=timeout)
     # 搜不到就拆词重试（"周杰伦 稻香" -> "稻香"）
     if not songs:
         parts = re.split(r"[\s,，、/]+", query)
@@ -131,7 +203,8 @@ def get_lyrics(query, max_lines=16, timeout=12):
         key=lambda s: (0 if (s["name"] and s["name"] in query) else 1,
                        len(s["name"] or "")))
     for s in best_order:
-        lrc = fetch(s["id"], timeout=timeout)
+        lrc = (fetch_gd_lyric(s["id"], timeout=timeout) if use_gd
+               else fetch(s["id"], timeout=timeout))
         lines = _clean_lrc(lrc)
         # 有效歌词：至少 4 行，且平均行长合理（排除乱码/纯元信息）
         if len(lines) < 4:
@@ -143,6 +216,47 @@ def get_lyrics(query, max_lines=16, timeout=12):
             % (s["name"], s["artist"], len(lines)))
         return s["name"], s["artist"], lines[:max_lines]
     return "", "", []
+
+
+def download_song(query, out_path, br=320, timeout=60):
+    """按歌名下载音频到 out_path。返回 (歌名, 歌手, 错误)。
+
+    用于做 AI 翻唱（UVR5 分离 + RVC 换音色）。
+    """
+    import requests
+    songs = search_gd(query, limit=5, timeout=15)
+    if not songs:
+        songs = search(query, limit=5, timeout=15)
+    if not songs:
+        return "", "", "搜不到这首歌"
+    # 优先精确匹配
+    best = songs[0]
+    for s in songs:
+        if s["name"] and s["name"] in query:
+            best = s
+            break
+    link = fetch_gd_url(best["id"], br=br, timeout=20)
+    if not link:
+        return "", "", "拿不到音频链接"
+    try:
+        s = requests.Session()
+        s.trust_env = True
+        r = s.get(link, headers={"User-Agent": UA}, timeout=timeout, stream=True)
+        if r.status_code != 200:
+            return "", "", "下载失败 HTTP %s" % r.status_code
+        total = 0
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(65536):
+                if chunk:
+                    f.write(chunk)
+                    total += len(chunk)
+        if total < 10000:
+            return "", "", "文件太小（%d 字节）" % total
+        log("[歌词] 已下载 %s - %s（%.1f MB）"
+            % (best["name"], best["artist"], total / 1024 / 1024))
+        return best["name"], best["artist"], ""
+    except Exception as ex:
+        return "", "", "%s: %s" % (type(ex).__name__, ex)
 
 
 def build_sing_text(query, max_lines=16):

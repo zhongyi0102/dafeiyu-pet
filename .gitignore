@@ -69,3 +69,4 @@ tools/rvc_error.log
 tools/voxcpm_error.log
 
 # 本地放 songs/*.wav，叫它唱歌时会优先播放
+cover_cache/

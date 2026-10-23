@@ -556,6 +556,8 @@ class TimeDivider(QWidget):
 
 class ChatWindow(QWidget):
     _voice_ready = Signal(str, float, str, object)   # 语音文件就绪: path, 秒, 原文, 消息
+    _cover_ready = Signal(str, str, str, str)        # 翻唱完成: 路径, 歌名, 歌手, 错误
+    _cover_progress = Signal(str)                    # 翻唱进度文本
     """聊天窗口：多会话（sessions）+ 气泡列表 + 流式回复；请求/摘要/缓存逻辑沿用原实现。
 
     self.pet 指向 PetApp（全局控制器），不是单只宠物。"""
@@ -567,6 +569,8 @@ class ChatWindow(QWidget):
         self.pet = app
         try:
             self._voice_ready.connect(self._on_voice_ready)
+            self._cover_ready.connect(self._on_cover_ready)
+            self._cover_progress.connect(self._on_cover_progress)
         except Exception:
             pass
         self.setObjectName("ChatRoot")
@@ -1820,6 +1824,7 @@ class ChatWindow(QWidget):
         # 搜不到才回退到"让模型写歌词"
         self._sing_lyrics = None
         self._sing_title = ""
+        self._sing_query = ""
         try:
             _last_user = ""
             for m in reversed(self.messages):
@@ -1837,6 +1842,7 @@ class ChatWindow(QWidget):
                     _q = _q.replace(w, " ")
                 _q = " ".join(_q.split()).strip()
                 if _q:
+                    self._sing_query = _q
                     _text, _name, _artist = _LY.build_sing_text(_q)
                     if _text:
                         self._sing_lyrics = _text
@@ -1953,8 +1959,12 @@ class ChatWindow(QWidget):
             self._turn_user_bubble = None
             self._turn_user_text = ""
             self._finish_busy()
-            # 用本轮已定好的歌名（保证歌词与音频一致）
-            self._gen_voice_bubble(full)
+            # 唱歌：走完整翻唱流水线（有旋律）
+            _q = getattr(self, "_sing_query", "") or ""
+            if _q:
+                self._gen_voice_bubble(full, sing_query=_q)
+            else:
+                self._gen_voice_bubble(full)
             return
 
         if self.current_bubble is None:
@@ -1978,10 +1988,34 @@ class ChatWindow(QWidget):
         except Exception:
             pass
 
-    def _gen_voice_bubble(self, text):
-        """后台生成语音文件，完成后在聊天里插一条 QQ 风格语音条。"""
+    def _gen_voice_bubble(self, text, sing_query=""):
+        """后台生成语音。
+
+        sing_query 非空 = 唱歌场景：走完整翻唱流水线
+        （搜歌 -> 下载 -> UVR5 分离 -> RVC 换音色 -> 混音），
+        产出真旋律的翻唱。否则用普通 TTS。
+        """
         import threading
         self._hide_typing()
+
+        if sing_query:
+            def work_cover():
+                import cover as _CV
+                def prog(msg):
+                    try:
+                        self._cover_progress.emit(msg)
+                    except Exception:
+                        pass
+                try:
+                    path, name, artist, err = _CV.make_cover(
+                        sing_query, progress=prog)
+                except Exception as ex:
+                    path, name, artist, err = "", "", "", "%s: %s" % (
+                        type(ex).__name__, ex)
+                self._cover_ready.emit(path or "", name or "",
+                                       artist or "", err or "")
+            threading.Thread(target=work_cover, daemon=True).start()
+            return
 
         def work():
             path, sec, err = "", 0.0, ""
@@ -1993,6 +2027,60 @@ class ChatWindow(QWidget):
                                    err or "", text)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_cover_progress(self, msg):
+        """翻唱进度（主线程）：显示在输入框上方提示。"""
+        try:
+            self.token_label.setText(msg)
+        except Exception:
+            pass
+
+    def _on_cover_ready(self, path, name, artist, err):
+        """翻唱完成（主线程）：插语音条 + 文字。"""
+        pending = getattr(self, "_pending_voice_text", "")
+        self._pending_voice_text = ""
+        self._pending_voice_usage = None
+        try:
+            self.token_label.setText(self._usage_placeholder())
+        except Exception:
+            pass
+
+        if err or not path:
+            log("[翻唱] 失败：%s" % (err or "空路径"))
+            # 失败时至少把文字补上
+            if pending:
+                try:
+                    self._add_bubble("assistant", pending)
+                    self.messages.append({"role": "assistant",
+                                          "content": pending,
+                                          "ts": time.time()})
+                    self.save_history()
+                except Exception:
+                    pass
+            return
+        try:
+            import os as _os
+            import wave as _wave
+            sec = 0.0
+            try:
+                with _wave.open(path, "rb") as w:
+                    sec = w.getnframes() / float(w.getframerate() or 1)
+            except Exception:
+                pass
+            title = ("🎵 %s - %s" % (name, artist)) if artist else (
+                "🎵 %s" % (name or "翻唱"))
+            self.append_external("assistant", title,
+                                 voice_path=path, voice_sec=sec)
+            log("[翻唱] 完成：%s（%.1f 秒）" % (title, sec))
+            if pending:
+                self._add_bubble("assistant", pending)
+                self.messages.append({"role": "assistant",
+                                      "content": pending,
+                                      "ts": time.time()})
+                self.save_history()
+        except Exception as ex:
+            log("[翻唱] 插入失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
 
     def _on_voice_ready(self, path, sec, err, text):
         """语音文件就绪（主线程）：先插可点语音条，再补文字回复。
