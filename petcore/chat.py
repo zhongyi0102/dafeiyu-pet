@@ -246,6 +246,21 @@ class SummaryWorker(QThread):
             self.failed.emit("整理前情摘要失败：" + str(ex))
 
 
+# 唱歌场景追加给模型的指令：必须真的输出歌词，不能只抱怨/拒绝
+SING_SYSTEM_HINT = (
+    "\n\n【这一轮是唱歌请求——必须遵守】\n"
+    "用户要你唱歌时，你要**真的把歌词唱出来**，不能只写"
+    "「我不好意思唱」「唱不下去了」这类推脱的话。\n"
+    "格式要求：\n"
+    "1. 开头可以有一句很短的傲娇铺垫（不超过 15 字，不要括号动作）\n"
+    "2. 然后直接输出歌词，每句一行，至少 4 行，最多 8 行\n"
+    "3. 歌词要唱得出来：用用户点名的那首歌的歌词；没点名就唱"
+    "《小星星》《两只老虎》这类简单好听的，或自己编几句押韵的\n"
+    "4. 不要写括号里的舞台动作（如「（捂脸）」「（小声）」）\n"
+    "5. 结尾最多一句短评\n"
+    "总之：这一轮的核心是**歌词本身**，别拿害羞当借口不唱。")
+
+
 def _fmt_time(ts):
     """时间戳 → 显示文本。
 
@@ -1759,6 +1774,18 @@ class ChatWindow(QWidget):
         style = self.pet.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.pet.cfg)
         sys_text = build_system_prompt(style, persona)
+        # 唱歌场景：追加"必须真的唱出歌词"的指令
+        try:
+            _last_user = ""
+            for m in reversed(self.messages):
+                if m.get("role") == "user":
+                    _last_user = m.get("content") or ""
+                    break
+            import pet_voice as _V
+            if _V.is_sing_request(_last_user):
+                sys_text = sys_text + SING_SYSTEM_HINT
+        except Exception:
+            pass
         msgs = [{"role": "system", "content": self.pet.memory.system_content(sys_text)}]
         if self.summary:
             msgs.append({"role": "system",

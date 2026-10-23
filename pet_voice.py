@@ -83,8 +83,11 @@ def strip_actions(text):
         _ACTION_RE = re.compile(
             r"[（(【\[][^（）()【\]】]{0,40}[）)】\]]")
     t = _ACTION_RE.sub("", text or "")
-    # 压缩多余空白
-    return " ".join(t.split()).strip() if t else ""
+    if not t:
+        return ""
+    # 保留换行（歌词要一句一行），只压缩行内多余空格和空行
+    lines = [" ".join(ln.split()) for ln in t.splitlines()]
+    return "\n".join(ln for ln in lines if ln).strip()
 
 
 def is_sing_request(*texts):
