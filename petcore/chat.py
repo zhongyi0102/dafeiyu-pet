@@ -1673,6 +1673,27 @@ class ChatWindow(QWidget):
         full = (full or "").strip()
         if not full:
             full = "（这轮没有返回内容）"
+
+        # 唱歌/念台词：语音没就绪前**不显示文字回复**，等语音条好了
+        # 再一起显示（"先用语音回复，然后才是文字"）
+        _is_sing = False
+        try:
+            import pet_voice as _V
+            _is_sing = _V.is_sing_request(_turn_user)
+        except Exception:
+            pass
+        if _is_sing:
+            # 暂存文字，等语音条就绪后再补上
+            self._pending_voice_text = full
+            self._pending_voice_user = _turn_user
+            self._pending_voice_usage = usage
+            self._turn_user_bubble = None
+            self._turn_user_text = ""
+            self._finish_busy()
+            # 先提示"正在准备"，不留文字回复
+            self._gen_voice_bubble(full)
+            return
+
         if self.current_bubble is None:
             self.current_bubble = self._add_bubble("assistant", full)
         else:
@@ -1686,14 +1707,6 @@ class ChatWindow(QWidget):
         first = self._first_sentence(full)
         if first:
             self.pet.say(first)
-        # 语音：只有用户明确要求「唱/念出来」时才生成语音条
-        # （QQ 风格：先生成文件，聊天里插一条可点的语音条，不自动播放）
-        try:
-            import pet_voice as _V
-            if _V.is_sing_request(_turn_user):
-                self._gen_voice_bubble(full)
-        except Exception:
-            pass
         # 情绪反馈：按这轮对话内容播一个对应动作
         # （_mood_action 内部会停掉 work_hold_timer 并重置 work_state，
         #   所以能覆盖掉 work_ok）
@@ -1719,14 +1732,47 @@ class ChatWindow(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_voice_ready(self, path, sec, err, text):
-        """语音文件就绪（主线程）：成功则插语音条，失败则静默记日志。"""
+        """语音文件就绪（主线程）：先插可点语音条，再补文字回复。
+
+        唱歌场景的顺序要求：语音条先出现（点了才播，不自动播放），
+        文字回复随后补上——语音没就绪前不显示文字。
+        """
+        pending = getattr(self, "_pending_voice_text", "")
+        self._pending_voice_text = ""
+        _usage = getattr(self, "_pending_voice_usage", None)
+        self._pending_voice_usage = None
+
         if err or not path:
             log("[语音] 语音条生成失败：%s" % (err or "空路径"))
+            # 失败也要把文字回复补上，不能什么都不显示
+            if pending:
+                try:
+                    self._add_bubble("assistant", pending)
+                    self.messages.append({"role": "assistant",
+                                          "content": pending})
+                    self.save_history()
+                    first = self._first_sentence(pending)
+                    if first:
+                        self.pet.say(first)
+                except Exception as ex:
+                    log("[语音] 补文字失败: %s" % ex, logging.WARNING)
             return
         try:
+            # 1) 先插语音条（不自动播放，用户点了才播）
             self.append_external("assistant", "\U0001F3B5 唱给你听",
                                  voice_path=path, voice_sec=sec)
             log("[语音] 语音条已插入：%s（%.1f 秒）" % (path, sec))
+            # 2) 再补文字回复
+            if pending:
+                self._add_bubble("assistant", pending)
+                self.messages.append({"role": "assistant",
+                                      "content": pending})
+                self.save_history()
+                first = self._first_sentence(pending)
+                if first:
+                    self.pet.say(first)
+                if _usage:
+                    self._update_usage(_usage, pending)
         except Exception as ex:
             log("[语音] 插入语音条失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
