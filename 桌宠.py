@@ -58,6 +58,7 @@ from petcore.consts import mask_secrets, is_default_vision_system  # noqa: F401
 import screen_vision as SV   # noqa: E402
 from weather_cn import weather_cn, weather_tip  # noqa: E402
 import pet_voice as VOICE  # noqa: E402
+VOICE.log = log          # 让 pet_voice 的日志写进本程序的 error.log
 import proactive as PRO      # noqa: E402  主动搭话
 
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401

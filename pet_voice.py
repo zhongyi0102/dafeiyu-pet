@@ -22,7 +22,18 @@ import logging
 import tempfile
 import time
 
-log = logging.getLogger("dafeiyu")
+_logger = logging.getLogger("dafeiyu")
+
+
+def log(msg, level=logging.INFO):
+    """与主程序 桌宠.py 的 log() 签名保持一致：log(text, level)。
+
+    注意：这里必须是**函数**，不能是 Logger 对象——调用方按 log("...") 用。
+    """
+    try:
+        _logger.log(level, msg)
+    except Exception:
+        pass
 
 DEFAULT_VOICE_CFG = {
     "enabled": False,          # 默认关（外部服务没搭好前不请求）
@@ -66,6 +77,47 @@ def is_sing_request(*texts):
     return any(w in blob for w in _SING_WORDS)
 
 
+def _detect_proxy():
+    """探测可用代理（Edge-TTS 走 WebSocket，aiohttp 需显式传入）。
+
+    优先级：DFY_PROXY 环境变量 → HTTPS_PROXY/HTTP_PROXY → 系统 IE 代理设置。
+    都没有则返回 None（直连）。
+    """
+    for k in ("DFY_PROXY", "HTTPS_PROXY", "https_proxy",
+              "HTTP_PROXY", "http_proxy"):
+        v = os.environ.get(k)
+        if v and v.strip():
+            return v.strip()
+    # Windows 系统代理（IE/系统设置里配的那种）
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        try:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if enabled:
+                server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                if server and server.strip():
+                    s = server.strip()
+                    # "127.0.0.1:3067" → 补 http://；"http=..;https=.." 取 https
+                    if "=" in s:
+                        for part in s.split(";"):
+                            if part.lower().startswith("https="):
+                                s = part.split("=", 1)[1]
+                                break
+                        else:
+                            s = s.split("=", 1)[-1]
+                    if not s.startswith("http"):
+                        s = "http://" + s
+                    return s
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+    return None
+
+
 def edge_tts_wav(text, voice="zh-CN-XiaoxiaoNeural", speed=1.0):
     """用 Edge-TTS 生成基准语音（在桌宠进程里跑，这里工作正常）。
 
@@ -88,8 +140,7 @@ def edge_tts_wav(text, voice="zh-CN-XiaoxiaoNeural", speed=1.0):
         elif speed < 1.0:
             rate = "-%d%%" % int((1 - speed) * 100)
         kwargs = {"rate": rate}
-        # 代理（aiohttp 需显式传，光设环境变量不生效）
-        proxy = os.environ.get("DFY_PROXY") or os.environ.get("HTTPS_PROXY")
+        proxy = _detect_proxy()
         if proxy:
             kwargs["proxy"] = proxy
         comm = edge_tts.Communicate(text, voice, **kwargs)

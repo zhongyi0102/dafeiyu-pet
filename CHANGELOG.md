@@ -585,6 +585,21 @@
 - 推理环境 `E:\AI\rvc311`（Python 3.11 + torch 2.14.1 CPU +
   transformers 4.57.6），**不需要 fairseq**
 
+### 修复（Fixed）
+
+- **语音功能报 `TypeError: 'Logger' object is not callable`**：
+  `pet_voice.py` 里把 `log` 定义成了 `logging.getLogger()` 返回的
+  Logger 对象，但代码按 `log("...")` 当函数调用，导致语音子线程
+  直接崩掉（日志里能看到 Thread-2 未捕获异常）。改为函数形式，
+  并把主程序的 `log` 注入给它，`[语音]` 记录现在会写进 error.log
+- **Edge-TTS 连不上服务器**（`Cannot connect to host
+  speech.platform.bing.com`）：原来只从环境变量读代理，桌宠正常
+  运行时没有这些变量。新增 `_detect_proxy()`，按
+  `DFY_PROXY` → `HTTPS_PROXY/HTTP_PROXY` → **系统 IE 代理设置**
+  的顺序探测，没有则直连
+- 语音服务启动脚本去掉无用的代理设置（服务只做 RVC，纯本地计算
+  不联网），监听改为 127.0.0.1，说明文字更新为当前架构
+
 ## [1.0.0] — 2026-10-20
 
 首个公开版本。从单文件 10777 行重构为模块化结构，并做到「下载一个 exe 就能用」。
