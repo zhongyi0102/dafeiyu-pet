@@ -37,7 +37,13 @@ def log(msg, level=logging.INFO):
 
 DEFAULT_VOICE_CFG = {
     "enabled": False,          # 默认关（外部服务没搭好前不请求）
-    "url": "http://127.0.0.1:9880",
+    # engine: "edge"   = Edge-TTS + RVC（快，2 秒）
+    #         "voxcpm" = VoxCPM2 直出（慢，约 3 分钟，48kHz 高音质）
+    "engine": "edge",
+    "url": "http://127.0.0.1:9880",        # RVC 服务
+    "vox_url": "http://127.0.0.1:9881",    # VoxCPM2 服务
+    "vox_steps": 24,                       # VoxCPM 推理步数（少=快）
+    "vox_control": "",                     # 空=用服务端默认音色描述
     "timeout": 20,
     "volume": 80,              # 0~100
 }
@@ -51,13 +57,21 @@ def normalize_voice_cfg(raw):
         d["enabled"] = raw["enabled"]
     if isinstance(raw.get("url"), str) and raw["url"].strip():
         d["url"] = raw["url"].strip().rstrip("/")
-    for k in ("timeout", "volume"):
+    if isinstance(raw.get("vox_url"), str) and raw["vox_url"].strip():
+        d["vox_url"] = raw["vox_url"].strip().rstrip("/")
+    eng = raw.get("engine")
+    if eng in ("edge", "voxcpm"):
+        d["engine"] = eng
+    if isinstance(raw.get("vox_control"), str):
+        d["vox_control"] = raw["vox_control"]
+    for k in ("timeout", "volume", "vox_steps"):
         try:
             d[k] = int(raw.get(k, d[k]))
         except Exception:
             pass
     d["timeout"] = max(5, min(120, d["timeout"]))
     d["volume"] = max(0, min(100, d["volume"]))
+    d["vox_steps"] = max(4, min(60, d["vox_steps"]))
     return d
 
 
@@ -196,7 +210,9 @@ def _server_script():
 
 
 SERVER_PY = r"E:\AI\rvc311\Scripts\python.exe"
+VOX_PY = r"E:\AI\voxcpm-env\Scripts\python.exe"
 SERVER_PORT_DEFAULT = 9880
+VOX_PORT_DEFAULT = 9881
 
 
 def is_server_running(url="http://127.0.0.1:9880", timeout=2.0,
@@ -265,6 +281,48 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
 
 
 
+def _vox_script():
+    import sys
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+        cand = os.path.join(base, "tools", "voxcpm_server.py")
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "tools", "voxcpm_server.py")
+
+
+def start_vox_server(url="http://127.0.0.1:9881", wait=180):
+    """后台启动 VoxCPM2 服务。返回 (ok, msg)。
+
+    首次启动要下载 5GB 模型 + 加载，可能几分钟，wait 给足。
+    """
+    if is_server_running(url):
+        return True, "VoxCPM 服务已在运行"
+    script = _vox_script()
+    if not os.path.exists(script):
+        return False, "找不到服务脚本：%s" % script
+    if not os.path.exists(VOX_PY):
+        return False, "找不到 VoxCPM 环境：%s" % VOX_PY
+    try:
+        import subprocess
+        d = os.path.dirname(script)
+        log_path = os.path.join(d, "voxcpm_server.log")
+        logf = open(log_path, "ab")
+        subprocess.Popen(
+            [VOX_PY, "-u", script],
+            cwd=d, stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as ex:
+        return False, "启动失败: %s: %s" % (type(ex).__name__, ex)
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if is_server_running(url, timeout=3.0):
+            return True, "VoxCPM 服务已启动"
+        time.sleep(2.0)
+    return False, "启动超时（%d 秒），看 tools/voxcpm_server.log" % wait
+
+
 def rvc_convert(url, wav_bytes, timeout=120):
     """把基准语音发给服务做 RVC 音色转换。返回 (wav_bytes, err)。
 
@@ -305,6 +363,55 @@ def tts_rvc(url, text, timeout=120, speaker=None, speed=1.0):
     if err:
         return None, err
     return rvc_convert(url, base, timeout=timeout)
+
+
+def voxcpm_tts(vox_url, text, control="", steps=0, timeout=600):
+    """VoxCPM2 直出语音（48kHz）。返回 (wav_bytes, err)。
+
+    慢：CPU 下一句话约 3 分钟（取决于步数和文本长度）。
+    """
+    import requests
+    text = (text or "").strip()
+    if not text:
+        return None, "空文本"
+    body = {"text": text}
+    if control:
+        body["control"] = control
+    if steps:
+        body["steps"] = int(steps)
+    try:
+        s = requests.Session()
+        s.trust_env = False
+        r = s.post((vox_url or "").rstrip("/") + "/tts",
+                   json=body, timeout=timeout)
+    except Exception as ex:
+        msg = "%s: %s" % (type(ex).__name__, str(ex)[:80])
+        if "ConnectionError" in type(ex).__name__ or "refused" in str(ex):
+            msg += "（VoxCPM 服务没启动？点「启动语音服务」）"
+        return None, msg
+    if r.status_code != 200:
+        try:
+            msg = r.json().get("detail", "")
+        except Exception:
+            msg = r.text[:100]
+        return None, "HTTP %s: %s" % (r.status_code, msg)
+    if not r.content or len(r.content) < 100:
+        return None, "空音频"
+    return r.content, ""
+
+
+def synthesize(cfg, text):
+    """按配置的引擎合成语音。返回 (wav_bytes, err)。"""
+    eng = (cfg or {}).get("engine") or "edge"
+    if eng == "voxcpm":
+        return voxcpm_tts(
+            cfg.get("vox_url"), text,
+            control=cfg.get("vox_control") or "",
+            steps=cfg.get("vox_steps") or 0,
+            timeout=max(300, int(cfg.get("timeout", 120) or 120) * 5))
+    # 默认 edge + rvc
+    return tts_rvc(cfg.get("url"), text,
+                   timeout=max(120, int(cfg.get("timeout", 120) or 120)))
 
 
 class VoicePlayer:
@@ -360,8 +467,7 @@ class VoicePlayer:
         import threading
 
         def work():
-            wav, err = tts_rvc(cfg.get("url"), text,
-                               timeout=cfg.get("timeout", 20))
+            wav, err = synthesize(cfg, text)
             if err or not wav:
                 log("[语音] 生成失败（静默）：%s" % err)
                 return

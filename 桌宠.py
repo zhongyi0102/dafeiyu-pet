@@ -2269,21 +2269,24 @@ class PetApp(QObject):
                 return "", 0.0, "没有可念的内容"
             if len(t) > 2000:
                 t = t[:2000]
-            # 首次转换要含模型加载（约 20 秒），超时至少 120 秒
-            _to = max(120, int(cfg.get("timeout", 120) or 120))
-            wav, err = VOICE.tts_rvc(cfg.get("url"), t, timeout=_to)
+            # 按引擎合成（voxcpm 很慢，synthesize 内部已放宽超时）
+            wav, err = VOICE.synthesize(cfg, t)
             if err or not wav:
                 # 服务没启动时自动拉起一次再重试（QQ 式无感体验）
                 if ("refused" in (err or "") or "ConnectionError" in (err or "")
                         or "Max retries" in (err or "")):
                     log("[语音] 服务未启动，尝试自动启动…")
-                    ok, smsg = VOICE.start_server(cfg.get("url") or
-                                                  "http://127.0.0.1:9880",
-                                                  wait=45)
+                    _eng = cfg.get("engine") or "edge"
+                    if _eng == "voxcpm":
+                        ok, smsg = VOICE.start_vox_server(
+                            cfg.get("vox_url") or "http://127.0.0.1:9881",
+                            wait=180)
+                    else:
+                        ok, smsg = VOICE.start_server(
+                            cfg.get("url") or "http://127.0.0.1:9880",
+                            wait=45)
                     if ok:
-                        wav, err = VOICE.tts_rvc(
-                            cfg.get("url"), t,
-                            timeout=cfg.get("timeout", 120))
+                        wav, err = VOICE.synthesize(cfg, t)
                 if err or not wav:
                     return "", 0.0, err or "空音频"
             import os as _os

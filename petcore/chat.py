@@ -261,6 +261,17 @@ SING_SYSTEM_HINT = (
     "总之：这一轮的核心是**歌词本身**，别拿害羞当借口不唱。")
 
 
+def _wav_duration(path):
+    """从 WAV 头读精确时长（秒）。失败返回 0.0。"""
+    try:
+        import wave
+        with wave.open(path, "rb") as w:
+            fr = w.getframerate() or 1
+            return w.getnframes() / float(fr)
+    except Exception:
+        return 0.0
+
+
 def _fmt_time(ts):
     """时间戳 → 显示文本。
 
@@ -360,8 +371,11 @@ class ChatBubble(QFrame):
                 import os as _os
                 self._voice_path = voice_path
                 sec = float(voice_sec or 0.0)
-                # 时长未知时按文件大小估（40k/16bit/单声道 ≈ 80KB/s）
-                if sec <= 0:
+                # 优先从 WAV 头读精确时长（估算公式对补齐/采样率会偏差）
+                exact = _wav_duration(voice_path)
+                if exact > 0.05:
+                    sec = exact
+                elif sec <= 0:
                     try:
                         sec = max(1.0, _os.path.getsize(voice_path) / 80000.0)
                     except Exception:
@@ -423,6 +437,12 @@ class ChatBubble(QFrame):
             self.role = "error"
             self._style()
 
+    def _find_pet(self):
+        owner = self
+        while owner is not None and not hasattr(owner, "pet"):
+            owner = owner.parent()
+        return owner if owner is not None else self
+
     def _label_menu(self, pos):
         """气泡文字右键菜单：复制选中/复制全文/播放语音。"""
         from PySide6.QtWidgets import QMenu
@@ -452,8 +472,23 @@ class ChatBubble(QFrame):
 
 
     def _play_voice(self):
-        """播放这条语音（复用全局 VoicePlayer，避免多播放器抢音频）。"""
+        """播放这条语音（复用全局 VoicePlayer，避免多播放器抢音频）。
+
+        已在播放时再点 = 停止（QQ 同款交互）。
+        """
         try:
+            player = getattr(self.pet if hasattr(self, "pet") else
+                             self._find_pet(), "_voice_player", None)
+            mp = getattr(player, "_player", None) if player else None
+            if (mp is not None and mp is not False
+                    and mp.playbackState().name == "PlayingState"
+                    and getattr(self, "_playing_now", False)):
+                # 这条正在播：停止并复位
+                mp.stop()
+                self._playing_now = False
+                self.voice_btn.setText(
+                    "\U0001F50A  %d\"" % int(round(self._voice_sec)))
+                return
             p = getattr(self, "_voice_path", "")
             if not p or not os.path.exists(p):
                 self.voice_btn.setText("\U0001F50A  文件不见了")
@@ -1540,7 +1575,7 @@ class ChatWindow(QWidget):
                         break
                 if best:
                     m["voice"] = best
-                    m["voice_sec"] = max(1.0, os.path.getsize(best) / 80000.0)
+                    m["voice_sec"] = max(1.0, _wav_duration(best))
                     used.add(best)
                     changed = True
                     log("[聊天] 已为历史语音消息补上文件：%s" % best)

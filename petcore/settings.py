@@ -3141,6 +3141,31 @@ class SettingsWindow(QDialog):
             lambda on: self._set_voice({"enabled": bool(on)}),
             "关闭时完全不请求语音服务，只显示气泡。")
 
+        # 引擎选择
+        erow = QHBoxLayout()
+        erow.setContentsMargins(22, 0, 0, 0)
+        elab = QLabel("合成引擎")
+        elab.setFixedWidth(76)
+        erow.addWidget(elab)
+        self._voice_engine = QComboBox()
+        self._voice_engine.addItem("Edge-TTS + RVC（快，约 2 秒）", "edge")
+        self._voice_engine.addItem(
+            "VoxCPM2（慢，约 3 分钟，48kHz 高音质）", "voxcpm")
+        _eng = cfg.get("engine") or "edge"
+        for i in range(self._voice_engine.count()):
+            if self._voice_engine.itemData(i) == _eng:
+                self._voice_engine.setCurrentIndex(i)
+                break
+        self._voice_engine.currentIndexChanged.connect(
+            lambda _i: self._set_voice({
+                "engine": self._voice_engine.currentData()}))
+        self._voice_engine.setFixedHeight(30)
+        erow.addWidget(self._voice_engine, 1)
+        lay.addLayout(erow)
+        lay.addWidget(self._sub_hint(
+            "Edge-TTS 快但只会朗读；VoxCPM2 音质好、能克隆音色，"
+            "但 CPU 下一句话要几分钟。"))
+
         # 服务地址
         row = QHBoxLayout()
         row.setContentsMargins(22, 0, 0, 0)
