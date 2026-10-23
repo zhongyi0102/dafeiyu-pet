@@ -196,14 +196,26 @@ SERVER_PY = r"E:\AI\rvc311\Scripts\python.exe"
 SERVER_PORT_DEFAULT = 9880
 
 
-def is_server_running(url="http://127.0.0.1:9880", timeout=2.0):
-    """检查语音服务是否在线（/health）。"""
+def is_server_running(url="http://127.0.0.1:9880", timeout=2.0,
+                      want_loaded=False):
+    """检查语音服务是否在线（/health）。
+
+    want_loaded=True 时还要求模型已加载（loaded=true），
+    用于 start_server：只等 HTTP 在线不代表能立刻转换。
+    """
     import requests
     try:
         s = requests.Session()
         s.trust_env = False
         r = s.get(url.rstrip("/") + "/health", timeout=timeout)
-        return r.status_code == 200
+        if r.status_code != 200:
+            return False
+        if want_loaded:
+            try:
+                return bool(r.json().get("loaded"))
+            except Exception:
+                return False
+        return True
     except Exception:
         return False
 
@@ -231,11 +243,18 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
             cwd=d, creationflags=subprocess.CREATE_NEW_CONSOLE)
     except Exception as ex:
         return False, "启动失败: %s: %s" % (type(ex).__name__, ex)
-    # 等服务就绪
+    # 等服务就绪 + 模型预加载完成（否则首个转换请求会撞上加载期）
     t0 = time.time()
     while time.time() - t0 < wait:
         if is_server_running(url):
-            return True, "服务已启动"
+            # HTTP 在线了；再等模型加载（最多再等 wait 秒）
+            while time.time() - t0 < wait * 2:
+                if is_server_running(url, want_loaded=True):
+                    return True, "服务已启动（模型已就绪）"
+                time.sleep(1.0)
+            # 模型没等到就绪也返回成功——首个转换会自己加载，
+            # 但客户端要用足够长的超时
+            return True, "服务已启动（模型加载中，首次转换稍慢）"
         time.sleep(0.5)
     return False, "启动超时（%d 秒），请查看弹出的服务窗口" % wait
 

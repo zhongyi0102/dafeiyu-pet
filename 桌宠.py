@@ -2269,8 +2269,9 @@ class PetApp(QObject):
                 return "", 0.0, "没有可念的内容"
             if len(t) > 2000:
                 t = t[:2000]
-            wav, err = VOICE.tts_rvc(cfg.get("url"), t,
-                                     timeout=cfg.get("timeout", 120))
+            # 首次转换要含模型加载（约 20 秒），超时至少 120 秒
+            _to = max(120, int(cfg.get("timeout", 120) or 120))
+            wav, err = VOICE.tts_rvc(cfg.get("url"), t, timeout=_to)
             if err or not wav:
                 # 服务没启动时自动拉起一次再重试（QQ 式无感体验）
                 if ("refused" in (err or "") or "ConnectionError" in (err or "")

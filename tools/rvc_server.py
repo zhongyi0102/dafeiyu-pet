@@ -24,6 +24,7 @@
 import io
 import os
 import sys
+import threading
 import tempfile
 import time
 
@@ -48,6 +49,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 app = FastAPI(title="dafeiyu rvc")
 _state = {"net": None, "hubert": None}
+_load_lock = threading.Lock()   # 预加载线程与首个转换请求的竞态保护
 
 
 def _write_err(where, ex):
@@ -63,8 +65,16 @@ def _write_err(where, ex):
 
 
 def _load_models():
-    if _state["net"] is not None:
+    # 双重检查 + 全程持锁：预加载线程和首个转换请求并发进入时，
+    # 后到者要么等加载完、要么直接复用，绝不拿到半初始化的 state
+    if _state["net"] is not None and _state["hubert"] is not None:
         return
+    with _load_lock:
+        if _state["net"] is not None and _state["hubert"] is not None:
+            return
+        _do_load_models()
+
+def _do_load_models():
     print("[rvc_server] 加载 RVC 模型:", MODEL_PATH)
     from safetensors.torch import load_file
     sd = load_file(MODEL_PATH)
@@ -202,6 +212,9 @@ if __name__ == "__main__":
     print("模型:", MODEL_PATH, "存在:", os.path.exists(MODEL_PATH))
     print("监听: http://%s:%d" % (HOST, PORT))
     print("模式: 只做 RVC 转换（TTS 由桌宠侧完成）")
+    # 启动即后台预加载模型：/health 的 loaded 变 true 后，
+    # 客户端才认为服务就绪（首个转换不用再等加载）
+    threading.Thread(target=_load_models, daemon=True).start()
     cfg = uvicorn.Config(app, host=HOST, port=PORT, log_level="info")
     server = uvicorn.Server(cfg)
     t = threading.Thread(target=server.run, daemon=False)
