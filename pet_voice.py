@@ -163,18 +163,25 @@ def rvc_convert(url, wav_bytes, timeout=120):
     """把基准语音发给服务做 RVC 音色转换。返回 (wav_bytes, err)。
 
     服务端约定：POST {url}/convert，body 是 audio/wav，返回 audio/wav。
+    注意：语音服务在本机/局域网，**必须绕过系统代理直连**——否则请求
+    会被代理拦截，服务没开时返回的是代理的 502，掩盖真实原因。
     """
     import requests
     if not wav_bytes:
         return None, "无输入音频"
     try:
-        r = requests.post(
+        s = requests.Session()
+        s.trust_env = False          # 忽略系统/环境代理，直连
+        r = s.post(
             (url or "").rstrip("/") + "/convert",
             data=wav_bytes,
             timeout=timeout,
             headers={"Content-Type": "audio/wav"})
     except Exception as ex:
-        return None, "%s: %s" % (type(ex).__name__, str(ex)[:80])
+        msg = "%s: %s" % (type(ex).__name__, str(ex)[:80])
+        if "ConnectionError" in type(ex).__name__ or "refused" in str(ex):
+            msg += "（语音服务没启动？请先运行 tools\\启动语音服务.bat）"
+        return None, msg
     if r.status_code != 200:
         try:
             msg = r.json().get("detail", "")
