@@ -51,6 +51,15 @@ _state = {"vc": None, "loaded": False, "loading": False}
 _lock = threading.Lock()
 
 
+def _torch_cuda():
+    """是否有可用 CUDA。"""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
 def _log(msg):
     print("[rvc_server] %s" % msg, flush=True)
 
@@ -191,7 +200,9 @@ def health():
         "model_exists": os.path.exists(MODEL_PATH),
         "loaded": bool(_state["loaded"]),
         "loading": bool(_state["loading"]),
-        "device": "cpu",
+        "device": (str(getattr(_state.get("cfg"), "device", "cpu"))
+                   if _state.get("cfg") else
+                   ("cuda" if _torch_cuda() else "cpu")),
     }
 
 

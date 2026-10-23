@@ -60,6 +60,14 @@ def _write_err(where, ex):
         pass
 
 
+def _current_device():
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
 def _load_model():
     """加载 VoxCPM2（首次会下载约 5GB）。"""
     if _state["loaded"]:
@@ -72,8 +80,22 @@ def _load_model():
             _log("加载 VoxCPM2（首次需下载模型，可能很久）…")
             from voxcpm import VoxCPM
             t0 = time.time()
-            # CPU 上必须 optimize=False（torch.compile 与多线程不兼容）
-            m = VoxCPM.from_pretrained("openbmb/VoxCPM2", optimize=False)
+            # 自动检测 GPU：
+            #   有 CUDA  -> optimize=True（torch.compile，快 2~3 倍）+ 指定 cuda
+            #   无 CUDA  -> optimize=False（CPU 上 torch.compile 与多线程不兼容）
+            try:
+                import torch
+                _cuda = torch.cuda.is_available()
+            except Exception:
+                _cuda = False
+            if _cuda:
+                _log("检测到 CUDA，使用 GPU 加速")
+                m = VoxCPM.from_pretrained(
+                    "openbmb/VoxCPM2", optimize=True, device="cuda")
+            else:
+                _log("无 CUDA，使用 CPU")
+                m = VoxCPM.from_pretrained(
+                    "openbmb/VoxCPM2", optimize=False)
             _state["model"] = m
             _state["loaded"] = True
             _log("加载完成 %.0f 秒" % (time.time() - t0))
@@ -151,7 +173,7 @@ def health():
         "mode": "voxcpm2",
         "loaded": bool(_state["loaded"]),
         "loading": bool(_state["loading"]),
-        "device": "cpu",
+        "device": _current_device(),
         "default_control": DEFAULT_CONTROL,
         "default_steps": DEFAULT_STEPS,
     }

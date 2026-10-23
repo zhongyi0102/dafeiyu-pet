@@ -246,6 +246,10 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
     """
     if is_server_running(url):
         return True, "服务已在运行"
+    # 远程服务：本机不能启动，只能等对端上线
+    if is_remote(url):
+        return False, ("远程服务 %s 无响应——请确认 GPU 机器上的服务已启动、"
+                       "防火墙放行 9880 端口、两台机器在同一局域网" % url)
     script = _server_script()
     if not os.path.exists(script):
         return False, "找不到服务脚本：%s" % script
@@ -284,6 +288,17 @@ def start_server(url="http://127.0.0.1:9880", wait=20):
 
 
 
+def is_remote(url):
+    """服务地址是否在别的机器（不是本机）。"""
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(url if "://" in url else "http://" + url)
+        host = (u.hostname or "").lower()
+        return host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    except Exception:
+        return False
+
+
 def _port_busy(url, timeout=1.0):
     """端口是否已被监听（用于避免重复启动服务）。"""
     import socket
@@ -320,6 +335,9 @@ def start_vox_server(url="http://127.0.0.1:9881", wait=180):
     """
     if is_server_running(url):
         return True, "VoxCPM 服务已在运行"
+    if is_remote(url):
+        return False, ("远程 VoxCPM %s 无响应——请确认 GPU 机器上服务已启动、"
+                       "防火墙放行 9881 端口" % url)
     script = _vox_script()
     if not os.path.exists(script):
         return False, "找不到服务脚本：%s" % script
