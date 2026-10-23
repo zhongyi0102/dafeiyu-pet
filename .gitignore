@@ -60,3 +60,4 @@ config*.bak
 # Release 说明草稿（发布时用，不入库）
 _release_body.md
 _rel.json
+voice_cache/

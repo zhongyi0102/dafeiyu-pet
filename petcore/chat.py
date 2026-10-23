@@ -1466,6 +1466,7 @@ class ChatWindow(QWidget):
         self._render_from = max(0, total - max(1, self._render_limit))
         if self._render_from > 0:
             self.msg_layout.insertWidget(0, self.load_more_btn)
+        self._repair_voice_msgs()
         for m in self.messages[self._render_from:]:
             self.render_message(m.get("role", "assistant"),
                                 m.get("content", ""),
@@ -1475,6 +1476,64 @@ class ChatWindow(QWidget):
                                 ts=m.get("ts"))
         self._update_empty_state()
         self._scroll_bottom()
+
+    def _repair_voice_msgs(self):
+        """修复历史里缺 voice 字段的唱歌消息（老版本写入的）。
+
+        早期版本只写了「🎵 唱给你听」文字，没存语音文件路径，
+        导致重开聊天看不到语音条。这里按时间就近匹配 voice_cache
+        里的文件补上，让老消息也能点播放。
+        """
+        try:
+            import glob
+            cache_dir = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "voice_cache")
+            if not os.path.isdir(cache_dir):
+                return
+            files = sorted(glob.glob(os.path.join(cache_dir, "*.wav")))
+            if not files:
+                return
+            changed = False
+            used = set()
+            for m in self.messages:
+                if m.get("voice"):
+                    continue
+                if "唱给你听" not in (m.get("content") or ""):
+                    continue
+                ts = m.get("ts")
+                best, best_d = None, None
+                for f in files:
+                    if f in used:
+                        continue
+                    if ts:
+                        # 有 ts：按时间就近匹配（10 分钟内）
+                        base = os.path.basename(f).replace(".wav", "")
+                        try:
+                            import datetime
+                            ft = datetime.datetime.strptime(
+                                base, "%Y%m%d_%H%M%S").timestamp()
+                        except Exception:
+                            continue
+                        d = abs(ft - float(ts))
+                        if d > 600:
+                            continue
+                        if best_d is None or d < best_d:
+                            best, best_d = f, d
+                    else:
+                        # 没有 ts（老数据）：按顺序领一个没用过的
+                        best = f
+                        break
+                if best:
+                    m["voice"] = best
+                    m["voice_sec"] = max(1.0, os.path.getsize(best) / 80000.0)
+                    used.add(best)
+                    changed = True
+                    log("[聊天] 已为历史语音消息补上文件：%s" % best)
+            if changed:
+                self.save_history()
+        except Exception as ex:
+            log("[聊天] 修复历史语音消息失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _load_earlier(self):
         try:
