@@ -1566,6 +1566,13 @@ class ChatWindow(QWidget):
         first = self._first_sentence(full)
         if first:
             self.pet.say(first)
+        # 语音：只有用户明确要求「唱/念出来」时才发声（日常一律文字）
+        try:
+            import pet_voice as _V
+            if _V.is_sing_request(_turn_user):
+                self.pet.speak_voice(full)
+        except Exception:
+            pass
         # 情绪反馈：按这轮对话内容播一个对应动作
         # （_mood_action 内部会停掉 work_hold_timer 并重置 work_state，
         #   所以能覆盖掉 work_ok）

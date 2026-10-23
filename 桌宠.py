@@ -57,6 +57,7 @@ from petcore.consts import mask_secrets, is_default_vision_system  # noqa: F401
 # 看看屏幕增强模块（场景分类 / OCR / 预处理 / 看屏记忆 / 视觉模型排序）
 import screen_vision as SV   # noqa: E402
 from weather_cn import weather_cn, weather_tip  # noqa: E402
+import pet_voice as VOICE  # noqa: E402
 import proactive as PRO      # noqa: E402  主动搭话
 
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
@@ -776,7 +777,14 @@ class PetApp(QObject):
         self.look_to_chat.connect(self._on_look_to_chat)
         self.weather_done.connect(self._on_weather_done)
         self.pro_active_say.connect(self._on_proactive_say)
-        # 气泡点击 → 主动搭话反馈（在 PetWindow 里判断是否点中气泡）
+
+        # 语音播放器（外部 RVC 服务，未启用时不请求）
+        try:
+            self._voice_player = VOICE.VoicePlayer(self.voice_cfg)
+        except Exception as ex:
+            log("[语音] 初始化失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            self._voice_player = None        # 气泡点击 → 主动搭话反馈（在 PetWindow 里判断是否点中气泡）
         self.main_pet = None
         self.chat_window = None
         self.memory_dialog = None
@@ -895,10 +903,19 @@ class PetApp(QObject):
                 return p
         return None
 
-    def say_main(self, text, inner=False):
-        """聊天/提醒/节日/系统播报只由 main 显示"""
+    def say_main(self, text, inner=False, voice=False):
+        """聊天/提醒/节日/系统播报只由 main 显示。
+
+        语音默认**关闭**（日常一律文字气泡）。只有显式 voice=True
+        （叫它唱歌/念出来）时才走语音链路。
+        """
         if self.main_pet is not None:
             self.main_pet.say(text, inner=inner)
+        if voice and not inner:
+            try:
+                self.speak_voice(text)
+            except Exception:
+                pass
 
     # ---------- 配置 ----------
     def save_cfg(self):
@@ -2219,6 +2236,35 @@ class PetApp(QObject):
             log("[情绪] 判断失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
         return ""
+
+    # ---------- 语音 ----------
+    def voice_cfg(self):
+        """读语音配置（补齐/夹紧）。"""
+        try:
+            return VOICE.normalize_voice_cfg(self.cfg.get("voice"))
+        except Exception:
+            return dict(VOICE.DEFAULT_VOICE_CFG)
+
+    def save_voice_cfg(self, patch=None):
+        """写语音配置。"""
+        cur = self.voice_cfg()
+        if isinstance(patch, dict):
+            cur.update(patch)
+        self.cfg["voice"] = VOICE.normalize_voice_cfg(cur)
+        self.save_cfg()
+        return self.cfg["voice"]
+
+    def speak_voice(self, text):
+        """让宠物把这句话说出来（语音服务不可用时静默）。"""
+        try:
+            p = getattr(self, "_voice_player", None)
+            if p is None:
+                return False
+            return p.speak(text)
+        except Exception as ex:
+            log("[语音] 说话失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return False
 
     def set_work_state(self, state):
         """切换工作状态（thinking/working/waiting/success/error/idle）。

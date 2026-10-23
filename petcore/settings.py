@@ -206,6 +206,7 @@ class SettingsWindow(QDialog):
         ("chat", "聊天"),
         ("visual", "视觉"),
         ("proactive", "主动搭话"),
+        ("voice", "语音"),
         ("memory", "记忆"),
         ("general", "通用"),
         ("about", "关于"),
@@ -300,6 +301,7 @@ class SettingsWindow(QDialog):
         self._build_chat_page(self._pages["chat"])
         self._build_visual_page(self._pages["visual"])
         self._build_proactive_page(self._pages["proactive"])
+        self._build_voice_page(self._pages["voice"])
         self._build_general_page(self._pages["general"])
         self._build_memory_page(self._pages["memory"])
         self._build_about_page(self._pages["about"])
@@ -3124,6 +3126,125 @@ class SettingsWindow(QDialog):
             self.app.cfg["city"] = text.strip()
             self.app.save_cfg()
             self.app.say_main("城市已设置为%s" % text.strip())
+
+    # ---------- 语音页 ----------
+    def _build_voice_page(self, lay):
+        self._title(lay, "语音",
+                    "让宠物把说的话念出来。需要先启动 tools/启动语音服务.bat"
+                    "（Edge-TTS 生成 + RVC 转成晓晓音色）。")
+        cfg = self.app.voice_cfg()
+
+        self._voice_enabled = self._check(
+            lay, "启用语音", bool(cfg.get("enabled")),
+            lambda on: self._set_voice({"enabled": bool(on)}),
+            "关闭时完全不请求语音服务，只显示气泡。")
+
+        # 服务地址
+        row = QHBoxLayout()
+        row.setContentsMargins(22, 0, 0, 0)
+        lab = QLabel("服务地址")
+        lab.setFixedWidth(76)
+        row.addWidget(lab)
+        self._voice_url = QLineEdit(str(cfg.get("url") or ""))
+        self._voice_url.setFixedHeight(30)
+        self._voice_url.editingFinished.connect(
+            lambda: self._set_voice({"url": self._voice_url.text().strip()}))
+        row.addWidget(self._voice_url, 1)
+        lay.addLayout(row)
+        lay.addWidget(self._sub_hint(
+            "默认 http://127.0.0.1:9880。服务在另一台机器时改成那台的 IP。"))
+
+        # 音量
+        vrow = QHBoxLayout()
+        vrow.setContentsMargins(22, 0, 0, 0)
+        vlab = QLabel("音量")
+        vlab.setFixedWidth(76)
+        vrow.addWidget(vlab)
+        self._voice_vol = QSlider(Qt.Orientation.Horizontal)
+        self._voice_vol.setRange(0, 100)
+        self._voice_vol.setValue(int(cfg.get("volume") or 80))
+        self._voice_vol.setMinimumWidth(200)
+        vrow.addWidget(self._voice_vol, 1)
+        self._voice_vol_box = QSpinBox()
+        self._voice_vol_box.setRange(0, 100)
+        self._voice_vol_box.setValue(int(cfg.get("volume") or 80))
+        self._voice_vol_box.setFixedWidth(80)
+        vrow.addWidget(self._voice_vol_box)
+        lay.addLayout(vrow)
+        lay.addWidget(self._sub_hint("0 静音，100 最大。"))
+
+        def from_slider(v):
+            if self._voice_vol_box.value() != v:
+                self._voice_vol_box.blockSignals(True)
+                self._voice_vol_box.setValue(int(v))
+                self._voice_vol_box.blockSignals(False)
+            self._set_voice({"volume": int(v)})
+
+        def from_box(v):
+            if self._voice_vol.value() != v:
+                self._voice_vol.blockSignals(True)
+                self._voice_vol.setValue(int(v))
+                self._voice_vol.blockSignals(False)
+            self._set_voice({"volume": int(v)})
+
+        self._voice_vol.valueChanged.connect(from_slider)
+        self._voice_vol_box.valueChanged.connect(from_box)
+
+        # 测试
+        lay.addSpacing(8)
+        trow = QHBoxLayout()
+        trow.setContentsMargins(22, 0, 0, 0)
+        self._voice_test_btn = QPushButton("测试语音")
+        self._voice_test_btn.setToolTip("让宠物念一句测试台词")
+        self._voice_test_btn.clicked.connect(self._voice_test)
+        trow.addWidget(self._voice_test_btn)
+        trow.addStretch(1)
+        lay.addLayout(trow)
+
+        self._voice_status = QLabel("")
+        self._voice_status.setWordWrap(True)
+        self._voice_status.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(self._voice_status)
+        self._refresh_voice_status()
+        lay.addStretch(1)
+
+    def _set_voice(self, patch):
+        try:
+            self.app.save_voice_cfg(patch)
+            self._refresh_voice_status()
+        except Exception as ex:
+            log("[设置] 保存语音配置失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _refresh_voice_status(self):
+        try:
+            cfg = self.app.voice_cfg()
+            if not cfg.get("enabled"):
+                self._voice_status.setText("未启用")
+                return
+            self._voice_status.setText(
+                "已启用 · %s · 音量 %d%%"
+                % (cfg.get("url"), cfg.get("volume", 80)))
+        except Exception:
+            pass
+
+    def _voice_test(self):
+        """念一句测试台词（走完整链路，结果写状态栏）。"""
+        cfg = self.app.voice_cfg()
+        if not cfg.get("enabled"):
+            self._voice_status.setText("先勾选「启用语音」再测试")
+            return
+        self._voice_status.setText("…正在请求语音服务（首次约 15 秒）")
+        try:
+            ok = self.app.speak_voice("哼，笨蛋主人，听见了吗？")
+            if not ok:
+                self._voice_status.setText(
+                    "✗ 请求未发出（服务地址为空或冷却中）")
+            else:
+                self._voice_status.setText("…已发送，正在生成（看日志确认）")
+        except Exception as ex:
+            self._voice_status.setText("✗ 失败：%s" % ex)
 
     # ---------- 主动搭话页 ----------
     def _build_proactive_page(self, lay):

@@ -2271,6 +2271,13 @@ def default_config():
             "cooldown_min": 15,
             "daily_max": 8,
         },
+        # 语音（Edge-TTS + RVC 音色转换，走外部推理服务）
+        "voice": {
+            "enabled": False,        # 默认关，服务没起不请求
+            "url": "http://127.0.0.1:9880",
+            "timeout": 25,
+            "volume": 80,
+        },
         # 「主动搭话」（模型生成，工作时间段内发呆时触发）
         # 具体默认值由 proactive.default_cfg() 提供，这里只放最小占位
         "proactive_ai": {},
@@ -2675,6 +2682,13 @@ def migrate_and_validate(raw):
                 issues.append("proactive_cfg.%s" % _k)
     elif pc is not None:
         issues.append("proactive_cfg")
+
+    # voice：语音服务配置
+    _vc = raw.get("voice")
+    if isinstance(_vc, dict):
+        cfg["voice"] = _vc
+    elif _vc is not None:
+        issues.append("voice")
 
     # proactive_ai：主动搭话（结构复杂，交给 proactive.normalize_cfg 校验）
     _pai = raw.get("proactive_ai")
