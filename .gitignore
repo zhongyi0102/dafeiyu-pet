@@ -29,7 +29,7 @@ sprites/anim/_bak_*/
 sprites/anim/_bak_*
 
 # 测试脚本临时文件
-_*.py
+/*_*.py
 test_*.py
 !test_physics.py
 
@@ -70,3 +70,8 @@ tools/voxcpm_error.log
 
 # 本地放 songs/*.wav，叫它唱歌时会优先播放
 cover_cache/
+
+# Node 残留（本项目无 package.json，node_modules 不该入库）
+node_modules/
+package-lock.json
+look_shots/
