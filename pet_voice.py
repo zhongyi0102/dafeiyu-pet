@@ -449,6 +449,23 @@ def list_songs():
     return out
 
 
+def song_lyrics(song_name):
+    """读曲目同名 .txt 歌词（没有返回空串）。"""
+    d = songs_dir()
+    if not song_name or not os.path.isdir(d):
+        return ""
+    for ext in (".txt", ".lrc"):
+        p = os.path.join(d, song_name + ext)
+        if os.path.exists(p):
+            try:
+                # utf-8-sig 会自动去掉 BOM
+                with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+                    return f.read().strip()
+            except Exception:
+                return ""
+    return ""
+
+
 def pick_song(text=""):
     """按文本里的歌名挑一首；没匹配就随机。返回 (名字, 路径) 或 (None, None)。"""
     songs = list_songs()
