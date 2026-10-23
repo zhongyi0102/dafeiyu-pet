@@ -69,6 +69,24 @@ _SING_WORDS = (
 )
 
 
+_ACTION_RE = None   # 延迟编译
+
+
+def strip_actions(text):
+    """剥掉括号舞台动作：（捂脸）（小声）【表情】等。
+
+    唱歌/念台词时这些指令不该被念出来。全剥完为空则返回空串。
+    """
+    global _ACTION_RE
+    if _ACTION_RE is None:
+        import re
+        _ACTION_RE = re.compile(
+            r"[（(【\[][^（）()【\]】]{0,40}[）)】\]]")
+    t = _ACTION_RE.sub("", text or "")
+    # 压缩多余空白
+    return " ".join(t.split()).strip() if t else ""
+
+
 def is_sing_request(*texts):
     """判断这轮是否在要求「唱/念出来」（决定要不要用语音）。"""
     blob = " ".join(str(t or "") for t in texts).lower()
@@ -291,15 +309,28 @@ class VoicePlayer:
 
     # ---- 对外 ----
     def speak(self, text):
-        """把一句话变成语音播放（网络+播放都在子线程做，绝不卡 UI）。"""
+        """把一句话变成语音播放（网络+播放都在子线程做，绝不卡 UI）。
+
+        超长文本会截断（不是拒绝）；被跳过时都记日志，方便排查。
+        """
         cfg = self._cfg_getter()
         if not cfg.get("enabled"):
             return False
-        text = (text or "").strip()
-        if not text or len(text) > 200:
+        # 念之前剥掉括号舞台动作：模型回复常带（捂脸）（小声）等，
+        # 念出来很怪；剥完为空则不念
+        text = strip_actions(text)
+        if not text:
+            log("[语音] 跳过：剥掉括号动作后没有可念的内容")
             return False
+        # 语音不受 token 限制：整段都念，只留一个防呆上限（2000 字）
+        # 防止异常超长文本把 CPU 推理拖死
+        if len(text) > 2000:
+            log("[语音] 文本过长 %d 字，按 2000 字截断" % len(text))
+            text = text[:2000]
         now = time.time()
         if now - self._last_ok_ts < self._cooldown:
+            log("[语音] 跳过：冷却中（%.1f 秒）"
+                % (self._cooldown - (now - self._last_ok_ts)))
             return False
 
         import threading
