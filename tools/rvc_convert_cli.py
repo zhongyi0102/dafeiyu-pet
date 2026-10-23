@@ -4,24 +4,34 @@ r"""rvc_convert_cli.py — 单个音频文件的 RVC 换音色（命令行）
 用 RVC 官方 VC 流程（与 rvc_server.py 一致）。
 
 用法：
-  E:\AI\rvc311\Scripts\python.exe rvc_convert_cli.py <输入音频> <输出wav> \
+  E:\AI\engines\rvc311\Scripts\python.exe rvc_convert_cli.py <输入音频> <输出wav> \
       [--pitch 0] [--speaker 0]
 
 依赖：
-  E:\AI\rvc-src（官方源码 + rmvpe + hubert_base）
-  E:\AI\rvc-models\xiaoxiao.pth（音色）
+  E:\AI\src\rvc-src（官方源码 + rmvpe + hubert_base）
+  E:\AI\models\rvc\xiaoxiao.pth（音色）
 """
 import argparse
 import os
 import sys
 
-RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\rvc-src")
+RVC_SRC = os.environ.get("RVC_SRC", r"E:\AI\src\rvc-src")
 MODEL_PATH = os.environ.get(
-    "RVC_MODEL", r"E:\AI\rvc-models\xiaoxiao.pth")
+    "RVC_MODEL", r"E:\AI\models\rvc\xiaoxiao.pth")
 
 
 def log(msg):
-    print("[rvc-cli] %s" % msg, flush=True)
+    """打印日志（兼容 GBK 控制台：编码失败时替换字符，绝不因此崩溃）。"""
+    try:
+        print("[rvc-cli] %s" % msg, flush=True)
+    except UnicodeEncodeError:
+        import sys as _s
+        try:
+            _s.stdout.buffer.write(
+                ("[rvc-cli] %s\n" % msg).encode("utf-8", "replace"))
+            _s.stdout.buffer.flush()
+        except Exception:
+            pass
 
 
 def main():

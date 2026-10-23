@@ -209,8 +209,8 @@ def _server_script():
                         "tools", "rvc_server.py")
 
 
-SERVER_PY = r"E:\AI\rvc311\Scripts\python.exe"
-VOX_PY = r"E:\AI\voxcpm-env\Scripts\python.exe"
+SERVER_PY = r"E:\AI\engines\rvc311\Scripts\python.exe"
+VOX_PY = r"E:\AI\engines\voxcpm-env\Scripts\python.exe"
 SERVER_PORT_DEFAULT = 9880
 VOX_PORT_DEFAULT = 9881
 
