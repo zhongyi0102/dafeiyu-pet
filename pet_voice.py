@@ -39,9 +39,12 @@ DEFAULT_VOICE_CFG = {
     "enabled": False,          # 默认关（外部服务没搭好前不请求）
     # engine: "edge"   = Edge-TTS + RVC（快，2 秒）
     #         "voxcpm" = VoxCPM2 直出（慢，约 3 分钟，48kHz 高音质）
+    #         "yin1"   = GPT-SoVITS 直出（CPU 下约为音频时长的 1.5 倍，
+    #                    离线、不需 Edge-TTS，音色由 GPT-SoVITS 模型决定）
     "engine": "edge",
     "url": "http://127.0.0.1:9880",        # RVC 服务
     "vox_url": "http://127.0.0.1:9881",    # VoxCPM2 服务
+    "gpt_url": "http://127.0.0.1:9882",    # GPT-SoVITS 服务（yin1 音色）
     "vox_steps": 24,                       # VoxCPM 推理步数（少=快）
     "vox_control": "",                     # 空=用服务端默认音色描述
     "timeout": 20,
@@ -59,8 +62,10 @@ def normalize_voice_cfg(raw):
         d["url"] = raw["url"].strip().rstrip("/")
     if isinstance(raw.get("vox_url"), str) and raw["vox_url"].strip():
         d["vox_url"] = raw["vox_url"].strip().rstrip("/")
+    if isinstance(raw.get("gpt_url"), str) and raw["gpt_url"].strip():
+        d["gpt_url"] = raw["gpt_url"].strip().rstrip("/")
     eng = raw.get("engine")
-    if eng in ("edge", "voxcpm"):
+    if eng in ("edge", "voxcpm", "yin1"):
         d["engine"] = eng
     if isinstance(raw.get("vox_control"), str):
         d["vox_control"] = raw["vox_control"]
@@ -219,8 +224,11 @@ def _server_script():
 
 SERVER_PY = r"E:\AI\dafeiyu-voice\engines\rvc311\Scripts\python.exe"
 VOX_PY = r"E:\AI\dafeiyu-voice\engines\voxcpm-env\Scripts\python.exe"
+# GPT-SoVITS（yin1 音色）用独立环境，与上面两个互不影响
+GPT_PY = r"E:\AI\voice-models\yin1\env311\Scripts\python.exe"
 SERVER_PORT_DEFAULT = 9880
 VOX_PORT_DEFAULT = 9881
+GPT_PORT_DEFAULT = 9882
 
 
 def is_server_running(url="http://127.0.0.1:9880", timeout=2.0,
@@ -372,6 +380,90 @@ def start_vox_server(url="http://127.0.0.1:9881", wait=180):
     return False, "启动超时（%d 秒），看 tools/voxcpm_server.log" % wait
 
 
+# ---------- GPT-SoVITS（yin1 音色） ----------
+def _gpt_script():
+    import sys
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+        cand = os.path.join(base, "tools", "gptsovits_server.py")
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "tools", "gptsovits_server.py")
+
+
+def start_gpt_server(url="http://127.0.0.1:9882", wait=60):
+    """后台启动 GPT-SoVITS 服务（yin1 音色）。返回 (ok, msg)。
+
+    全部在本机跑，不需要联网、不依赖 Edge-TTS。模型常驻，首次加载较慢。
+    """
+    if is_server_running(url):
+        return True, "GPT-SoVITS 服务已在运行"
+    if is_remote(url):
+        return False, ("远程 GPT-SoVITS %s 无响应——请确认服务已启动、"
+                       "防火墙放行 9882 端口" % url)
+    script = _gpt_script()
+    if not os.path.exists(script):
+        return False, "找不到服务脚本：%s" % script
+    if not os.path.exists(GPT_PY):
+        return False, "找不到 GPT-SoVITS 环境：%s" % GPT_PY
+    if _port_busy(url):
+        return False, "端口已被占用（可能已有实例在启动中）"
+    try:
+        import subprocess
+        d = os.path.dirname(script)
+        log_path = os.path.join(d, "gptsovits_server.log")
+        logf = open(log_path, "ab")
+        subprocess.Popen(
+            [GPT_PY, "-u", script],
+            cwd=d, stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as ex:
+        return False, "启动失败: %s: %s" % (type(ex).__name__, ex)
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if is_server_running(url, timeout=3.0):
+            # 再等模型加载就绪；没等到也不算失败，首个请求会自己加载
+            t1 = time.time()
+            while time.time() - t1 < wait * 3:
+                if is_server_running(url, want_loaded=True, timeout=3.0):
+                    return True, "GPT-SoVITS 服务已启动（模型已就绪）"
+                time.sleep(1.0)
+            return True, "GPT-SoVITS 服务已启动（模型加载中，首次合成稍慢）"
+        time.sleep(1.0)
+    return False, "启动超时（%d 秒），看 tools/gptsovits_server.log" % wait
+
+
+def gptsovits_tts(gpt_url, text, timeout=300):
+    """GPT-SoVITS 直出语音（文本 → 音色，不经 Edge-TTS）。返回 (wav_bytes, err)。
+
+    CPU 下耗时约为音频时长的 1.5 倍，长句要给足超时。
+    """
+    import requests
+    text = (text or "").strip()
+    if not text:
+        return None, "空文本"
+    try:
+        s = requests.Session()
+        s.trust_env = False          # 本机服务，绕过系统代理直连
+        r = s.post((gpt_url or "").rstrip("/") + "/tts",
+                   json={"text": text}, timeout=timeout)
+    except Exception as ex:
+        msg = "%s: %s" % (type(ex).__name__, str(ex)[:80])
+        if "ConnectionError" in type(ex).__name__ or "refused" in str(ex):
+            msg += "（GPT-SoVITS 服务没启动？点「启动语音服务」）"
+        return None, msg
+    if r.status_code != 200:
+        try:
+            msg = r.json().get("detail", "")
+        except Exception:
+            msg = r.text[:100]
+        return None, "HTTP %s: %s" % (r.status_code, msg)
+    if not r.content or len(r.content) < 100:
+        return None, "空音频"
+    return r.content, ""
+
+
 def rvc_convert(url, wav_bytes, timeout=120):
     """把基准语音发给服务做 RVC 音色转换。返回 (wav_bytes, err)。
 
@@ -456,6 +548,12 @@ def synthesize(cfg, text):
             control=cfg.get("vox_control") or "",
             steps=cfg.get("vox_steps") or 0,
             timeout=max(300, int(cfg.get("timeout", 120) or 120) * 5))
+    if eng == "yin1":
+        # GPT-SoVITS 直出。CPU 慢，超时按文本长度放宽。
+        base = max(180, int(cfg.get("timeout", 120) or 120) * 4)
+        return gptsovits_tts(
+            cfg.get("gpt_url"), text,
+            timeout=max(base, 60 + len(text) * 4))
     # 默认 edge + rvc
     return tts_rvc(cfg.get("url"), text,
                    timeout=max(120, int(cfg.get("timeout", 120) or 120)))

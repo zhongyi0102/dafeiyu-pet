@@ -2485,6 +2485,8 @@ class ChatWindow(QWidget):
                     % sing_query)
             except Exception:
                 self._cover_status_bubble = None
+            # 记住发起翻唱的会话：完成时写回这个会话（期间用户可能切走）
+            self._cover_session_id = self.current_id
             self._cover_started = time.time()
             # 计时器：每 2 秒刷新已用时间，让用户确认没有卡死
             self._cover_timer = getattr(self, "_cover_timer", None)
@@ -2569,7 +2571,12 @@ class ChatWindow(QWidget):
             self._cover_status_bubble = None
 
     def _on_cover_ready(self, path, name, artist, err):
-        """翻唱完成（主线程）：先移除状态气泡，再插语音条 + 文字。"""
+        """翻唱完成（主线程）：写回发起翻唱的那个会话。
+
+        翻唱约 5 分钟，期间用户可能切换 / 新建会话。
+        完成时：先记下用户当前在哪，切回发起会话写入，
+        再把界面切回用户所在的会话（如果用户已切走）。
+        """
         self._close_cover_status()
         pending = getattr(self, "_pending_voice_text", "")
         self._pending_voice_text = ""
@@ -2579,43 +2586,58 @@ class ChatWindow(QWidget):
         except Exception:
             pass
 
-        if err or not path:
-            log("[翻唱] 失败：%s" % (err or "空路径"))
-            # 失败时至少把文字补上
-            if pending:
-                try:
+        # 发起翻唱时的会话（可能已被用户切走）
+        origin_sid = getattr(self, "_cover_session_id", None)
+        user_sid = self.current_id          # 用户当前所在会话
+        need_switch_back = bool(origin_sid) and origin_sid != user_sid
+
+        def _write_to_origin():
+            """在发起会话里写入语音条 + 歌词。"""
+            if err or not path:
+                log("[翻唱] 失败：%s" % (err or "空路径"))
+                if pending:
                     self._add_bubble("assistant", pending)
                     self.messages.append({"role": "assistant",
                                           "content": pending,
                                           "ts": time.time()})
                     self.save_history()
+                return
+            try:
+                import wave as _wave
+                sec = 0.0
+                try:
+                    with _wave.open(path, "rb") as w:
+                        sec = w.getnframes() / float(w.getframerate() or 1)
                 except Exception:
                     pass
-            return
-        try:
-            import os as _os
-            import wave as _wave
-            sec = 0.0
-            try:
-                with _wave.open(path, "rb") as w:
-                    sec = w.getnframes() / float(w.getframerate() or 1)
-            except Exception:
-                pass
-            title = ("🎵 %s - %s" % (name, artist)) if artist else (
-                "🎵 %s" % (name or "翻唱"))
-            self.append_external("assistant", title,
-                                 voice_path=path, voice_sec=sec,
-                                 voice_text=pending)
-            log("[翻唱] 完成：%s（%.1f 秒）" % (title, sec))
-            if pending:
-                self._add_bubble("assistant", pending)
-                self.messages.append({"role": "assistant",
-                                      "content": pending,
-                                      "ts": time.time()})
-                self.save_history()
-        except Exception as ex:
-            log("[翻唱] 插入失败: %s: %s" % (type(ex).__name__, ex),
-                logging.WARNING)
+                title = ("🎵 %s - %s" % (name, artist)) if artist else (
+                    "🎵 %s" % (name or "翻唱"))
+                self.append_external("assistant", title,
+                                     voice_path=path, voice_sec=sec,
+                                     voice_text=pending)
+                log("[翻唱] 完成：%s（%.1f 秒）" % (title, sec))
+                if pending:
+                    self._add_bubble("assistant", pending)
+                    self.messages.append({"role": "assistant",
+                                          "content": pending,
+                                          "ts": time.time()})
+                    self.save_history()
+            except Exception as ex:
+                log("[翻唱] 插入失败: %s: %s" % (type(ex).__name__, ex),
+                    logging.WARNING)
+
+        if need_switch_back:
+            # 同步用户当前会话 → 切回发起会话写入 → 再切回用户会话
+            self._sync_session(touch=False)
+            self._activate_session(origin_sid)
+            _write_to_origin()
+            self._sync_session(touch=False)
+            self._activate_session(user_sid)
+            self._render_current_session()
+            log("[翻唱] 已写回发起会话 %s（用户当前在 %s）"
+                % (origin_sid, user_sid))
+        else:
+            _write_to_origin()
 
     def _on_voice_ready(self, path, sec, err, text):
         """语音文件就绪（主线程）：先插可点语音条，再补文字回复。

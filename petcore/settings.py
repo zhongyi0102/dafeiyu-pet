@@ -3151,6 +3151,8 @@ class SettingsWindow(QDialog):
         self._voice_engine.addItem("Edge-TTS + RVC（快，约 2 秒）", "edge")
         self._voice_engine.addItem(
             "VoxCPM2（慢，约 3 分钟，48kHz 高音质）", "voxcpm")
+        self._voice_engine.addItem(
+            "GPT-SoVITS / yin1（离线直出，CPU 约为音频时长 1.5 倍）", "yin1")
         _eng = cfg.get("engine") or "edge"
         for i in range(self._voice_engine.count()):
             if self._voice_engine.itemData(i) == _eng:
@@ -3164,7 +3166,9 @@ class SettingsWindow(QDialog):
         lay.addLayout(erow)
         lay.addWidget(self._sub_hint(
             "Edge-TTS 快但只会朗读；VoxCPM2 音质好、能克隆音色，"
-            "但 CPU 下一句话要几分钟。"))
+            "但 CPU 下一句话要几分钟；\n"
+            "GPT-SoVITS(yin1) 离线直出、音色稳定，CPU 下约为音频时长的 1.5 倍，"
+            "不需要 Edge-TTS 也不联网。"))
 
         # 服务地址
         row = QHBoxLayout()
@@ -3180,6 +3184,23 @@ class SettingsWindow(QDialog):
         lay.addLayout(row)
         lay.addWidget(self._sub_hint(
             "默认 http://127.0.0.1:9880。服务在另一台机器时改成那台的 IP。"))
+
+        # GPT-SoVITS（yin1）服务地址：仅当引擎选 yin1 时使用
+        grow = QHBoxLayout()
+        grow.setContentsMargins(22, 0, 0, 0)
+        glab = QLabel("GPT 地址")
+        glab.setFixedWidth(76)
+        grow.addWidget(glab)
+        self._voice_gpt_url = QLineEdit(str(cfg.get("gpt_url") or ""))
+        self._voice_gpt_url.setFixedHeight(30)
+        self._voice_gpt_url.editingFinished.connect(
+            lambda: self._set_voice(
+                {"gpt_url": self._voice_gpt_url.text().strip()}))
+        grow.addWidget(self._voice_gpt_url, 1)
+        lay.addLayout(grow)
+        lay.addWidget(self._sub_hint(
+            "默认 http://127.0.0.1:9882。GPT-SoVITS（yin1 音色）专用，"
+            "只在引擎选它时生效；本机离线推理，不需要 Edge-TTS。"))
 
         # 音量
         vrow = QHBoxLayout()
@@ -3223,8 +3244,10 @@ class SettingsWindow(QDialog):
         trow.setContentsMargins(22, 0, 0, 0)
         self._voice_start_btn = QPushButton("启动语音服务")
         self._voice_start_btn.setToolTip(
-            "在本机拉起 RVC 语音转换服务（独立窗口）。"
-            "启动后语音功能才能用。")
+            "按当前引擎拉起对应的本机语音服务（独立窗口）。"
+            "启动后语音功能才能用。\n"
+            "edge → RVC(9880)；voxcpm → VoxCPM2(9881)；"
+            "yin1 → GPT-SoVITS(9882)。")
         self._voice_start_btn.clicked.connect(self._voice_start_server)
         trow.addWidget(self._voice_start_btn)
         self._voice_test_btn = QPushButton("测试语音")
@@ -3261,29 +3284,50 @@ class SettingsWindow(QDialog):
             if not cfg.get("enabled"):
                 self._voice_status.setText("未启用")
                 return
+            _eng = cfg.get("engine") or "edge"
+            if _eng == "yin1":
+                _addr = cfg.get("gpt_url")
+            elif _eng == "voxcpm":
+                _addr = cfg.get("vox_url")
+            else:
+                _addr = cfg.get("url")
             self._voice_status.setText(
-                "已启用 · %s · 音量 %d%%"
-                % (cfg.get("url"), cfg.get("volume", 80)))
+                "已启用 · %s · %s · 音量 %d%%"
+                % (_eng, _addr, cfg.get("volume", 80)))
         except Exception:
             pass
 
     def _voice_start_server(self):
-        """启动语音服务：子线程拉起 + 轮询，结果写状态栏。"""
+        """启动语音服务：子线程拉起 + 轮询，结果写状态栏。
+
+        按当前引擎选对应服务，避免选 yin1 却去拉 RVC。
+        """
         btn = getattr(self, "_voice_start_btn", None)
         if btn is not None:
             btn.setEnabled(False)
+        _eng = (self.app.voice_cfg().get("engine") or "edge")
         self._voice_status.setText("…正在启动语音服务（首次需加载模型）")
 
         import threading
         import pet_voice as V
 
         result = {}
+        cfg = self.app.voice_cfg()
 
         def work():
             try:
-                ok, msg = V.start_server(
-                    self.app.voice_cfg().get("url") or
-                    "http://127.0.0.1:9880", wait=40)
+                if _eng == "yin1":
+                    ok, msg = V.start_gpt_server(
+                        cfg.get("gpt_url") or "http://127.0.0.1:9882",
+                        wait=60)
+                elif _eng == "voxcpm":
+                    ok, msg = V.start_vox_server(
+                        cfg.get("vox_url") or "http://127.0.0.1:9881",
+                        wait=180)
+                else:
+                    ok, msg = V.start_server(
+                        cfg.get("url") or "http://127.0.0.1:9880",
+                        wait=40)
                 result["ok"] = ok
                 result["msg"] = msg
             except Exception as ex:
@@ -3314,26 +3358,39 @@ class SettingsWindow(QDialog):
         super().timerEvent(ev)
 
     def _voice_test(self):
-        """测试语音：子线程走完整链路，成功则真的播放，失败给明确原因。"""
+        """测试语音：子线程走完整链路，成功则真的播放，失败给明确原因。
+
+        按当前引擎选对应服务，避免选 yin1 却去测 RVC。
+        """
         cfg = self.app.voice_cfg()
         if not cfg.get("enabled"):
             self._voice_status.setText("先勾选「启用语音」再测试")
             return
-        url = (cfg.get("url") or "").strip()
+        _eng = cfg.get("engine") or "edge"
+        if _eng == "yin1":
+            url = (cfg.get("gpt_url") or "").strip()
+            wait_hint = "首次约 20 秒"
+        elif _eng == "voxcpm":
+            url = (cfg.get("vox_url") or "").strip()
+            wait_hint = "VoxCPM 较慢，可能要几分钟"
+        else:
+            url = (cfg.get("url") or "").strip()
+            wait_hint = "首次约 12 秒"
         if not url:
             self._voice_status.setText("✗ 请先填服务地址")
             return
         btn = getattr(self, "_voice_test_btn", None)
         if btn is not None:
             btn.setEnabled(False)
-        self._voice_status.setText("…正在生成（首次约 12 秒，请稍等）")
+        self._voice_status.setText("…正在生成（%s，请稍等）" % wait_hint)
 
         import threading
 
         def work():
             import pet_voice as V
             t0 = time.time()
-            out, err = V.tts_rvc(url, "哼，笨蛋主人，听见了吗？")
+            # 走当前引擎的合成路径，与日常使用完全一致
+            out, err = V.synthesize(cfg, "哼，笨蛋主人，听见了吗？")
             dt = time.time() - t0
             self._voice_test_done.emit(out, err, dt)
 

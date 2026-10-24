@@ -2282,6 +2282,10 @@ class PetApp(QObject):
                         ok, smsg = VOICE.start_vox_server(
                             cfg.get("vox_url") or "http://127.0.0.1:9881",
                             wait=180)
+                    elif _eng == "yin1":
+                        ok, smsg = VOICE.start_gpt_server(
+                            cfg.get("gpt_url") or "http://127.0.0.1:9882",
+                            wait=60)
                     else:
                         ok, smsg = VOICE.start_server(
                             cfg.get("url") or "http://127.0.0.1:9880",
