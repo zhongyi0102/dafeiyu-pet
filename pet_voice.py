@@ -81,11 +81,20 @@ def normalize_voice_cfg(raw):
 
 
 # 唱歌/发声意图的关键词（只有命中这些才用语音，日常一律文字）
+# 唱歌类触发词：命中这些才会走「翻唱流水线」（搜歌+下载+换音色）
 _SING_WORDS = (
     "唱", "唱歌", "唱首", "唱一句", "来一首", "来首", "哼一首", "哼首",
-    "哼个", "哼一段", "唱一段", "唱个", "唱歌给我听", "念给我听",
-    "念一下", "说给我听", "语音", "读出来", "念念",
+    "哼个", "哼一段", "唱一段", "唱个", "唱歌给我听", "翻唱",
 )
+
+# 说话/念台词类触发词：命中走「普通 TTS」（几秒出声，不搜歌）
+_SPEAK_WORDS = (
+    "语音", "语言", "读出来", "念念", "念一下", "念一段", "念给我听",
+    "说给我听", "说句话", "说一句", "说话", "开口",
+)
+
+# 两组合并：命中任意一组就走语音链路（is_sing_request 用）
+_VOICE_WORDS = _SING_WORDS + _SPEAK_WORDS
 
 
 _ACTION_RE = None   # 延迟编译
@@ -118,6 +127,10 @@ _SING_QUESTION_WORDS = (
     "怎么打开", "怎么关闭", "怎么设置", "在哪里设置", "怎么弄",
     "为什么没有", "怎么不唱", "怎么不说话", "怎么说",
     "语音条", "语音功能", "语音包",
+    # 「语言/说话」类问句（不是让宠物说话，是在讨论语言概念）
+    "语言是什么", "语言怎么", "语言是啥", "什么语言", "哪些语言",
+    "编程语言", "自然语言", "语言模型", "换个语言", "支持什么语言",
+    "支持的语言", "语言设置", "说话是什么", "说话方式",
 )
 
 
@@ -147,21 +160,42 @@ def _has_song_object(text):
     return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in t)
 
 
+def _pass_question_filter(blob):
+    """疑问句过滤：返回 True 表示放行（不是疑问句，或明确点歌）。"""
+    if not any(w in blob for w in _SING_QUESTION_WORDS):
+        return True
+    # 明确点歌的问句放行：「能唱一首指纹吗」
+    return any(w in blob for w in ("唱一首", "唱首", "来一首", "来首",
+                                   "哼一首", "哼个", "唱个", "唱一段"))
+
+
 def is_sing_request(*texts):
     """判断这轮是否在要求「唱/念出来」（决定要不要用语音）。
 
     两道门槛：
-    1. 命中唱歌动词（唱/哼/来一首/念给我听…）
+    1. 命中触发词（唱/哼/来一首/念/语音/语言…）
     2. 排除疑问句（「语音呢」「怎么没声音」是在问功能，不是点歌）
-    注意：纯粹词命中但没有歌名对象的（「唱歌」「来一首」）仍算唱歌
-    请求——走模型写词；但「语音呢」这类疑问句直接不算。
+    注意：唱类和说类都算语音请求；区分用 is_cover_request。
     """
     blob = " ".join(str(t or "") for t in texts).strip()
     if not blob:
         return False
-    # 疑问句优先排除
-    if any(w in blob for w in _SING_QUESTION_WORDS):
-        # 但明确点歌的问句也算：「能唱一首指纹吗」
+    if not _pass_question_filter(blob):
+        return False
+    return any(w in blob for w in _VOICE_WORDS)
+
+
+def is_cover_request(*texts):
+    """判断是否要求「唱歌」（走翻唱流水线），而非普通念台词。
+
+    只有命中唱类动词才算：唱/哼/来一首/翻唱…
+    「用语言说晚上好」「念一下X」「语音说晚安」都是说话，不是唱歌。
+    """
+    blob = " ".join(str(t or "") for t in texts).strip()
+    if not blob:
+        return False
+    if not _pass_question_filter(blob):
+        # 「能唱一首指纹吗」这种问句要放行
         if not any(w in blob for w in ("唱一首", "唱首", "来一首", "来首",
                                        "哼一首", "哼个", "唱个", "唱一段")):
             return False

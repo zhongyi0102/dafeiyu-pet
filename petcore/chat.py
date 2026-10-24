@@ -2645,7 +2645,9 @@ class ChatWindow(QWidget):
                     _last_user = m.get("content") or ""
                     break
             import pet_voice as _V
-            if _V.is_sing_request(_last_user):
+            # 只有「唱歌」意图才搜歌词走翻唱；
+            # 「用语言说X」「念一下X」是说话，走普通 TTS（模型正常回复）
+            if _V.is_sing_request(_last_user) and _V.is_cover_request(_last_user):
                 import lyrics as _LY
                 # 从用户话里提取歌名（去掉"唱""给我听"等）
                 _q = _V.strip_actions(_last_user)
