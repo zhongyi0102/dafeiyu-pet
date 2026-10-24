@@ -416,8 +416,8 @@ class ChatBubble(QFrame):
                 self.voice_pause_btn.setToolTip("播放 / 暂停")
                 self.voice_pause_btn.setFocusPolicy(
                     Qt.FocusPolicy.NoFocus)
-                # 必须连 _play_voice（三态）：_toggle_pause_voice 只处理
-                # 播放中/暂停中，从未播放时点了没反应
+                # 必须连 _play_voice（三态）：连错成只处理暂停/继续的函数时，
+                # 从未播放状态下点击无响应
                 self.voice_pause_btn.clicked.connect(self._play_voice)
                 _vh.addWidget(self.voice_pause_btn, 0)
                 # 波形进度条：可伸缩，占满剩余空间（min-width 0）
@@ -845,9 +845,6 @@ class ChatBubble(QFrame):
         else:
             lab.hide()
 
-    def _voice_label(self):
-        return "\U0001F50A  %d\"" % int(round(self._voice_sec))
-
     def _play_voice(self):
         """播放这条语音。三态：未播 → 播放；播放中 → 暂停；暂停中 → 继续。"""
         try:
@@ -913,15 +910,6 @@ class ChatBubble(QFrame):
             log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
             self._show_voice_error("播放失败")
-
-    def _fmt_time(self, pos_s, dur_s):
-        """mm:ss / mm:ss。"""
-        try:
-            m1, s1 = divmod(int(pos_s), 60)
-            m2, s2 = divmod(int(dur_s), 60)
-            return "%02d:%02d / %02d:%02d" % (m1, s1, m2, s2)
-        except Exception:
-            return "00:00 / 00:00"
 
     def _seek_voice(self, ms):
         """波形条拖动定位。"""
@@ -1015,22 +1003,6 @@ class ChatBubble(QFrame):
         except Exception as ex:
             log("[聊天] 转文字失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
-
-    def _toggle_pause_voice(self):
-        """⏸ 按钮：暂停 / 继续。"""
-        player = self._voice_player()
-        if player is None:
-            return
-        if player.is_playing():
-            if player.pause():
-                self._playing_now = False
-                self._paused_now = True
-        elif player.is_paused():
-            if player.resume():
-                self._playing_now = True
-                self._paused_now = False
-                self._start_voice_watch()
-        self._sync_pause_btn()
 
     def _sync_pause_btn(self):
         """播放钮图标跟随状态：待播/播放中=⏸（可暂停），暂停中=▶。"""
@@ -1705,10 +1677,6 @@ class ChatWindow(QWidget):
             a1.setEnabled(False)
             a2.setEnabled(False)
         m.exec(self.session_list.viewport().mapToGlobal(pos))
-
-    def _on_session_changed(self, idx):
-        # 兼容旧调用点（下拉框时代的方法名）
-        self._on_session_row_changed(idx)
 
     def _switch_session(self, sid):
         if self.busy or not sid or sid == self.current_id:
