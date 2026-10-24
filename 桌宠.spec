@@ -132,6 +132,15 @@ try:
 except Exception as _ex:
     print("[spec] Qt Multimedia 收集失败: %s" % _ex)
 
+# ===== 翻唱用的 tools 脚本 =====
+# 翻唱流水线在外部 RVC 环境（E:\AI\...）里跑，但入口脚本必须随 exe 走，
+# 否则 exe 里「分离」和「换音色」两步会因找不到脚本而失败。
+# 只打这两个（各约 1-4KB），其他 tools/ 下的开发脚本不打。
+datas += [
+    ("tools/_separate.py", "tools"),
+    ("tools/rvc_convert_cli.py", "tools"),
+]
+
 # 图标 + **素材包**（单文件核心）
 datas += [
     ("icon.ico", "."),

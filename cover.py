@@ -38,8 +38,81 @@ def _python():
 
 
 def _tools(name):
-    base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "tools", name)
+    """定位 tools/ 下的脚本，按优先级查找并记录来源。
+
+    打包后（frozen）：
+      1. exe 同级 tools/     —— 用户可自行更新脚本，优先
+      2. _MEIPASS/tools/     —— exe 内置
+      3. 源码路径            —— 兜底
+    源码运行：直接用本文件旁的 tools/。
+    """
+    cands = []
+    frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        cands.append(("exe同级", os.path.join(exe_dir, "tools", name)))
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            cands.append(("_MEIPASS", os.path.join(meipass, "tools", name)))
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    cands.append(("源码", os.path.join(src_dir, "tools", name)))
+
+    for src, p in cands:
+        if os.path.exists(p):
+            log("[翻唱] tools 脚本命中(%s): %s" % (src, p))
+            return p
+    # 全都没找到：返回首选路径，调用方据此报错并显示期望路径
+    tried = "; ".join("%s=%s" % (s, p) for s, p in cands)
+    log("[翻唱] tools 脚本未找到: %s（已尝试: %s）" % (name, tried),
+        logging.WARNING)
+    return cands[0][1]
+
+
+def _child_env():
+    """给外部 venv 的子进程准备干净环境。
+
+    exe 运行时 os.environ 里混入了 PyInstaller 注入的变量
+    （_MEIPASS、_PYI_*、PYTHONHOME/PYTHONPATH 等），会让外部 venv
+    加载到错误的 DLL / 标准库。这里剔除它们，源码运行时原样返回。
+    """
+    env = dict(os.environ)
+    if not getattr(sys, "frozen", False):
+        return env
+    # PyInstaller 注入的键
+    for k in list(env.keys()):
+        ku = k.upper()
+        if ku.startswith("_PYI_") or ku == "_MEIPASS" or ku == "_MEIPASS2":
+            env.pop(k, None)
+    # 会干扰外部解释器的 Python 环境变量
+    for k in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+              "PYTHONEXECUTABLE", "PYTHONUSERBASE", "PYTHONNOUSERSITE"):
+        env.pop(k, None)
+    # 从 PATH 里剔除 exe 解包目录（防止优先加载到 exe 自带的 DLL）
+    meipass = getattr(sys, "_MEIPASS", None)
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    drop = set()
+    for p in (meipass, exe_dir):
+        if p:
+            drop.add(os.path.normcase(os.path.normpath(p)))
+    parts = env.get("PATH", "").split(os.pathsep)
+    kept = [p for p in parts
+            if os.path.normcase(os.path.normpath(p)) not in drop]
+    if kept:
+        env["PATH"] = os.pathsep.join(kept)
+    log("[翻唱] 子进程环境已净化（移除 %d 个 PyInstaller 变量）"
+        % (len(os.environ) - len(env)))
+    return env
+
+
+def _check_python():
+    """检查外部 RVC 解释器是否存在。返回 (ok, 错误信息)。"""
+    py = _python()
+    if os.path.exists(py):
+        return True, ""
+    msg = ("找不到 RVC 环境的 Python: %s；翻唱需要外部语音环境"
+           "（torch + RVC 源码 + 音色模型），请确认该目录存在。" % py)
+    log("[翻唱] %s" % msg, logging.ERROR)
+    return False, "找不到 RVC 环境（%s）" % py
 
 
 def make_cover(query, progress=None, timeout=1800):
@@ -102,16 +175,23 @@ def make_cover(query, progress=None, timeout=1800):
 
 def _separate(mp3_path, out_dir):
     """UVR5 分离。返回 (vocals, instrumental, err)。"""
+    okpy, pyerr = _check_python()
+    if not okpy:
+        return "", "", pyerr
     script = _tools("_separate.py")
     if not os.path.exists(script):
-        return "", "", "找不到分离脚本"
+        msg = "找不到分离脚本: %s" % script
+        log("[翻唱] %s" % msg, logging.ERROR)
+        return "", "", msg
     try:
         r = subprocess.run(
             [_python(), "-u", script, mp3_path, out_dir],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=900,
+            errors="replace", timeout=900, env=_child_env(),
             creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as ex:
+        log("[翻唱] 分离子进程异常: %s: %s"
+            % (type(ex).__name__, ex), logging.ERROR)
         return "", "", "%s: %s" % (type(ex).__name__, ex)
     if r.returncode != 0:
         return "", "", (r.stderr or r.stdout or "")[-300:]
@@ -131,17 +211,24 @@ def _separate(mp3_path, out_dir):
 
 def _convert(vocals, out_path):
     """RVC 换音色。"""
+    okpy, pyerr = _check_python()
+    if not okpy:
+        return pyerr
     script = _tools("rvc_convert_cli.py")
     if not os.path.exists(script):
-        return "找不到 RVC 转换脚本"
+        msg = "找不到 RVC 转换脚本: %s" % script
+        log("[翻唱] %s" % msg, logging.ERROR)
+        return msg
     try:
         r = subprocess.run(
             [_python(), "-u", script, vocals, out_path,
              "--protect", "0.5"],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=1200,
+            errors="replace", timeout=1200, env=_child_env(),
             creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as ex:
+        log("[翻唱] 换音色子进程异常: %s: %s"
+            % (type(ex).__name__, ex), logging.ERROR)
         return "%s: %s" % (type(ex).__name__, ex)
     if r.returncode != 0:
         return (r.stderr or r.stdout or "")[-300:]
