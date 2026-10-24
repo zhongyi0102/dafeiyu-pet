@@ -1645,6 +1645,11 @@ class ChatWindow(QWidget):
         if self._render_from > 0:
             self.msg_layout.insertWidget(0, self.load_more_btn)
         self._repair_voice_msgs()
+        # 找回 cover_cache 里未被引用的翻唱成品（旧版本/异常导致的丢失）
+        try:
+            self._relink_cover_songs()
+        except Exception:
+            pass
         for m in self.messages[self._render_from:]:
             self.render_message(m.get("role", "assistant"),
                                 m.get("content", ""),
@@ -1654,6 +1659,91 @@ class ChatWindow(QWidget):
                                 ts=m.get("ts"))
         self._update_empty_state()
         self._scroll_bottom()
+
+    def _relink_cover_songs(self):
+        """把 cover_cache 里未被引用的翻唱成品挂回聊天历史。
+
+        场景：翻唱在旧版本生成时 voice 引用没写进历史，或者中途异常。
+        按「🎵 歌名」标题就近匹配；完全找不到宿主的跳过（避免乱挂）。
+        每次打开聊天窗口时执行一次。
+        """
+        try:
+            import os as _os
+            base = _os.path.join(_os.path.dirname(
+                _os.path.abspath(__file__)), _os.pardir, "cover_cache")
+            base = _os.path.normpath(base)
+            if not _os.path.isdir(base):
+                return 0
+            # 收集所有已引用的 voice 路径
+            used = set()
+            for s in (self.pet.cfg.get("_chat_sessions_all") or []):
+                pass
+            used = set()
+            for sess in self._all_sessions():
+                for msg in (sess.get("messages") or []):
+                    v = msg.get("voice")
+                    if v:
+                        used.add(_os.path.normcase(_os.path.normpath(v)))
+            # 扫描成品
+            products = []
+            for root, _dirs, files in _os.walk(base):
+                for f in files:
+                    if f.endswith("_翻唱.wav"):
+                        fp = _os.path.join(root, f)
+                        if _os.path.normcase(fp) not in used:
+                            products.append(fp)
+            if not products:
+                return 0
+            # 按修改时间排序（旧→新）
+            products.sort(key=lambda x: _os.path.getmtime(x))
+            relinked = 0
+            for fp in products:
+                fname = _os.path.basename(fp)
+                # 从文件名提取歌名：XXX_YYYYMMDD_HHMMSS_翻唱.wav 或 XXX_翻唱.wav
+                stem = fname[:-len("_翻唱.wav")]
+                song = stem.split("_")[0] if "_" in stem else stem
+                # 找含「🎵 歌名」的 assistant 消息
+                host = None
+                for sess in self._all_sessions():
+                    for msg in (sess.get("messages") or []):
+                        if (msg.get("role") == "assistant"
+                                and not msg.get("voice")
+                                and "🎵" in (msg.get("content") or "")
+                                and song in (msg.get("content") or "")):
+                            host = (sess, msg)
+                            break
+                    if host:
+                        break
+                if host is None:
+                    continue
+                sess, msg = host
+                try:
+                    import wave as _w
+                    with _w.open(fp, "rb") as w:
+                        sec = w.getnframes() / float(w.getframerate() or 1)
+                except Exception:
+                    sec = 1.0
+                msg["voice"] = fp
+                msg["voice_sec"] = max(1.0, sec)
+                relinked += 1
+                log("[翻唱] 找回未引用的成品: %s -> %r" % (fname, song))
+            if relinked:
+                self.save_history()
+                # 重新渲染当前会话，让语音条出现
+                self._render_current_session()
+                log("[翻唱] 共找回 %d 条语音" % relinked)
+            return relinked
+        except Exception as ex:
+            log("[翻唱] 找回失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return 0
+
+    def _all_sessions(self):
+        """所有会话（当前 + 存档）。"""
+        try:
+            return self.sessions or []
+        except Exception:
+            return []
 
     def _repair_voice_msgs(self):
         """修复历史里缺 voice 字段的唱歌消息（老版本写入的）。
