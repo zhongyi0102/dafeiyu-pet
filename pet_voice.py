@@ -620,6 +620,31 @@ class VoicePlayer:
         except Exception:
             return -1
 
+    def set_rate(self, rate):
+        """设置播放倍速（0.5~3.0）。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return False
+            r = max(0.5, min(3.0, float(rate or 1.0)))
+            player.setPlaybackRate(r)
+            log("[语音] 倍速 -> %.2gx" % r)
+            return True
+        except Exception as ex:
+            log("[语音] 设置倍速失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+        return False
+
+    def rate(self):
+        """当前倍速。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return 1.0
+            return float(player.playbackRate() or 1.0)
+        except Exception:
+            return 1.0
+
     def seek_ms(self, ms):
         """跳到指定位置（毫秒）。"""
         try:

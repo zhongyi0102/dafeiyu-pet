@@ -329,7 +329,7 @@ class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
     def __init__(self, role, text="", image_path=None, voice_path=None,
-                 voice_sec=0.0, ts=None):
+                 voice_sec=0.0, ts=None, voice_text=""):
         super().__init__()
         self.role = role
         self.setObjectName("Bubble")
@@ -377,6 +377,7 @@ class ChatBubble(QFrame):
                 from PySide6.QtWidgets import QPushButton
                 import os as _os
                 self._voice_path = voice_path
+                self._voice_text = voice_text or ""
                 sec = float(voice_sec or 0.0)
                 # 优先从 WAV 头读精确时长（估算公式对补齐/采样率会偏差）
                 exact = _wav_duration(voice_path)
@@ -402,30 +403,59 @@ class ChatBubble(QFrame):
                     "QPushButton:pressed{background:#d2e2ff;}")
                 self.voice_btn.clicked.connect(self._play_voice)
                 lay.addWidget(self.voice_btn)
-                # 播放控制条：暂停/继续 + 停止（默认隐藏，播放时出现）
+                # 播放面板：波形进度条 + 控制按钮 + 倍速 + 转文字
                 self.voice_ctrl = QWidget()
                 _vh = QHBoxLayout(self.voice_ctrl)
-                _vh.setContentsMargins(0, 0, 0, 0)
-                _vh.setSpacing(4)
+                _vh.setContentsMargins(0, 2, 0, 0)
+                _vh.setSpacing(6)
                 self.voice_pause_btn = QPushButton("⏸")
                 self.voice_pause_btn.setFixedSize(30, 30)
                 self.voice_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 self.voice_pause_btn.setToolTip("暂停 / 继续")
                 self.voice_pause_btn.clicked.connect(self._toggle_pause_voice)
                 _vh.addWidget(self.voice_pause_btn)
-                self.voice_stop_btn = QPushButton("⏹")
-                self.voice_stop_btn.setFixedSize(30, 30)
-                self.voice_stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.voice_stop_btn.setToolTip("停止")
-                self.voice_stop_btn.clicked.connect(self._stop_voice)
-                _vh.addWidget(self.voice_stop_btn)
-                for _b in (self.voice_pause_btn, self.voice_stop_btn):
+                # 波形进度条（可点击/拖动定位）
+                self.wave_bar = WaveBar(voice_path, sec)
+                self.wave_bar.seekRequested.connect(self._seek_voice)
+                _vh.addWidget(self.wave_bar, 1)
+                # 时间显示
+                self.voice_time = QLabel(self._fmt_time(0, sec))
+                self.voice_time.setStyleSheet(
+                    "color:#8a8f9c;font-size:11px;")
+                _vh.addWidget(self.voice_time)
+                # 倍速按钮（循环切换）
+                self._voice_rates = (1.0, 1.25, 1.5, 2.0, 0.75)
+                self._voice_rate_i = 0
+                self.voice_rate_btn = QPushButton("1.0x")
+                self.voice_rate_btn.setFixedSize(44, 26)
+                self.voice_rate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_rate_btn.setToolTip("播放倍速")
+                self.voice_rate_btn.clicked.connect(self._cycle_voice_rate)
+                self.voice_rate_btn.setStyleSheet(
+                    "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
+                    "border-radius:13px;font-size:11px;color:#2f6fd0;}"
+                    "QPushButton:hover{background:#e8eef9;}")
+                _vh.addWidget(self.voice_rate_btn)
+                # 转文字
+                self.voice_text_btn = QPushButton("📝")
+                self.voice_text_btn.setFixedSize(30, 26)
+                self.voice_text_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_text_btn.setToolTip("显示文字内容")
+                self.voice_text_btn.clicked.connect(self._toggle_voice_text)
+                self.voice_text_btn.setStyleSheet(
+                    "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
+                    "border-radius:13px;font-size:13px;}"
+                    "QPushButton:hover{background:#e8eef9;}")
+                _vh.addWidget(self.voice_text_btn)
+                for _b in (self.voice_pause_btn,):
                     _b.setStyleSheet(
                         "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
                         "border-radius:15px;font-size:13px;}"
                         "QPushButton:hover{background:#e8eef9;}")
                 self.voice_ctrl.hide()
                 lay.addWidget(self.voice_ctrl)
+                # 转文字展开区（默认隐藏）
+                self.voice_text_area = None
                 lay.addSpacing(6)
                 self._playing_now = False
                 self._paused_now = False
@@ -567,10 +597,112 @@ class ChatBubble(QFrame):
             self.voice_btn.setText("\U0001F50A  播放中…")
             if getattr(self, "voice_ctrl", None) is not None:
                 self.voice_ctrl.show()
+            if getattr(self, "wave_bar", None) is not None:
+                self.wave_bar.set_progress(0.0)
             self._sync_pause_btn()
             self._start_voice_watch()
         except Exception as ex:
             log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
+    def _fmt_time(self, pos_s, dur_s):
+        """mm:ss / mm:ss。"""
+        try:
+            m1, s1 = divmod(int(pos_s), 60)
+            m2, s2 = divmod(int(dur_s), 60)
+            return "%02d:%02d / %02d:%02d" % (m1, s1, m2, s2)
+        except Exception:
+            return "00:00 / 00:00"
+
+    def _seek_voice(self, ms):
+        """波形条拖动定位。"""
+        player = self._voice_player()
+        if player is None:
+            return
+        player.seek_ms(ms)
+
+    def _cycle_voice_rate(self):
+        """循环切换倍速。"""
+        try:
+            self._voice_rate_i = (self._voice_rate_i + 1) % len(
+                self._voice_rates)
+            rate = self._voice_rates[self._voice_rate_i]
+            # 0.75x / 1.25x 两位小数；1.0x / 1.5x / 2.0x 一位
+            self.voice_rate_btn.setText(
+                ("%.2fx" % rate) if abs(rate * 10 - int(rate * 10)) > 0.01
+                else ("%.1fx" % rate))
+            player = self._voice_player()
+            if player is not None:
+                try:
+                    from PySide6.QtCore import QTimer as _QT
+                    _QT.singleShot(0, lambda: self._apply_rate(rate))
+                except Exception:
+                    pass
+        except Exception as ex:
+            log("[聊天] 倍速切换失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
+    def _apply_rate(self, rate):
+        """把倍速应用到播放器。"""
+        player = self._voice_player()
+        if player is None:
+            return
+        try:
+            player.set_rate(rate)
+        except Exception as ex:
+            log("[聊天] 应用倍速失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
+    def _toggle_voice_text(self):
+        """展开 / 收起文字内容。"""
+        try:
+            if getattr(self, "voice_text_area", None) is not None:
+                vis = self.voice_text_area.isVisible()
+                self.voice_text_area.setVisible(not vis)
+                return
+            # 首次展开：创建
+            text = ""
+            # 优先用气泡自带的原文（TTS 念的内容 / 歌词）
+            text = getattr(self, "_voice_text", "") or ""
+            if not text:
+                # 兜底：从消息列表里找
+                try:
+                    owner = self
+                    while owner is not None and not hasattr(owner, "pet"):
+                        owner = owner.parent()
+                    cw = owner
+                except Exception:
+                    cw = None
+                if cw is not None and hasattr(cw, "messages"):
+                    vp = getattr(self, "_voice_path", "")
+                    msgs = cw.messages
+                    for idx in range(len(msgs) - 1, -1, -1):
+                        if msgs[idx].get("voice") == vp:
+                            for j in range(idx + 1, min(idx + 3, len(msgs))):
+                                if (msgs[j].get("role") == "assistant"
+                                        and not msgs[j].get("voice")):
+                                    text = msgs[j].get("content") or ""
+                                    break
+                            if text:
+                                break
+            if not text:
+                text = "（这条语音没有保存文字内容）"
+            from PySide6.QtWidgets import QLabel
+            self.voice_text_area = QLabel(text)
+            self.voice_text_area.setWordWrap(True)
+            self.voice_text_area.setTextFormat(Qt.TextFormat.PlainText)
+            self.voice_text_area.setStyleSheet(
+                "background:#f7f8fb;border:1px solid #e3e7f0;"
+                "border-radius:8px;padding:8px;color:#2f3542;font-size:12px;")
+            self.voice_text_area.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            # 插到控制条后面
+            lay = self.layout()
+            lay.insertWidget(lay.indexOf(self.voice_ctrl) + 1,
+                             self.voice_text_area)
+            self.voice_text_area.show()
+        except Exception as ex:
+            log("[聊天] 转文字失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
 
     def _toggle_pause_voice(self):
@@ -630,6 +762,16 @@ class ChatBubble(QFrame):
         if player is None:
             return
         st = player.state()
+        # 实时刷新进度和时间
+        try:
+            pos = max(0, player.position_ms())
+            dur = max(0.2, float(getattr(self, "_voice_sec", 1.0)))
+            if getattr(self, "wave_bar", None) is not None:
+                self.wave_bar.set_progress(min(1.0, pos / (dur * 1000.0)))
+            if getattr(self, "voice_time", None) is not None:
+                self.voice_time.setText(self._fmt_time(pos / 1000.0, dur))
+        except Exception:
+            pass
         if st == "stopped":
             # 播完了：复位
             try:
@@ -642,10 +784,113 @@ class ChatBubble(QFrame):
                 self.voice_btn.setText(self._voice_label())
                 if getattr(self, "voice_ctrl", None) is not None:
                     self.voice_ctrl.hide()
+                if getattr(self, "wave_bar", None) is not None:
+                    self.wave_bar.set_progress(0.0)
+                if getattr(self, "voice_time", None) is not None:
+                    self.voice_time.setText(
+                        self._fmt_time(0, self._voice_sec))
             except Exception:
                 pass
         else:
             self._sync_pause_btn()
+
+
+class WaveBar(QWidget):
+    """QQ 风格波形图：播放进度用亮色竖条表示，可点击/拖动定位。"""
+
+    seekRequested = Signal(int)   # 请求跳到毫秒
+
+    def __init__(self, wav_path=None, duration=1.0, parent=None):
+        super().__init__(parent)
+        self._peaks = self._sample_peaks(wav_path)
+        self._duration = max(0.2, float(duration or 1.0))
+        self._progress = 0.0          # 0~1
+        self._dragging = False
+        self.setMinimumHeight(26)
+        self.setMinimumWidth(120)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    # ---- 采样：读 WAV 转 N 个峰值 ----
+    def _sample_peaks(self, path, bars=36):
+        try:
+            import wave as _w
+            import struct as _s
+            with _w.open(path, "rb") as w:
+                sr = w.getframerate() or 22050
+                n = w.getnframes()
+                raw = w.readframes(n)
+            width = w.getsampwidth()
+            ch = w.getnchannels() or 1
+            if width != 2 or n <= 0:
+                return [0.2] * bars
+            step = max(1, n // (bars * 8))
+            samples = _s.unpack("<%dh" % (len(raw) // 2),
+                                raw[:len(raw) // 2 * 2])
+            if ch > 1:
+                samples = samples[::ch]
+            peaks = []
+            per = max(1, len(samples) // bars)
+            for i in range(bars):
+                seg = samples[i * per:(i + 1) * per:step]
+                if not seg:
+                    peaks.append(0.1)
+                    continue
+                peak = max(abs(x) for x in seg) / 32768.0
+                peaks.append(max(0.08, min(1.0, peak)))
+            mx = max(peaks) or 1.0
+            return [p / mx for p in peaks]
+        except Exception:
+            return [0.3] * bars
+
+    def set_progress(self, ratio):
+        self._progress = max(0.0, min(1.0, ratio))
+        self.update()
+
+    def set_duration(self, sec):
+        self._duration = max(0.2, float(sec or 1.0))
+
+    # ---- 交互 ----
+    def mousePressEvent(self, e):
+        self._dragging = True
+        self._seek_to(e.position().x())
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            self._seek_to(e.position().x())
+
+    def mouseReleaseEvent(self, e):
+        self._dragging = False
+
+    def _seek_to(self, x):
+        w = max(1, self.width())
+        ratio = max(0.0, min(1.0, x / w))
+        self._progress = ratio
+        self.update()
+        self.seekRequested.emit(int(ratio * self._duration * 1000))
+
+    # ---- 绘制 ----
+    def paintEvent(self, _):
+        from PySide6.QtGui import QPainter, QColor
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+        mid = h / 2
+        n = len(self._peaks)
+        bw = max(2, int(w / n) - 2)
+        gap = max(1, int((w - bw * n) / max(1, n - 1)) if n > 1 else 2)
+        x = 2
+        played = self._progress
+        for i, pk in enumerate(self._peaks):
+            bh = max(3, int(pk * (h - 8)))
+            if i / n <= played:
+                p.setBrush(QColor("#2f6fd0"))
+                p.setPen(Qt.PenStyle.NoPen)
+            else:
+                p.setBrush(QColor("#c4cddd"))
+                p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(x, mid - bh / 2, bw, bh), 1.5, 1.5)
+            x += bw + gap
+        p.end()
 
 
 class TimeDivider(QWidget):
@@ -1527,9 +1772,10 @@ class ChatWindow(QWidget):
         sb.setValue(sb.maximum())
 
     def _add_bubble(self, role, text, image_path=None, voice_path=None,
-                    voice_sec=0.0, ts=None):
+                    voice_sec=0.0, ts=None, voice_text=""):
         b = ChatBubble(role, text, image_path=image_path,
-                       voice_path=voice_path, voice_sec=voice_sec, ts=ts)
+                       voice_path=voice_path, voice_sec=voice_sec, ts=ts,
+                       voice_text=voice_text)
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1577,13 +1823,14 @@ class ChatWindow(QWidget):
                 logging.WARNING)
 
     def render_message(self, role, text, image_path=None, voice_path=None,
-                       voice_sec=0.0, ts=None):
+                       voice_sec=0.0, ts=None, voice_text=""):
         return self._add_bubble(role, text, image_path=image_path,
                                 voice_path=voice_path, voice_sec=voice_sec,
-                                ts=ts)
+                                ts=ts, voice_text=voice_text)
 
     def append_external(self, role, text, notice=None, image_path=None,
-                        voice_path=None, voice_sec=0.0, ts=None):
+                        voice_path=None, voice_sec=0.0, ts=None,
+                        voice_text=""):
         """外部功能（如「看看屏幕」）把消息追加到当前会话。
 
         作用：
@@ -1591,6 +1838,7 @@ class ChatWindow(QWidget):
           - 立刻在界面上显示气泡
           - 可选在消息前插一条 notice（提示气泡，不入会话历史）
           - image_path: 本地图片路径，给了就在气泡里显示缩略图（点击放大）
+          - voice_text: 语音对应的原文（TTS 念的内容 / 歌词），供转文字用
 
         返回写入的消息对象；无当前会话时返回 None。
         """
@@ -1608,11 +1856,14 @@ class ChatWindow(QWidget):
         if voice_path:
             msg["voice"] = str(voice_path)
             msg["voice_sec"] = float(voice_sec or 0.0)
+            if voice_text:
+                msg["voice_text"] = str(voice_text)
         self.messages.append(msg)
         if notice:
             self._add_bubble("note", notice)
         self._add_bubble(role, text, image_path=image_path,
-                         voice_path=voice_path, voice_sec=voice_sec, ts=ts)
+                         voice_path=voice_path, voice_sec=voice_sec, ts=ts,
+                         voice_text=voice_text)
         self.save_history()
         self._update_empty_state()
         return msg
@@ -1656,6 +1907,7 @@ class ChatWindow(QWidget):
                                 image_path=m.get("image"),
                                 voice_path=m.get("voice"),
                                 voice_sec=m.get("voice_sec") or 0.0,
+                                voice_text=m.get("voice_text") or "",
                                 ts=m.get("ts"))
         self._update_empty_state()
         self._scroll_bottom()
@@ -2339,7 +2591,8 @@ class ChatWindow(QWidget):
             title = ("🎵 %s - %s" % (name, artist)) if artist else (
                 "🎵 %s" % (name or "翻唱"))
             self.append_external("assistant", title,
-                                 voice_path=path, voice_sec=sec)
+                                 voice_path=path, voice_sec=sec,
+                                 voice_text=pending)
             log("[翻唱] 完成：%s（%.1f 秒）" % (title, sec))
             if pending:
                 self._add_bubble("assistant", pending)
