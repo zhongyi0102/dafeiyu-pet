@@ -2207,6 +2207,11 @@ class ChatWindow(QWidget):
         self._render_current_session()
 
     def _clear_bubbles(self):
+        # 重建气泡前，先放弃对「正在翻唱」状态气泡的引用：
+        # 它马上会被 deleteLater 销毁，留着就是悬空引用，
+        # 后续 _close_cover_status/_update_cover_status 操作它会静默失效，
+        # 导致切回会话时残留一个永不消失的「正在翻唱」气泡。
+        self._cover_status_bubble = None
         for i in range(self.msg_layout.count() - 1, -1, -1):
             item = self.msg_layout.itemAt(i)
             w = item.widget() if item is not None else None
@@ -2244,6 +2249,8 @@ class ChatWindow(QWidget):
                                 voice_sec=m.get("voice_sec") or 0.0,
                                 voice_text=m.get("voice_text") or "",
                                 ts=m.get("ts"))
+        # 若翻唱任务仍在跑、且当前渲染的正是发起会话，补回状态气泡
+        self._restore_cover_status()
         self._update_empty_state()
         self._scroll_bottom()
 
@@ -2864,6 +2871,36 @@ class ChatWindow(QWidget):
             pass
         self._update_cover_status(msg)
 
+    def _restore_cover_status(self):
+        """翻唱任务进行中、且当前会话是发起会话时，重建状态气泡。
+
+        切换会话会销毁所有气泡（含状态气泡），切回时必须补回来，
+        否则用户看不到「还在跑」的反馈。
+        任务已完成（_cover_session_id 已清）时不重建，避免残留。
+        """
+        try:
+            sid = getattr(self, "_cover_session_id", None)
+            if not sid or sid != self.current_id:
+                return
+            # 已有有效气泡就不重复建
+            b = getattr(self, "_cover_status_bubble", None)
+            if b is not None:
+                try:
+                    import shiboken6 as _sb
+                    if _sb.isValid(b):
+                        return
+                except Exception:
+                    pass
+            self._cover_status_bubble = self._add_bubble(
+                "note", "🎵 正在翻唱…\n恢复显示中（已用 %d 秒）"
+                % int(time.time() - getattr(self, "_cover_started",
+                                            time.time())))
+            log("[翻唱] 切回发起会话 %s，恢复状态气泡" % sid)
+        except Exception as ex:
+            log("[翻唱] 恢复状态气泡失败（会话 %s）: %s: %s"
+                % (getattr(self, "_cover_session_id", None),
+                   type(ex).__name__, ex), logging.WARNING)
+
     def _update_cover_status(self, msg=None):
         """刷新「正在翻唱」状态气泡的文字（含已用秒数）。"""
         b = getattr(self, "_cover_status_bubble", None)
@@ -2886,24 +2923,28 @@ class ChatWindow(QWidget):
             self._update_cover_status()
 
     def _close_cover_status(self):
-        """翻唱结束：移除状态气泡、停计时器。"""
+        """翻唱结束：移除状态气泡、停计时器、清任务标记。"""
+        # 先清 _cover_session_id，标记任务已结束：
+        # 这样之后任何 _render_current_session 都不会再重建状态气泡。
+        self._cover_session_id = None
         try:
-            import shiboken6 as _sb
-            b = getattr(self, "_cover_status_bubble", None)
-            if b is not None and not _sb.isValid(b):
-                self._cover_status_bubble = None
             t = getattr(self, "_cover_timer", None)
             if t is not None:
                 t.stop()
-        except Exception:
-            pass
+        except Exception as ex:
+            log("[翻唱] 停止状态计时器失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
         b = getattr(self, "_cover_status_bubble", None)
+        self._cover_status_bubble = None
         if b is not None:
             try:
-                self._remove_bubble(b)
-            except Exception:
-                pass
-            self._cover_status_bubble = None
+                import shiboken6 as _sb
+                if _sb.isValid(b):
+                    self._remove_bubble(b)
+            except Exception as ex:
+                # 对象已被销毁属正常（会话切换重渲染），不刷屏
+                log("[翻唱] 移除状态气泡跳过: %s: %s"
+                    % (type(ex).__name__, ex), logging.DEBUG)
 
     def _say_cover_line(self, song="", fail=False):
         """翻唱结束后发一句本地人设短评（不调模型、不入语音链路）。"""
@@ -2935,6 +2976,13 @@ class ChatWindow(QWidget):
         完成时：先记下用户当前在哪，切回发起会话写入，
         再把界面切回用户所在的会话（如果用户已切走）。
         """
+        # 先取发起会话 id，再关闭状态气泡：
+        # _close_cover_status 会把 _cover_session_id 清成 None（标记任务结束），
+        # 顺序反了就取不到发起会话，结果会写错地方。
+        origin_sid = getattr(self, "_cover_session_id", None)
+        user_sid = self.current_id          # 用户当前所在会话
+        need_switch_back = bool(origin_sid) and origin_sid != user_sid
+
         self._close_cover_status()
         pending = getattr(self, "_pending_voice_text", "")
         self._pending_voice_text = ""
@@ -2944,20 +2992,18 @@ class ChatWindow(QWidget):
         except Exception:
             pass
 
-        # 发起翻唱时的会话（可能已被用户切走）
-        origin_sid = getattr(self, "_cover_session_id", None)
-        user_sid = self.current_id          # 用户当前所在会话
-        need_switch_back = bool(origin_sid) and origin_sid != user_sid
-
         def _write_to_origin():
             """在发起会话里写入语音卡片 + 一句人设短评（不再发歌词）。"""
             if err or not path:
-                log("[翻唱] 失败：%s" % (err or "空路径"))
+                log("[翻唱] 失败（会话 %s）：%s"
+                    % (self.current_id, err or "空路径"), logging.WARNING)
                 # 失败也只发一句短评，不再把错误详情/歌词甩到聊天里
                 try:
                     self._say_cover_line(fail=True)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    log("[翻唱] 失败短评写入失败（会话 %s）: %s: %s"
+                        % (self.current_id, type(ex).__name__, ex),
+                        logging.ERROR)
                 return
             try:
                 import wave as _wave
@@ -2977,19 +3023,35 @@ class ChatWindow(QWidget):
                 # 卡片之后补一句本地短评（不调模型）
                 self._say_cover_line(song=(name or ""))
             except Exception as ex:
-                log("[翻唱] 插入失败: %s: %s" % (type(ex).__name__, ex),
-                    logging.WARNING)
+                log("[翻唱] 插入失败（会话 %s）: %s: %s"
+                    % (self.current_id, type(ex).__name__, ex),
+                    logging.ERROR)
 
         if need_switch_back:
             # 同步用户当前会话 → 切回发起会话写入 → 再切回用户会话
-            self._sync_session(touch=False)
-            self._activate_session(origin_sid)
-            _write_to_origin()
-            self._sync_session(touch=False)
-            self._activate_session(user_sid)
-            self._render_current_session()
-            log("[翻唱] 已写回发起会话 %s（用户当前在 %s）"
-                % (origin_sid, user_sid))
+            try:
+                self._sync_session(touch=False)
+                if not self._activate_session(origin_sid):
+                    # 发起会话已被删除：退化为写当前会话，别丢结果
+                    log("[翻唱] 发起会话 %s 已不存在，写入当前会话 %s"
+                        % (origin_sid, self.current_id), logging.WARNING)
+                    _write_to_origin()
+                else:
+                    _write_to_origin()
+                    self._sync_session(touch=False)
+                    self._activate_session(user_sid)
+                    self._render_current_session()
+                    log("[翻唱] 已写回发起会话 %s（用户当前在 %s）"
+                        % (origin_sid, user_sid))
+            except Exception as ex:
+                log("[翻唱] 写回发起会话 %s 失败: %s: %s"
+                    % (origin_sid, type(ex).__name__, ex), logging.ERROR)
+                # 尽力回到用户原会话，避免界面卡在错误状态
+                try:
+                    self._activate_session(user_sid)
+                    self._render_current_session()
+                except Exception:
+                    pass
         else:
             _write_to_origin()
 
