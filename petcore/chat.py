@@ -402,7 +402,33 @@ class ChatBubble(QFrame):
                     "QPushButton:pressed{background:#d2e2ff;}")
                 self.voice_btn.clicked.connect(self._play_voice)
                 lay.addWidget(self.voice_btn)
+                # 播放控制条：暂停/继续 + 停止（默认隐藏，播放时出现）
+                self.voice_ctrl = QWidget()
+                _vh = QHBoxLayout(self.voice_ctrl)
+                _vh.setContentsMargins(0, 0, 0, 0)
+                _vh.setSpacing(4)
+                self.voice_pause_btn = QPushButton("⏸")
+                self.voice_pause_btn.setFixedSize(30, 30)
+                self.voice_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_pause_btn.setToolTip("暂停 / 继续")
+                self.voice_pause_btn.clicked.connect(self._toggle_pause_voice)
+                _vh.addWidget(self.voice_pause_btn)
+                self.voice_stop_btn = QPushButton("⏹")
+                self.voice_stop_btn.setFixedSize(30, 30)
+                self.voice_stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_stop_btn.setToolTip("停止")
+                self.voice_stop_btn.clicked.connect(self._stop_voice)
+                _vh.addWidget(self.voice_stop_btn)
+                for _b in (self.voice_pause_btn, self.voice_stop_btn):
+                    _b.setStyleSheet(
+                        "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
+                        "border-radius:15px;font-size:13px;}"
+                        "QPushButton:hover{background:#e8eef9;}")
+                self.voice_ctrl.hide()
+                lay.addWidget(self.voice_ctrl)
                 lay.addSpacing(6)
+                self._playing_now = False
+                self._paused_now = False
             except Exception as ex:
                 log("[聊天] 语音条创建失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
@@ -478,39 +504,54 @@ class ChatBubble(QFrame):
 
 
 
-    def _play_voice(self):
-        """播放这条语音（复用全局 VoicePlayer，避免多播放器抢音频）。
-
-        已在播放时再点 = 停止（QQ 同款交互）。
-        """
+    def _voice_player(self):
+        """找到全局 VoicePlayer（气泡本身没有 pet，往上找 ChatWindow）。"""
         try:
-            player = getattr(self.pet if hasattr(self, "pet") else
-                             self._find_pet(), "_voice_player", None)
-            mp = getattr(player, "_player", None) if player else None
-            if (mp is not None and mp is not False
-                    and mp.playbackState().name == "PlayingState"
-                    and getattr(self, "_playing_now", False)):
-                # 这条正在播：停止并复位
-                mp.stop()
-                self._playing_now = False
-                self.voice_btn.setText(
-                    "\U0001F50A  %d\"" % int(round(self._voice_sec)))
+            owner = self
+            while owner is not None and not hasattr(owner, "pet"):
+                owner = owner.parent()
+            pet = getattr(owner, "pet", None) if owner is not None else None
+            return getattr(pet, "_voice_player", None) if pet else None
+        except Exception:
+            return None
+
+    def _voice_label(self):
+        return "\U0001F50A  %d\"" % int(round(self._voice_sec))
+
+    def _play_voice(self):
+        """播放这条语音。三态：未播 → 播放；播放中 → 暂停；暂停中 → 继续。"""
+        try:
+            player = self._voice_player()
+            if player is None:
+                self.voice_btn.setText("\U0001F50A  播放器不可用")
                 return
+
+            # 正在播这条 → 暂停
+            if getattr(self, "_playing_now", False) and player.is_playing():
+                if player.pause():
+                    self._playing_now = False
+                    self._paused_now = True
+                    self.voice_btn.setText("\U0001F50A  已暂停")
+                    self._sync_pause_btn()
+                return
+
+            # 暂停中 → 继续
+            if getattr(self, "_paused_now", False) and player.is_paused():
+                if player.resume():
+                    self._playing_now = True
+                    self._paused_now = False
+                    self.voice_btn.setText("\U0001F50A  播放中…")
+                    self._sync_pause_btn()
+                    self._start_voice_watch()
+                return
+
+            # 全新播放
             p = getattr(self, "_voice_path", "")
             if not p or not os.path.exists(p):
                 self.voice_btn.setText("\U0001F50A  文件不见了")
                 return
             with open(p, "rb") as f:
                 data = f.read()
-            # 播放器在 PetApp 上；气泡本身没有 pet，往上找 ChatWindow
-            owner = self
-            while owner is not None and not hasattr(owner, "pet"):
-                owner = owner.parent()
-            pet = getattr(owner, "pet", None) if owner is not None else None
-            player = getattr(pet, "_voice_player", None) if pet else None
-            if player is None:
-                self.voice_btn.setText("\U0001F50A  播放器不可用")
-                return
             # 临时置零冷却，允许连点重播
             old_cd = getattr(player, "_cooldown", 0.0)
             old_ts = getattr(player, "_last_ok_ts", 0.0)
@@ -521,14 +562,90 @@ class ChatBubble(QFrame):
             finally:
                 player._cooldown = old_cd
                 player._last_ok_ts = old_ts
+            self._playing_now = True
+            self._paused_now = False
             self.voice_btn.setText("\U0001F50A  播放中…")
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(int(self._voice_sec * 1000) + 300,
-                              lambda: self.voice_btn and self.voice_btn.setText(
-                                  "\U0001F50A  %d\"" % int(round(self._voice_sec))))
+            if getattr(self, "voice_ctrl", None) is not None:
+                self.voice_ctrl.show()
+            self._sync_pause_btn()
+            self._start_voice_watch()
         except Exception as ex:
             log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
+
+    def _toggle_pause_voice(self):
+        """⏸ 按钮：暂停 / 继续。"""
+        player = self._voice_player()
+        if player is None:
+            return
+        if player.is_playing():
+            if player.pause():
+                self._playing_now = False
+                self._paused_now = True
+                self.voice_btn.setText("\U0001F50A  已暂停")
+        elif player.is_paused():
+            if player.resume():
+                self._playing_now = True
+                self._paused_now = False
+                self.voice_btn.setText("\U0001F50A  播放中…")
+                self._start_voice_watch()
+        self._sync_pause_btn()
+
+    def _sync_pause_btn(self):
+        """暂停按钮图标跟随状态：播放中=⏸，暂停中=▶。"""
+        b = getattr(self, "voice_pause_btn", None)
+        if b is None:
+            return
+        player = self._voice_player()
+        paused = bool(player is not None and player.is_paused())
+        b.setText("▶" if paused else "⏸")
+        b.setToolTip("继续播放" if paused else "暂停")
+
+    def _stop_voice(self):
+        """⏹ 按钮：停止并复位。"""
+        player = self._voice_player()
+        if player is not None:
+            player.stop()
+        self._playing_now = False
+        self._paused_now = False
+        try:
+            self.voice_btn.setText(self._voice_label())
+            if getattr(self, "voice_ctrl", None) is not None:
+                self.voice_ctrl.hide()
+        except Exception:
+            pass
+
+    def _start_voice_watch(self):
+        """播放期间每 500ms 同步一次 UI，播完自动复位。"""
+        from PySide6.QtCore import QTimer as _QT
+        t = getattr(self, "_voice_watch", None)
+        if t is None:
+            t = _QT(self)
+            t.timeout.connect(self._on_voice_watch)
+            self._voice_watch = t
+        t.start(500)
+
+    def _on_voice_watch(self):
+        player = self._voice_player()
+        if player is None:
+            return
+        st = player.state()
+        if st == "stopped":
+            # 播完了：复位
+            try:
+                self._voice_watch.stop()
+            except Exception:
+                pass
+            self._playing_now = False
+            self._paused_now = False
+            try:
+                self.voice_btn.setText(self._voice_label())
+                if getattr(self, "voice_ctrl", None) is not None:
+                    self.voice_ctrl.hide()
+            except Exception:
+                pass
+        else:
+            self._sync_pause_btn()
 
 
 class TimeDivider(QWidget):

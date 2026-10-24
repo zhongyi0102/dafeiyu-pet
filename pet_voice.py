@@ -542,6 +542,91 @@ class VoicePlayer:
             from PySide6.QtCore import QUrl
             player.setSource(QUrl.fromLocalFile(tmp))
             player.play()
+            self._cur_source = tmp
         except Exception as ex:
             log("[语音] 播放失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
+
+    # ---- 播放控制（暂停 / 继续 / 停止）----
+    def state(self):
+        """当前播放状态：'playing' / 'paused' / 'stopped' / 'unavailable'。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return "unavailable"
+            st = player.playbackState().name
+            if st == "PlayingState":
+                return "playing"
+            if st == "PausedState":
+                return "paused"
+            return "stopped"
+        except Exception:
+            return "unavailable"
+
+    def is_playing(self):
+        return self.state() == "playing"
+
+    def is_paused(self):
+        return self.state() == "paused"
+
+    def pause(self):
+        """暂停当前播放。返回 True 表示真的暂停了。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return False
+            if player.playbackState().name == "PlayingState":
+                player.pause()
+                log("[语音] 已暂停")
+                return True
+        except Exception as ex:
+            log("[语音] 暂停失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+        return False
+
+    def resume(self):
+        """从暂停处继续。返回 True 表示真的继续了。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return False
+            if player.playbackState().name == "PausedState":
+                player.play()
+                log("[语音] 继续播放")
+                return True
+        except Exception as ex:
+            log("[语音] 继续失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+        return False
+
+    def stop(self):
+        """停止播放并复位。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return False
+            player.stop()
+            return True
+        except Exception:
+            return False
+
+    def position_ms(self):
+        """当前播放位置（毫秒），拿不到返回 -1。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return -1
+            return int(player.position())
+        except Exception:
+            return -1
+
+    def seek_ms(self, ms):
+        """跳到指定位置（毫秒）。"""
+        try:
+            player = self._ensure_player()
+            if not player:
+                return False
+            player.setPosition(int(max(0, ms)))
+            return True
+        except Exception:
+            return False
