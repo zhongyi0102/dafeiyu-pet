@@ -441,9 +441,9 @@ class ChatBubble(QFrame):
                 self.voice_rate_btn.clicked.connect(self._cycle_voice_rate)
                 _vh.addWidget(self.voice_rate_btn, 0)
                 # 转文字：24×24，固定不压缩
-                self.voice_text_btn = QPushButton("📝")
+                self.voice_text_btn = QPushButton("Aa")
                 self.voice_text_btn.setObjectName("VoiceTextBtn")
-                self.voice_text_btn.setFixedSize(24, 24)
+                self.voice_text_btn.setFixedSize(26, 24)
                 self.voice_text_btn.setSizePolicy(
                     QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 self.voice_text_btn.setCursor(
@@ -476,7 +476,8 @@ class ChatBubble(QFrame):
                     "QPushButton#VoiceTextBtn{"
                     "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
                     "border:1px solid %(vc_rate_border)s;"
-                    "border-radius:12px;font-size:11px;}"
+                    "border-radius:12px;font-size:10px;font-weight:bold;"
+                    "padding:0;}"
                     "QPushButton#VoiceTextBtn:hover{"
                     "background:%(vc_rate_bg)s;}" % {
                         "vc_card_bg": _t["vc_card_bg"],
@@ -553,7 +554,8 @@ class ChatBubble(QFrame):
                 "QPushButton#VoiceTextBtn{"
                 "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
                 "border:1px solid %(vc_rate_border)s;"
-                "border-radius:12px;font-size:11px;}" % {
+                "border-radius:12px;font-size:10px;font-weight:bold;"
+                "padding:0;}" % {
                     "vc_card_bg": _t["vc_card_bg"],
                     "vc_card_border": _t["vc_card_border"],
                     "vc_play_bg": _t["vc_play_bg"],
@@ -2847,6 +2849,29 @@ class ChatWindow(QWidget):
                 pass
             self._cover_status_bubble = None
 
+    def _say_cover_line(self, song="", fail=False):
+        """翻唱结束后发一句本地人设短评（不调模型、不入语音链路）。"""
+        try:
+            pool = COVER_FAIL_LINES if fail else COVER_DONE_LINES
+            line = random.choice(pool)
+            if "{song}" in line:
+                s = (song or "").strip()
+                if s:
+                    line = line.replace("{song}", s)
+                else:
+                    # 没有歌名时退化成不带书名号的句子
+                    line = line.replace("《{song}》", "这首歌")
+                    line = line.replace("{song}", "这首歌")
+            self.append_external("assistant", line)
+            # 桌宠气泡也顺带说一句
+            try:
+                self.pet.say(self._first_sentence(line))
+            except Exception:
+                pass
+        except Exception as ex:
+            log("[翻唱] 短评发送失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
     def _on_cover_ready(self, path, name, artist, err):
         """翻唱完成（主线程）：写回发起翻唱的那个会话。
 
@@ -2869,15 +2894,14 @@ class ChatWindow(QWidget):
         need_switch_back = bool(origin_sid) and origin_sid != user_sid
 
         def _write_to_origin():
-            """在发起会话里写入语音条 + 歌词。"""
+            """在发起会话里写入语音卡片 + 一句人设短评（不再发歌词）。"""
             if err or not path:
                 log("[翻唱] 失败：%s" % (err or "空路径"))
-                if pending:
-                    self._add_bubble("assistant", pending)
-                    self.messages.append({"role": "assistant",
-                                          "content": pending,
-                                          "ts": time.time()})
-                    self.save_history()
+                # 失败也只发一句短评，不再把错误详情/歌词甩到聊天里
+                try:
+                    self._say_cover_line(fail=True)
+                except Exception:
+                    pass
                 return
             try:
                 import wave as _wave
@@ -2889,16 +2913,13 @@ class ChatWindow(QWidget):
                     pass
                 title = ("🎵 %s - %s" % (name, artist)) if artist else (
                     "🎵 %s" % (name or "翻唱"))
+                # voice_text 仍传歌词：卡片「转文字」靠它工作
                 self.append_external("assistant", title,
                                      voice_path=path, voice_sec=sec,
                                      voice_text=pending)
                 log("[翻唱] 完成：%s（%.1f 秒）" % (title, sec))
-                if pending:
-                    self._add_bubble("assistant", pending)
-                    self.messages.append({"role": "assistant",
-                                          "content": pending,
-                                          "ts": time.time()})
-                    self.save_history()
+                # 卡片之后补一句本地短评（不调模型）
+                self._say_cover_line(song=(name or ""))
             except Exception as ex:
                 log("[翻唱] 插入失败: %s: %s" % (type(ex).__name__, ex),
                     logging.WARNING)

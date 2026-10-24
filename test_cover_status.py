@@ -135,7 +135,11 @@ last = msgs[-1] if msgs else {}
 has_voice = any(x.get("voice") for x in msgs)
 ck("3", "历史带 voice 字段", has_voice,
    [x.get("voice") for x in msgs if x.get("voice")][:1])
-ck("3", "文字歌词也补上", any("歌词" in (x.get("content") or "") for x in msgs))
+# 需求变更：不再补歌词，改为一句人设短评
+ck("3", "改发人设短评（不含整首歌词）",
+   any((not x.get("voice")) and x.get("content")
+       and "歌词" not in (x.get("content") or "")[:4] for x in msgs),
+   [x.get("content", "")[:18] for x in msgs if not x.get("voice")])
 
 # 失败场景：状态气泡也要移除
 cw.busy = True
@@ -150,8 +154,10 @@ cw._on_cover_ready("", "", "", "下载失败：找不到歌")
 pump(0.5)
 ck("4", "失败后状态气泡移除",
    getattr(cw, "_cover_status_bubble", None) is None)
-ck("4", "失败时补文字", any("歌词2" in (x.get("content") or "")
-                            for x in cw.messages))
+# 需求变更：失败也不再补歌词，改发失败短评
+ck("4", "失败改发短评（不含歌词）",
+   not any("歌词2" in (x.get("content") or "") for x in cw.messages)
+   and any(x.get("content") and not x.get("voice") for x in cw.messages))
 
 # 桌宠气泡也显示进度
 ck("5", "_on_cover_progress 更新 token_label",

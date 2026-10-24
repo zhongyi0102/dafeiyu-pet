@@ -122,8 +122,11 @@ if va:
     if not okvt:
         okvt = any("我不难过" in (x.get("content") or "") for x in va)
     ck("2", "voice_text 已存", okvt, vt)
-ta = [x for x in msgs_a if "歌词" in (x.get("content") or "")]
-ck("2", "会话 A 有歌词文字", len(ta) >= 1)
+# 需求变更：会话 A 里是「卡片 + 短评」，不再有整首歌词
+ta = [x for x in msgs_a if (not x.get("voice")) and x.get("content")
+      and x.get("content") != "唱一首我不难过"]
+ck("2", "会话 A 有短评文字", len(ta) >= 1,
+   [x.get("content", "")[:18] for x in ta])
 
 # 用户当前仍在会话 B，且 B 里没有翻唱结果
 ck("2", "用户仍在会话 B", cw.current_id == user_sid, cw.current_id)
@@ -178,9 +181,11 @@ cw._on_cover_ready("", "", "", "下载失败：搜不到歌")
 pump(0.8)
 sess_2 = cw._find_session(sid2)
 msgs_2 = sess_2.get("messages") or []
-ck("4", "失败文字写回发起会话", any("歌词2" in (x.get("content") or "")
-                                    for x in msgs_2),
-   [x.get("content", "")[:14] for x in msgs_2])
+# 需求变更：失败也只发短评（不再发歌词）
+_short = [x for x in msgs_2 if (not x.get("voice")) and x.get("content")
+          and x.get("content") != "你好"]
+ck("4", "失败短评写回发起会话", len(_short) >= 1,
+   [x.get("content", "")[:18] for x in _short])
 ck("4", "用户仍在最后会话", cw.current_id == sid3)
 
 try:
