@@ -1822,10 +1822,15 @@ class ChatWindow(QWidget):
         if b is None:
             return
         try:
+            # 会话切换重渲染可能已把 C++ 对象删掉，此时无需再删
+            import shiboken6 as _sb
+            if not _sb.isValid(b):
+                return
             wrap = getattr(b, "_wrap", None)
             if wrap is not None:
-                self.msg_layout.removeWidget(wrap)
-                wrap.deleteLater()
+                if _sb.isValid(wrap):
+                    self.msg_layout.removeWidget(wrap)
+                    wrap.deleteLater()
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "_remove_bubble", type(ex).__name__, ex),
@@ -2476,6 +2481,9 @@ class ChatWindow(QWidget):
         """
         import threading
         self._hide_typing()
+        # 无论翻唱还是普通念台词，都记录发起时的会话
+        # （完成回调写回这个会话，期间用户可能切走）
+        self._voice_session_id = self.current_id
 
         if sing_query:
             # 先在聊天流里放一条「正在翻唱」状态气泡（实时刷新已用秒数）
@@ -2557,6 +2565,10 @@ class ChatWindow(QWidget):
     def _close_cover_status(self):
         """翻唱结束：移除状态气泡、停计时器。"""
         try:
+            import shiboken6 as _sb
+            b = getattr(self, "_cover_status_bubble", None)
+            if b is not None and not _sb.isValid(b):
+                self._cover_status_bubble = None
             t = getattr(self, "_cover_timer", None)
             if t is not None:
                 t.stop()
@@ -2649,6 +2661,14 @@ class ChatWindow(QWidget):
         self._pending_voice_text = ""
         _usage = getattr(self, "_pending_voice_usage", None)
         self._pending_voice_usage = None
+        # 写回发起语音的会话（期间用户可能切走）
+        _origin = getattr(self, "_voice_session_id", None)
+        _user_now = self.current_id
+        _switched = False
+        if _origin and _origin != _user_now and self._find_session(_origin):
+            self._sync_session(touch=False)
+            self._activate_session(_origin)
+            _switched = True
 
         if err or not path:
             log("[语音] 语音条生成失败：%s" % (err or "空路径"))
@@ -2686,6 +2706,14 @@ class ChatWindow(QWidget):
         except Exception as ex:
             log("[语音] 插入语音条失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
+        # 写完了：切回用户所在的会话
+        if _switched:
+            try:
+                self._sync_session(touch=False)
+                self._activate_session(_user_now)
+                self._render_current_session()
+            except Exception:
+                pass
 
     def _rollback_user_turn(self):
         """失败时把这一轮已写盘的 user 消息撤回，避免历史里出现连续两条 user"""

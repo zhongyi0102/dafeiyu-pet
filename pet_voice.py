@@ -109,11 +109,62 @@ def strip_actions(text):
     return "\n".join(ln for ln in lines if ln).strip()
 
 
-def is_sing_request(*texts):
-    """判断这轮是否在要求「唱/念出来」（决定要不要用语音）。"""
-    blob = " ".join(str(t or "") for t in texts).lower()
-    if not blob.strip():
+# 疑问句式：这类话不是在点歌，是在问语音功能/找语音在哪。
+# 命中这些就不当成唱歌请求。
+_SING_QUESTION_WORDS = (
+    "语音呢", "语音在哪", "语音在那里", "语音在哪儿", "语音怎么",
+    "语音没了", "语音不见了", "语音去哪", "语音是什么", "语音怎么用",
+    "怎么没声音", "没声音", "声音呢", "声音在哪", "怎么不开",
+    "怎么打开", "怎么关闭", "怎么设置", "在哪里设置", "怎么弄",
+    "为什么没有", "怎么不唱", "怎么不说话", "怎么说",
+    "语音条", "语音功能", "语音包",
+)
+
+
+def _has_song_object(text):
+    """剥掉动词/客套词后，是否还剩「像歌名的内容」。
+
+    「唱歌」「来一首」「哼一段」这类没有指明对象的 → False；
+    「唱指纹」「来一首晴天」→ True。
+    """
+    t = strip_actions(text)
+    if not t:
         return False
+    for w in ("唱一首", "唱个", "唱一段", "唱首", "唱一曲",
+              "来一首", "来首", "来一曲",
+              "哼一首", "哼一段", "哼个", "哼一句", "哼一下",
+              "唱唱歌", "唱歌", "唱唱", "清唱", "翻唱",
+              "给我听", "给我", "放一首", "放首",
+              "念一下", "念一段", "放一下", "看一下", "一下",
+              "吧", "好吗", "好不好", "可以吗", "行吗",
+              "一首", "一曲", "一句",
+              "唱", "哼", "听", "来"):
+        t = t.replace(w, " ")
+    t = " ".join(t.split()).strip()
+    # 剩 1~20 个字的「东西」才算点歌；纯标点/空白不算
+    if not t or len(t) > 20:
+        return False
+    return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in t)
+
+
+def is_sing_request(*texts):
+    """判断这轮是否在要求「唱/念出来」（决定要不要用语音）。
+
+    两道门槛：
+    1. 命中唱歌动词（唱/哼/来一首/念给我听…）
+    2. 排除疑问句（「语音呢」「怎么没声音」是在问功能，不是点歌）
+    注意：纯粹词命中但没有歌名对象的（「唱歌」「来一首」）仍算唱歌
+    请求——走模型写词；但「语音呢」这类疑问句直接不算。
+    """
+    blob = " ".join(str(t or "") for t in texts).strip()
+    if not blob:
+        return False
+    # 疑问句优先排除
+    if any(w in blob for w in _SING_QUESTION_WORDS):
+        # 但明确点歌的问句也算：「能唱一首指纹吗」
+        if not any(w in blob for w in ("唱一首", "唱首", "来一首", "来首",
+                                       "哼一首", "哼个", "唱个", "唱一段")):
+            return False
     return any(w in blob for w in _SING_WORDS)
 
 
