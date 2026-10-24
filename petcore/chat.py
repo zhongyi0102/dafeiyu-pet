@@ -378,6 +378,13 @@ class ChatBubble(QFrame):
                 import os as _os
                 self._voice_path = voice_path
                 self._voice_text = voice_text or ""
+                # 诊断：卡片创建时记录路径与文件状态
+                try:
+                    log("[语音] 卡片创建: path=%r exists=%s sec=%s"
+                        % (voice_path, os.path.exists(voice_path or ""),
+                           voice_sec))
+                except Exception:
+                    pass
                 sec = float(voice_sec or 0.0)
                 # 优先从 WAV 头读精确时长（估算公式对补齐/采样率会偏差）
                 exact = _wav_duration(voice_path)
@@ -400,7 +407,8 @@ class ChatBubble(QFrame):
                 # 播放/暂停圆钮：32×32 圆形，固定尺寸不被压缩
                 self.voice_pause_btn = QPushButton("▶")
                 self.voice_pause_btn.setObjectName("VoicePlayBtn")
-                self.voice_pause_btn.setFixedSize(32, 32)
+                # 36x36：比设计稿稍大，点击更容易命中
+                self.voice_pause_btn.setFixedSize(36, 36)
                 self.voice_pause_btn.setSizePolicy(
                     QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 self.voice_pause_btn.setCursor(
@@ -408,7 +416,9 @@ class ChatBubble(QFrame):
                 self.voice_pause_btn.setToolTip("播放 / 暂停")
                 self.voice_pause_btn.setFocusPolicy(
                     Qt.FocusPolicy.NoFocus)
-                self.voice_pause_btn.clicked.connect(self._toggle_pause_voice)
+                # 必须连 _play_voice（三态）：_toggle_pause_voice 只处理
+                # 播放中/暂停中，从未播放时点了没反应
+                self.voice_pause_btn.clicked.connect(self._play_voice)
                 _vh.addWidget(self.voice_pause_btn, 0)
                 # 波形进度条：可伸缩，占满剩余空间（min-width 0）
                 self.wave_bar = WaveBar(voice_path, sec)
@@ -824,6 +834,15 @@ class ChatBubble(QFrame):
     def _play_voice(self):
         """播放这条语音。三态：未播 → 播放；播放中 → 暂停；暂停中 → 继续。"""
         try:
+            # 诊断日志：确认点击真的进来了（排查「点了没反应」用）
+            try:
+                log("[语音] 点击播放: path=%r exists=%s player=%s"
+                    % (getattr(self, "_voice_path", ""),
+                       os.path.exists(getattr(self, "_voice_path", "") or ""),
+                       type(self._voice_player()).__name__
+                       if self._voice_player() is not None else None))
+            except Exception:
+                pass
             player = self._voice_player()
             if player is None:
                 self._show_voice_error("播放组件缺失，暂时无法播放")
@@ -889,6 +908,7 @@ class ChatBubble(QFrame):
 
     def _seek_voice(self, ms):
         """波形条拖动定位。"""
+        log("[语音] 点击波形条 seek -> %d ms" % ms)
         player = self._voice_player()
         if player is None:
             return
@@ -897,6 +917,7 @@ class ChatBubble(QFrame):
     def _cycle_voice_rate(self):
         """循环切换倍速。"""
         try:
+            log("[语音] 点击倍速按钮（不是播放键）")
             self._voice_rate_i = (self._voice_rate_i + 1) % len(
                 self._voice_rates)
             rate = self._voice_rates[self._voice_rate_i]
