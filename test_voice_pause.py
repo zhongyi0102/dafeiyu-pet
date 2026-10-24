@@ -150,7 +150,7 @@ ck("3", "找到语音条气泡", len(bubbles) >= 1, len(bubbles))
 if bubbles:
     b = bubbles[-1]
     ck("3", "有暂停按钮", getattr(b, "voice_pause_btn", None) is not None)
-    ck("3", "有停止按钮", getattr(b, "voice_stop_btn", None) is not None)
+    ck("3", "有转文字按钮", getattr(b, "voice_text_btn", None) is not None)
     ck("3", "控制条默认隐藏", not b.voice_ctrl.isVisible())
     # 播放
     b._play_voice()
