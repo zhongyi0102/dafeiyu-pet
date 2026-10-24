@@ -669,7 +669,54 @@ class ChatBubble(QFrame):
     def plain_text(self):
         return self._plain
 
+    def _reset_other_voice_bubbles(self):
+        """复位除自己外、处于播放中/暂停中的其他语音气泡。
 
+        播放器是全局单例，同一时刻只有一条语音在播；
+        新播放开始前必须让旧卡片停下并复位 UI，否则多张卡片
+        同时显示暂停图标、共享同一进度，界面错乱。
+        """
+        try:
+            owner = self
+            while owner is not None and not hasattr(owner, "pet"):
+                owner = owner.parent()
+            if owner is None:
+                return
+            from petcore.chat import ChatBubble as _B
+            reset = 0
+            for b in owner.findChildren(_B):
+                if b is self:
+                    continue
+                if not (getattr(b, "_playing_now", False)
+                        or getattr(b, "_paused_now", False)):
+                    continue
+                b._playing_now = False
+                b._paused_now = False
+                try:
+                    w = getattr(b, "_voice_watch", None)
+                    if w is not None:
+                        w.stop()
+                except Exception:
+                    pass
+                try:
+                    b.voice_time.setText(
+                        b._fmt_pos(0, b._voice_sec))
+                    if getattr(b, "wave_bar", None) is not None:
+                        b.wave_bar.set_progress(0.0)
+                    # 直接设 ▶：该卡片已停止播放。
+                    # 不能调 _sync_pause_btn()——那看的是全局
+                    # 播放器状态（此刻正在播新的音源），
+                    # 会错误地把这张已停的卡片也显示成暂停图标。
+                    b.voice_pause_btn.setText("▶")
+                    b.voice_pause_btn.setToolTip("播放")
+                except Exception:
+                    pass
+                reset += 1
+            if reset:
+                log("[语音] 已复位 %d 张其他卡片的播放状态" % reset)
+        except Exception as ex:
+            log("[语音] 复位其他卡片失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
 
     def _voice_player(self):
         """找到全局 VoicePlayer（气泡本身没有 pet，往上找 ChatWindow）。"""
@@ -861,6 +908,11 @@ class ChatBubble(QFrame):
             if player is None:
                 self._show_voice_error("播放组件缺失，暂时无法播放")
                 return
+            # 播放器是全局单例：同一时间只有一条语音真正在播。
+            # 若别的气泡处于「播放中/暂停中」，先复位它们，
+            # 否则两张卡片会同时显示暂停图标、抢同一个进度，
+            # 出现「进度超过自身总时长」这类错乱。
+            self._reset_other_voice_bubbles()
             # 播放器存在但后端不可用（_player 为 False）
             if getattr(player, "_player", None) is False:
                 self._show_voice_error("播放组件缺失，暂时无法播放")
