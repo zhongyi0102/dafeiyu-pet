@@ -520,9 +520,11 @@ class ChatBubble(QFrame):
                 self.time_label = QLabel(_fmt_time(ts))
                 self.time_label.setObjectName("BubbleTime")
                 if voice_path:
+                    # 语音气泡的时间戳：底部右对齐，留足右侧内边距
+                    # （原来只有 2px，贴边看起来像被截断）
                     self.time_label.setStyleSheet(
                         "color:#c3c8d2;font-size:10px;"
-                        "padding:0 2px 0 0;")
+                        "padding:2px 8px 0 0;")
                     self.time_label.setAlignment(
                         Qt.AlignmentFlag.AlignRight)
                 else:
@@ -538,16 +540,23 @@ class ChatBubble(QFrame):
         self._style()
         self.set_text(text)
 
-    def _style(self):
-        self.setStyleSheet(chat_bubble_qss(self.role))
+    def _style(self, theme=None):
+        """应用气泡底色。theme 显式传入时用它（主题切换），
+        否则用当前全局主题（新建气泡）。"""
+        try:
+            t = theme if theme is not None else _CHAT_THEME
+            self.setStyleSheet(chat_bubble_qss(self.role, t))
+        except Exception as ex:
+            log("[聊天] 气泡样式失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
 
-    def _refresh_voice_theme(self):
+    def _refresh_voice_theme(self, theme=None):
         """主题切换后刷新语音卡片的内联样式与波形配色。"""
         try:
             vc = getattr(self, "voice_ctrl", None)
             if vc is None:
                 return
-            _t = _CHAT_THEME
+            _t = theme if theme is not None else _CHAT_THEME
             vc.setStyleSheet(
                 "QWidget#VoiceCard{"
                 "background:%(vc_card_bg)s;"
@@ -577,9 +586,17 @@ class ChatBubble(QFrame):
                 })
             lab = getattr(self, "voice_song_label", None)
             if lab is not None:
-                lab.setStyleSheet(
-                    "QLabel#VoiceSong{color:%s;font-size:13px;"
-                    "background:transparent;padding:0;}" % _t["vc_song_fg"])
+                # 错误提示态保留红字，不覆盖成歌名色
+                if getattr(self, "_voice_error", None):
+                    lab.setStyleSheet(
+                        "QLabel#VoiceSong{color:%s;font-size:12px;"
+                        "background:transparent;padding:2px 0 0 2px;}"
+                        % _t.get("vc_error_fg", "#c42b31"))
+                else:
+                    lab.setStyleSheet(
+                        "QLabel#VoiceSong{color:%s;font-size:13px;"
+                        "background:transparent;padding:0;}"
+                        % _t["vc_song_fg"])
             wb = getattr(self, "wave_bar", None)
             if wb is not None:
                 wb.update()
@@ -1927,8 +1944,8 @@ class ChatWindow(QWidget):
         except Exception:
             pass
         for b in self.findChildren(ChatBubble):
-            b._style()
-            b._refresh_voice_theme()
+            b._style(t)              # 用当前主题刷新底色
+            b._refresh_voice_theme(t)   # 卡片内联样式/歌名色/波形
 
     def _load_avatar(self):
         for name in ("正面.png", "icon.png"):
