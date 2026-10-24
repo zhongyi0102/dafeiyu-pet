@@ -1154,6 +1154,9 @@ class ChatWindow(QWidget):
     def _current_session(self):
         return self._find_session(self.current_id)
 
+    # 消息里要保留的附加字段（voice/图片/原文/时间戳等）
+    _MSG_KEEP_FIELDS = ("voice", "voice_sec", "voice_text", "image", "ts")
+
     def _normalize_session(self, raw):
         if not isinstance(raw, dict):
             return None
@@ -1165,7 +1168,13 @@ class ChatWindow(QWidget):
         if isinstance(msgs, list):
             for m in msgs:
                 if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
-                    clean.append({"role": m["role"], "content": str(m.get("content") or "")})
+                    item = {"role": m["role"],
+                            "content": str(m.get("content") or "")}
+                    # 保留语音条 / 图片 / 时间戳等附加字段，否则重开聊天全部丢失
+                    for k in self._MSG_KEEP_FIELDS:
+                        if k in m and m[k] is not None:
+                            item[k] = m[k]
+                    clean.append(item)
         title = str(raw.get("title") or "未命名").strip()[:30] or "未命名"
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         created = str(raw.get("created") or now)
@@ -1954,6 +1963,10 @@ class ChatWindow(QWidget):
                 # 从文件名提取歌名：XXX_YYYYMMDD_HHMMSS_翻唱.wav 或 XXX_翻唱.wav
                 stem = fname[:-len("_翻唱.wav")]
                 song = stem.split("_")[0] if "_" in stem else stem
+                # 剥掉查询残留符号（如「·指纹」的中点）
+                song = song.lstrip("·•・. ")
+                if not song:
+                    continue
                 # 找含「🎵 歌名」的 assistant 消息
                 host = None
                 for sess in self._all_sessions():
