@@ -109,7 +109,8 @@ def _separate(mp3_path, out_dir):
         r = subprocess.run(
             [_python(), "-u", script, mp3_path, out_dir],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=900)
+            errors="replace", timeout=900,
+            creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as ex:
         return "", "", "%s: %s" % (type(ex).__name__, ex)
     if r.returncode != 0:
@@ -138,7 +139,8 @@ def _convert(vocals, out_path):
             [_python(), "-u", script, vocals, out_path,
              "--protect", "0.5"],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=1200)
+            errors="replace", timeout=1200,
+            creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as ex:
         return "%s: %s" % (type(ex).__name__, ex)
     if r.returncode != 0:
