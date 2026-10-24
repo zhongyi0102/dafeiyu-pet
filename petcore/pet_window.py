@@ -242,7 +242,7 @@ class PetWindow(QWidget):
             x = screen.right() - self.width() - 80
             y = screen.bottom() - self.height() - 60
         self.move(int(x), int(y))
-        if self.pet.get("display", True):
+        if self.pet.get("display", True) and not TEST_MODE:
             self.show()
         self.snap_into_screen()
         if app.cfg.get("passthrough", False):

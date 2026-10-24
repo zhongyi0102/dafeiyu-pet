@@ -61,6 +61,9 @@ CHAT_PATH = os.path.join(APP_DIR, "chats.json")
 MEMORY_PATH = os.path.join(APP_DIR, "memory.json")
 LOG_PATH = os.path.join(APP_DIR, "error.log")
 LOG = logging.getLogger("dafeiyu")
+# 测试模式：DFY_TEST_MODE=1 时不显示任何窗口（宠物/托盘/游戏面板），
+# 供自动化测试在后台跑，避免弹窗干扰桌面。业务逻辑不受影响。
+TEST_MODE = os.environ.get("DFY_TEST_MODE") == "1"
 
 try:
     import pynvml

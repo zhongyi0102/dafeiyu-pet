@@ -555,8 +555,9 @@ class RpsPanel(QFrame):
         self.result.setText("")
         self.move(int(pet.x() + pet.width() / 2 - self.width() / 2),
                   int(pet.y() - self.height() - 8))
-        self.show()
-        self.raise_()
+        if not TEST_MODE:
+            self.show()
+            self.raise_()
         app = QApplication.instance()
         if app is not None and not self._filter_installed:
             app.installEventFilter(self)
@@ -641,6 +642,8 @@ class CatchGameWindow(QWidget):
         self._timer.timeout.connect(self._tick)
 
     def start(self):
+        if TEST_MODE:
+            return
         self.show()
         self.raise_()
         self.setFocus()
@@ -905,7 +908,8 @@ class PetApp(QObject):
         self.tray = QSystemTrayIcon(self.icon)
         self.tray.setContextMenu(self.build_tray_menu())
         self.tray.activated.connect(self._on_tray_activated)
-        self.tray.show()
+        if not TEST_MODE:
+            self.tray.show()
 
     # ---------- 宠物集合 ----------
     def get_pet(self, pet_id):
