@@ -2816,6 +2816,17 @@ class ChatWindow(QWidget):
         self._voice_session_id = self.current_id
 
         if sing_query:
+            # 并发保护：上一首还没唱完就不再启动第二个任务
+            # （否则两个翻唱并行跑，回调会互相覆盖状态、结果写错会话）
+            if getattr(self, "_cover_session_id", None):
+                log("[翻唱] 已有翻唱任务进行中（会话 %s），忽略本次请求《%s》"
+                    % (self._cover_session_id, sing_query), logging.INFO)
+                try:
+                    self._say_cover_busy()
+                except Exception as ex:
+                    log("[翻唱] 忙碌提示写入失败: %s: %s"
+                        % (type(ex).__name__, ex), logging.WARNING)
+                return
             # 先在聊天流里放一条「正在翻唱」状态气泡（实时刷新已用秒数）
             try:
                 self._cover_status_bubble = self._add_bubble(
@@ -2945,6 +2956,20 @@ class ChatWindow(QWidget):
                 # 对象已被销毁属正常（会话切换重渲染），不刷屏
                 log("[翻唱] 移除状态气泡跳过: %s: %s"
                     % (type(ex).__name__, ex), logging.DEBUG)
+
+    def _say_cover_busy(self):
+        """翻唱进行中又来请求：回一句傲娇短话，不启动新任务。"""
+        try:
+            line = random.choice(COVER_BUSY_LINES)
+            self.append_external("assistant", line)
+            try:
+                self.pet.say(self._first_sentence(line))
+            except Exception as ex:
+                log("[翻唱] 忙碌提示桌宠气泡失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.DEBUG)
+        except Exception as ex:
+            log("[翻唱] 忙碌提示失败（会话 %s）: %s: %s"
+                % (self.current_id, type(ex).__name__, ex), logging.WARNING)
 
     def _say_cover_line(self, song="", fail=False):
         """翻唱结束后发一句本地人设短评（不调模型、不入语音链路）。"""
