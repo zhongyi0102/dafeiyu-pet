@@ -2006,6 +2006,22 @@ class ChatWindow(QWidget):
         self._hide_typing()
 
         if sing_query:
+            # 先在聊天流里放一条「正在翻唱」状态气泡（实时刷新已用秒数）
+            try:
+                self._cover_status_bubble = self._add_bubble(
+                    "note", "🎵 正在翻唱《%s》…\n启动语音服务与下载伴奏中（约 5 分钟）"
+                    % sing_query)
+            except Exception:
+                self._cover_status_bubble = None
+            self._cover_started = time.time()
+            # 计时器：每 2 秒刷新已用时间，让用户确认没有卡死
+            self._cover_timer = getattr(self, "_cover_timer", None)
+            if self._cover_timer is None:
+                from PySide6.QtCore import QTimer as _QT
+                self._cover_timer = _QT(self)
+                self._cover_timer.timeout.connect(self._on_cover_tick)
+            self._cover_timer.start(2000)
+
             def work_cover():
                 import cover as _CV
                 def prog(msg):
@@ -2036,14 +2052,53 @@ class ChatWindow(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_cover_progress(self, msg):
-        """翻唱进度（主线程）：显示在输入框上方提示。"""
+        """翻唱进度（主线程）：更新状态气泡 + 输入框上方提示。"""
         try:
             self.token_label.setText(msg)
         except Exception:
             pass
+        self._update_cover_status(msg)
+
+    def _update_cover_status(self, msg=None):
+        """刷新「正在翻唱」状态气泡的文字（含已用秒数）。"""
+        b = getattr(self, "_cover_status_bubble", None)
+        if b is None:
+            return
+        try:
+            import time as _t
+            sec = int(_t.time() - getattr(self, "_cover_started", _t.time()))
+            stage = msg or "正在处理"
+            mm, ss = divmod(sec, 60)
+            b.set_text("🎵 正在翻唱…\n%s（已用 %d分%02d 秒，全程约 5 分钟）"
+                       % (stage, mm, ss))
+            self._scroll_bottom()
+        except Exception:
+            pass
+
+    def _on_cover_tick(self):
+        """每 2 秒刷新一次已用时间（没有新 stage 文案也刷新秒数）。"""
+        if getattr(self, "_cover_status_bubble", None) is not None:
+            self._update_cover_status()
+
+    def _close_cover_status(self):
+        """翻唱结束：移除状态气泡、停计时器。"""
+        try:
+            t = getattr(self, "_cover_timer", None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
+        b = getattr(self, "_cover_status_bubble", None)
+        if b is not None:
+            try:
+                self._remove_bubble(b)
+            except Exception:
+                pass
+            self._cover_status_bubble = None
 
     def _on_cover_ready(self, path, name, artist, err):
-        """翻唱完成（主线程）：插语音条 + 文字。"""
+        """翻唱完成（主线程）：先移除状态气泡，再插语音条 + 文字。"""
+        self._close_cover_status()
         pending = getattr(self, "_pending_voice_text", "")
         self._pending_voice_text = ""
         self._pending_voice_usage = None
