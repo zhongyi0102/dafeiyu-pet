@@ -370,8 +370,8 @@ class ChatBubble(QFrame):
             except Exception as ex:
                 log("[聊天] 气泡图片加载失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
-        # QQ 风格语音条：喇叭 + 时长，点击才播放
-        self.voice_btn = None
+        # QQ 风格语音条：单行播放条（▶ + 波形 + 时长）
+        self.voice_btn = None   # 兼容别名，指向播放钮
         if voice_path:
             try:
                 from PySide6.QtWidgets import QPushButton
@@ -389,92 +389,137 @@ class ChatBubble(QFrame):
                     except Exception:
                         sec = 1.0
                 self._voice_sec = sec
-                w = int(max(90, min(260, 90 + sec * 22)))
-                self.voice_btn = QPushButton("\U0001F50A  %d\"" % int(round(sec)))
-                self.voice_btn.setFixedHeight(34)
-                self.voice_btn.setMinimumWidth(w)
-                self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.voice_btn.setToolTip("点击播放语音")
-                self.voice_btn.setStyleSheet(
-                    "QPushButton{background:#eaf2ff;border:1px solid #c9dcff;"
-                    "border-radius:17px;padding:0 14px;color:#2f6fd0;"
-                    "font-size:13px;text-align:left;}"
-                    "QPushButton:hover{background:#dfeaff;}"
-                    "QPushButton:pressed{background:#d2e2ff;}")
-                self.voice_btn.clicked.connect(self._play_voice)
-                lay.addWidget(self.voice_btn)
-                # 播放面板：波形进度条 + 控制按钮 + 倍速 + 转文字
+                # ===== 音乐卡片：第一行 [▶] [波形] [00:12 / 03:58] [1.0x] [📝]
+                #      第二行 [歌名]；整卡固定宽 min(340, 可用宽)
+                _t = _CHAT_THEME
                 self.voice_ctrl = QWidget()
+                self.voice_ctrl.setObjectName("VoiceCard")
                 _vh = QHBoxLayout(self.voice_ctrl)
-                _vh.setContentsMargins(0, 2, 0, 0)
-                _vh.setSpacing(6)
-                self.voice_pause_btn = QPushButton("⏸")
-                self.voice_pause_btn.setFixedSize(30, 30)
-                self.voice_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.voice_pause_btn.setToolTip("暂停 / 继续")
+                _vh.setContentsMargins(16, 12, 16, 12)
+                _vh.setSpacing(10)
+                # 播放/暂停圆钮：32×32 圆形，固定尺寸不被压缩
+                self.voice_pause_btn = QPushButton("▶")
+                self.voice_pause_btn.setObjectName("VoicePlayBtn")
+                self.voice_pause_btn.setFixedSize(32, 32)
+                self.voice_pause_btn.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                self.voice_pause_btn.setCursor(
+                    Qt.CursorShape.PointingHandCursor)
+                self.voice_pause_btn.setToolTip("播放 / 暂停")
+                self.voice_pause_btn.setFocusPolicy(
+                    Qt.FocusPolicy.NoFocus)
                 self.voice_pause_btn.clicked.connect(self._toggle_pause_voice)
-                _vh.addWidget(self.voice_pause_btn)
-                # 波形进度条（可点击/拖动定位）
+                _vh.addWidget(self.voice_pause_btn, 0)
+                # 波形进度条：可伸缩，占满剩余空间（min-width 0）
                 self.wave_bar = WaveBar(voice_path, sec)
+                self.wave_bar.setMinimumWidth(0)
+                self.wave_bar.setFixedHeight(24)
+                self.wave_bar.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 self.wave_bar.seekRequested.connect(self._seek_voice)
                 _vh.addWidget(self.wave_bar, 1)
-                # 时间显示
-                self.voice_time = QLabel(self._fmt_time(0, sec))
-                self.voice_time.setStyleSheet(
-                    "color:#8a8f9c;font-size:11px;")
-                _vh.addWidget(self.voice_time)
-                # 倍速按钮（循环切换）
+                # 时间：当前进度 / 总时长，固定不压缩
+                self.voice_time = QLabel(self._fmt_pos(0, sec))
+                self.voice_time.setObjectName("VoiceTime")
+                self.voice_time.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                _vh.addWidget(self.voice_time, 0)
+                # 倍速（循环切换），固定不压缩
                 self._voice_rates = (1.0, 1.25, 1.5, 2.0, 0.75)
                 self._voice_rate_i = 0
                 self.voice_rate_btn = QPushButton("1.0x")
-                self.voice_rate_btn.setFixedSize(44, 26)
-                self.voice_rate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_rate_btn.setObjectName("VoiceRateBtn")
+                self.voice_rate_btn.setFixedHeight(24)
+                self.voice_rate_btn.setMinimumWidth(40)
+                self.voice_rate_btn.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                self.voice_rate_btn.setCursor(
+                    Qt.CursorShape.PointingHandCursor)
                 self.voice_rate_btn.setToolTip("播放倍速")
+                self.voice_rate_btn.setFocusPolicy(
+                    Qt.FocusPolicy.NoFocus)
                 self.voice_rate_btn.clicked.connect(self._cycle_voice_rate)
-                self.voice_rate_btn.setStyleSheet(
-                    "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
-                    "border-radius:13px;font-size:11px;color:#2f6fd0;}"
-                    "QPushButton:hover{background:#e8eef9;}")
-                _vh.addWidget(self.voice_rate_btn)
-                # 转文字
+                _vh.addWidget(self.voice_rate_btn, 0)
+                # 转文字：24×24，固定不压缩
                 self.voice_text_btn = QPushButton("📝")
-                self.voice_text_btn.setFixedSize(30, 26)
-                self.voice_text_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.voice_text_btn.setObjectName("VoiceTextBtn")
+                self.voice_text_btn.setFixedSize(24, 24)
+                self.voice_text_btn.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                self.voice_text_btn.setCursor(
+                    Qt.CursorShape.PointingHandCursor)
                 self.voice_text_btn.setToolTip("显示文字内容")
+                self.voice_text_btn.setFocusPolicy(
+                    Qt.FocusPolicy.NoFocus)
                 self.voice_text_btn.clicked.connect(self._toggle_voice_text)
-                self.voice_text_btn.setStyleSheet(
-                    "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
-                    "border-radius:13px;font-size:13px;}"
-                    "QPushButton:hover{background:#e8eef9;}")
-                _vh.addWidget(self.voice_text_btn)
-                for _b in (self.voice_pause_btn,):
-                    _b.setStyleSheet(
-                        "QPushButton{background:#f2f5fa;border:1px solid #dfe3ec;"
-                        "border-radius:15px;font-size:13px;}"
-                        "QPushButton:hover{background:#e8eef9;}")
-                self.voice_ctrl.hide()
-                lay.addWidget(self.voice_ctrl)
-                # 转文字展开区（默认隐藏）
+                _vh.addWidget(self.voice_text_btn, 0)
+                # 展开区：转文字内容（默认隐藏）
                 self.voice_text_area = None
-                lay.addSpacing(6)
+                self.voice_btn = self.voice_pause_btn  # 兼容别名
+                # 卡片样式（浅/深色由 _CHAT_THEME 决定）
+                self.voice_ctrl.setStyleSheet(
+                    "QWidget#VoiceCard{"
+                    "background:%(vc_card_bg)s;"
+                    "border:1px solid %(vc_card_border)s;"
+                    "border-radius:4px 16px 16px 16px;}"
+                    "QPushButton#VoicePlayBtn{"
+                    "background:%(vc_play_bg)s;color:%(vc_play_fg)s;"
+                    "border:none;border-radius:16px;font-size:13px;}"
+                    "QPushButton#VoicePlayBtn:hover{background:%(vc_play_bg)s;}"
+                    "QLabel#VoiceTime{color:%(vc_time_fg)s;font-size:12px;}"
+                    "QPushButton#VoiceRateBtn{"
+                    "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
+                    "border:1px solid %(vc_rate_border)s;"
+                    "border-radius:12px;padding:0 8px;font-size:12px;}"
+                    "QPushButton#VoiceRateBtn:hover{"
+                    "background:%(vc_rate_bg)s;}"
+                    "QPushButton#VoiceTextBtn{"
+                    "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
+                    "border:1px solid %(vc_rate_border)s;"
+                    "border-radius:12px;font-size:11px;}"
+                    "QPushButton#VoiceTextBtn:hover{"
+                    "background:%(vc_rate_bg)s;}" % {
+                        "vc_card_bg": _t["vc_card_bg"],
+                        "vc_card_border": _t["vc_card_border"],
+                        "vc_play_bg": _t["vc_play_bg"],
+                        "vc_play_fg": _t["vc_play_fg"],
+                        "vc_time_fg": _t["vc_time_fg"],
+                        "vc_rate_bg": _t["vc_rate_bg"],
+                        "vc_rate_fg": _t["vc_rate_fg"],
+                        "vc_rate_border": _t["vc_rate_border"],
+                    })
+                lay.addWidget(self.voice_ctrl)
+                # ===== 第二行：歌名（13px，单行省略号，悬停看全名）=====
+                self.voice_song_label = None
+                self._song_line_src = self._voice_text
                 self._playing_now = False
                 self._paused_now = False
+                # 卡片固定宽 min(340, 可用宽)：由 _apply_voice_card_width 控制
+                self._voice_card_max = 340
+                self._apply_voice_card_width()
             except Exception as ex:
                 log("[聊天] 语音条创建失败: %s: %s"
                     % (type(ex).__name__, ex), logging.WARNING)
         lay.addWidget(self.label)
-        # 消息时间戳（气泡内右下角小字）
+        # 消息时间戳（语音气泡：置底最右、更淡；普通气泡：右上）
         self.ts = ts
         self.time_label = None
         if ts:
             try:
                 self.time_label = QLabel(_fmt_time(ts))
                 self.time_label.setObjectName("BubbleTime")
-                self.time_label.setStyleSheet(
-                    "color:#a8aebb;font-size:10px;padding:2px 2px 0 0;")
-                if role == "user":
+                if voice_path:
+                    self.time_label.setStyleSheet(
+                        "color:#c3c8d2;font-size:10px;"
+                        "padding:0 2px 0 0;")
                     self.time_label.setAlignment(
                         Qt.AlignmentFlag.AlignRight)
+                else:
+                    self.time_label.setStyleSheet(
+                        "color:#a8aebb;font-size:10px;padding:2px 2px 0 0;")
+                    if role == "user":
+                        self.time_label.setAlignment(
+                            Qt.AlignmentFlag.AlignRight)
                 lay.addWidget(self.time_label)
             except Exception:
                 self.time_label = None
@@ -485,15 +530,76 @@ class ChatBubble(QFrame):
     def _style(self):
         self.setStyleSheet(chat_bubble_qss(self.role))
 
+    def _refresh_voice_theme(self):
+        """主题切换后刷新语音卡片的内联样式与波形配色。"""
+        try:
+            vc = getattr(self, "voice_ctrl", None)
+            if vc is None:
+                return
+            _t = _CHAT_THEME
+            vc.setStyleSheet(
+                "QWidget#VoiceCard{"
+                "background:%(vc_card_bg)s;"
+                "border:1px solid %(vc_card_border)s;"
+                "border-radius:4px 16px 16px 16px;}"
+                "QPushButton#VoicePlayBtn{"
+                "background:%(vc_play_bg)s;color:%(vc_play_fg)s;"
+                "border:none;border-radius:16px;font-size:13px;}"
+                "QLabel#VoiceTime{color:%(vc_time_fg)s;font-size:12px;}"
+                "QPushButton#VoiceRateBtn{"
+                "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
+                "border:1px solid %(vc_rate_border)s;"
+                "border-radius:12px;padding:0 8px;font-size:12px;}"
+                "QPushButton#VoiceTextBtn{"
+                "background:%(vc_rate_bg)s;color:%(vc_rate_fg)s;"
+                "border:1px solid %(vc_rate_border)s;"
+                "border-radius:12px;font-size:11px;}" % {
+                    "vc_card_bg": _t["vc_card_bg"],
+                    "vc_card_border": _t["vc_card_border"],
+                    "vc_play_bg": _t["vc_play_bg"],
+                    "vc_play_fg": _t["vc_play_fg"],
+                    "vc_time_fg": _t["vc_time_fg"],
+                    "vc_rate_bg": _t["vc_rate_bg"],
+                    "vc_rate_fg": _t["vc_rate_fg"],
+                    "vc_rate_border": _t["vc_rate_border"],
+                })
+            lab = getattr(self, "voice_song_label", None)
+            if lab is not None:
+                lab.setStyleSheet(
+                    "QLabel#VoiceSong{color:%s;font-size:13px;"
+                    "background:transparent;padding:0;}" % _t["vc_song_fg"])
+            wb = getattr(self, "wave_bar", None)
+            if wb is not None:
+                wb.update()
+        except Exception as ex:
+            log("[聊天] 语音卡片主题刷新失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def set_text(self, text):
         self._plain = text or ""
-        self.label.setText(chat_render_html(self._plain))
         try:
-            w = chat_text_width(self._plain, self.label.font())
-            self.label.setFixedWidth(w)
-            self.setMaximumWidth(w + 26)
+            if getattr(self, "voice_ctrl", None) is not None:
+                # 语音卡片：宽度由卡片自己决定，绝不能用文字宽度卡死
+                # （否则右侧倍速/图标会被挤掉）
+                self.label.setMaximumWidth(self._voice_card_max)
+                self.setMinimumWidth(0)
+                self.setMaximumWidth(16777215)   # QWIDGETSIZE_MAX
+                # 正文就是「🎵 歌名」时不再重复显示（歌名行已有）
+                if self._plain.strip().startswith("🎵"):
+                    self.label.setText("")
+                    self.label.hide()
+                else:
+                    self.label.setText(chat_render_html(self._plain))
+                    self.label.show()
+            else:
+                self.label.setText(chat_render_html(self._plain))
+                w = chat_text_width(self._plain, self.label.font())
+                self.label.setFixedWidth(w)
+                self.setMaximumWidth(w + 26)
         except Exception:
             pass
+        # 语音气泡：从正文提取「🎵 歌名」修正歌名行（避免显示路径）
+        self._refresh_song_label()
 
     def mark_error(self):
         if self.role != "error":
@@ -523,9 +629,11 @@ class ChatBubble(QFrame):
             menu.addAction("复制这条消息",
                            lambda: QGuiApplication.clipboard().setText(
                                self._plain))
-        if self.voice_btn is not None:
+        if getattr(self, "_voice_path", None):
             menu.addSeparator()
-            menu.addAction("播放语音", self._play_voice)
+            menu.addAction("播放 / 暂停", self._play_voice)
+            menu.addAction("停止", self._stop_voice)
+            menu.addAction("显示文字内容", self._toggle_voice_text)
         if menu.actions():
             menu.exec(QCursor.pos())
 
@@ -545,6 +653,126 @@ class ChatBubble(QFrame):
         except Exception:
             return None
 
+    def _apply_voice_card_width(self):
+        """卡片宽度 = min(340, 可用宽度)，窗口变窄时只压缩波形。"""
+        try:
+            cap = getattr(self, "_voice_card_max", 340)
+            avail = 16777215
+            # 可用宽度：父滚动区视口宽 - 两侧留白
+            p = self.parent()
+            while p is not None:
+                vp = getattr(p, "viewport", None)
+                if callable(vp):
+                    avail = max(180, vp().width() - 24)
+                    break
+                p = p.parent()
+            target = min(cap, avail)
+            if getattr(self, "voice_ctrl", None) is not None:
+                vc = self.voice_ctrl
+                vc.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                 QSizePolicy.Policy.Fixed)
+                vc.setMinimumWidth(target)
+                vc.setMaximumWidth(target)
+                vc.resize(target, vc.height())
+                # 让波形吃掉剩余宽度（按钮都是 Fixed，只有它 Expanding）
+                try:
+                    vc.layout().activate()
+                    vc.updateGeometry()
+                except Exception:
+                    pass
+            # 歌名行同步宽度（省略号按新宽度重算）
+            if getattr(self, "voice_song_label", None) is not None:
+                self.voice_song_label.setMaximumWidth(target)
+                self._refresh_song_label()
+        except Exception:
+            pass
+
+    def _fmt_pos(self, pos_s, dur_s):
+        """播放进度显示：00:12 / 03:58"""
+        try:
+            pos_s = max(0.0, float(pos_s or 0.0))
+            dur_s = max(0.0, float(dur_s or 0.0))
+            m1, s1 = divmod(int(pos_s), 60)
+            m2, s2 = divmod(int(round(dur_s)), 60)
+            return "%02d:%02d / %02d:%02d" % (m1, s1, m2, s2)
+        except Exception:
+            return "00:00 / 00:00"
+
+    def resizeEvent(self, e):
+        """窗口尺寸变化时重算卡片宽度（只压波形，不挤按钮）。"""
+        try:
+            super().resizeEvent(e)
+        except Exception:
+            pass
+        if getattr(self, "voice_ctrl", None) is not None:
+            self._apply_voice_card_width()
+
+    def _refresh_song_label(self):
+        """用正文里的「🎵 歌名」更新歌名小字行；没有就隐藏。"""
+        lab = getattr(self, "voice_song_label", None)
+        if lab is None:
+            # 首次：根据来源创建（正文优先，其次歌词首行）
+            if not getattr(self, "_song_line_src", ""):
+                return
+            from PySide6.QtWidgets import QLabel as _QL
+            _t = _CHAT_THEME
+            self.voice_song_label = _QL()
+            self.voice_song_label.setObjectName("VoiceSong")
+            self.voice_song_label.setStyleSheet(
+                "QLabel#VoiceSong{color:%(vc_song_fg)s;font-size:13px;"
+                "background:transparent;padding:0;}"
+                % {"vc_song_fg": _t["vc_song_fg"]})
+            # 单行 + 超长省略号（任何长度都不换行、不裁切）
+            self.voice_song_label.setWordWrap(False)
+            self.voice_song_label.setMinimumWidth(0)
+            self.voice_song_label.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            self.voice_song_label.setCursor(
+                Qt.CursorShape.PointingHandCursor)
+            self.voice_song_label.mousePressEvent = (
+                lambda e: self._toggle_voice_text())
+            try:
+                lay = self.layout()
+                lay.insertWidget(lay.indexOf(self.voice_ctrl) + 1,
+                                 self.voice_song_label)
+                lay.setSpacing(0)
+            except Exception:
+                self.layout().addWidget(self.voice_song_label)
+            lab = self.voice_song_label
+        # 提取歌名：正文「🎵 XXX - YYY」优先
+        import re as _re
+        name = ""
+        try:
+            m = _re.search(r"🎵\s*([^\n]+?)\s*$",
+                           (self._plain or "").strip(),
+                           _re.MULTILINE)
+            if m:
+                name = m.group(1).strip()
+        except Exception:
+            pass
+        if not name:
+            # 退化：歌词首行（不是路径）
+            src = (getattr(self, "_song_line_src", "") or "").strip()
+            first = src.splitlines()[0].strip() if src else ""
+            if first and ":" not in first and ":" not in first \
+                    and "/" not in first and "\\" not in first:
+                name = first
+        if name:
+            full = "🎵 %s" % name
+            # 单行省略：按卡片宽度用 QFontMetrics 截断
+            try:
+                from PySide6.QtGui import QFontMetrics as _FM
+                cap = max(80, getattr(self, "_voice_card_max", 340) - 32)
+                fm = _FM(lab.font())
+                shown = fm.elidedText(full, Qt.TextElideMode.ElideRight, cap)
+            except Exception:
+                shown = full
+            lab.setText(shown)
+            lab.setToolTip(full)          # 悬停显示完整歌名
+            lab.show()
+        else:
+            lab.hide()
+
     def _voice_label(self):
         return "\U0001F50A  %d\"" % int(round(self._voice_sec))
 
@@ -553,7 +781,7 @@ class ChatBubble(QFrame):
         try:
             player = self._voice_player()
             if player is None:
-                self.voice_btn.setText("\U0001F50A  播放器不可用")
+                self.voice_time.setText("不可用")
                 return
 
             # 正在播这条 → 暂停
@@ -561,7 +789,6 @@ class ChatBubble(QFrame):
                 if player.pause():
                     self._playing_now = False
                     self._paused_now = True
-                    self.voice_btn.setText("\U0001F50A  已暂停")
                     self._sync_pause_btn()
                 return
 
@@ -570,7 +797,6 @@ class ChatBubble(QFrame):
                 if player.resume():
                     self._playing_now = True
                     self._paused_now = False
-                    self.voice_btn.setText("\U0001F50A  播放中…")
                     self._sync_pause_btn()
                     self._start_voice_watch()
                 return
@@ -578,7 +804,7 @@ class ChatBubble(QFrame):
             # 全新播放
             p = getattr(self, "_voice_path", "")
             if not p or not os.path.exists(p):
-                self.voice_btn.setText("\U0001F50A  文件不见了")
+                self.voice_time.setText("文件丢失")
                 return
             with open(p, "rb") as f:
                 data = f.read()
@@ -594,9 +820,6 @@ class ChatBubble(QFrame):
                 player._last_ok_ts = old_ts
             self._playing_now = True
             self._paused_now = False
-            self.voice_btn.setText("\U0001F50A  播放中…")
-            if getattr(self, "voice_ctrl", None) is not None:
-                self.voice_ctrl.show()
             if getattr(self, "wave_bar", None) is not None:
                 self.wave_bar.set_progress(0.0)
             self._sync_pause_btn()
@@ -714,36 +937,35 @@ class ChatBubble(QFrame):
             if player.pause():
                 self._playing_now = False
                 self._paused_now = True
-                self.voice_btn.setText("\U0001F50A  已暂停")
         elif player.is_paused():
             if player.resume():
                 self._playing_now = True
                 self._paused_now = False
-                self.voice_btn.setText("\U0001F50A  播放中…")
                 self._start_voice_watch()
         self._sync_pause_btn()
 
     def _sync_pause_btn(self):
-        """暂停按钮图标跟随状态：播放中=⏸，暂停中=▶。"""
+        """播放钮图标跟随状态：待播/播放中=⏸（可暂停），暂停中=▶。"""
         b = getattr(self, "voice_pause_btn", None)
         if b is None:
             return
         player = self._voice_player()
-        paused = bool(player is not None and player.is_paused())
-        b.setText("▶" if paused else "⏸")
-        b.setToolTip("继续播放" if paused else "暂停")
+        playing = bool(player is not None and player.is_playing())
+        b.setText("⏸" if playing else "▶")
+        b.setToolTip("暂停" if playing else "播放")
 
     def _stop_voice(self):
-        """⏹ 按钮：停止并复位。"""
+        """停止播放并复位 UI。"""
         player = self._voice_player()
         if player is not None:
             player.stop()
         self._playing_now = False
         self._paused_now = False
         try:
-            self.voice_btn.setText(self._voice_label())
-            if getattr(self, "voice_ctrl", None) is not None:
-                self.voice_ctrl.hide()
+            self.voice_time.setText(self._fmt_pos(0, self._voice_sec))
+            if getattr(self, "wave_bar", None) is not None:
+                self.wave_bar.set_progress(0.0)
+            self._sync_pause_btn()
         except Exception:
             pass
 
@@ -769,7 +991,8 @@ class ChatBubble(QFrame):
             if getattr(self, "wave_bar", None) is not None:
                 self.wave_bar.set_progress(min(1.0, pos / (dur * 1000.0)))
             if getattr(self, "voice_time", None) is not None:
-                self.voice_time.setText(self._fmt_time(pos / 1000.0, dur))
+                self.voice_time.setText(
+                    self._fmt_pos(pos / 1000.0, dur))
         except Exception:
             pass
         if st == "stopped":
@@ -781,14 +1004,11 @@ class ChatBubble(QFrame):
             self._playing_now = False
             self._paused_now = False
             try:
-                self.voice_btn.setText(self._voice_label())
-                if getattr(self, "voice_ctrl", None) is not None:
-                    self.voice_ctrl.hide()
+                self.voice_time.setText(
+                    self._fmt_pos(0, self._voice_sec))
                 if getattr(self, "wave_bar", None) is not None:
                     self.wave_bar.set_progress(0.0)
-                if getattr(self, "voice_time", None) is not None:
-                    self.voice_time.setText(
-                        self._fmt_time(0, self._voice_sec))
+                self._sync_pause_btn()
             except Exception:
                 pass
         else:
@@ -806,8 +1026,12 @@ class WaveBar(QWidget):
         self._duration = max(0.2, float(duration or 1.0))
         self._progress = 0.0          # 0~1
         self._dragging = False
-        self.setMinimumHeight(26)
-        self.setMinimumWidth(120)
+        self.setMinimumHeight(24)
+        self.setMaximumHeight(24)
+        # 最小宽度 0：窗口变窄时只让波形收缩，不挤掉两侧按钮
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     # ---- 采样：读 WAV 转 N 个峰值 ----
@@ -874,21 +1098,30 @@ class WaveBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.width(), self.height()
+        if w <= 2:
+            p.end()
+            return
         mid = h / 2
         n = len(self._peaks)
-        bw = max(2, int(w / n) - 2)
-        gap = max(1, int((w - bw * n) / max(1, n - 1)) if n > 1 else 2)
-        x = 2
+        # 条宽 + 固定 2px 间距；宽度不足时自动减少条数（绝不溢出裁切）
+        gap = 2
+        bw = max(1, (w - 2 - gap * (n - 1)) // max(1, n))
+        if bw < 2:
+            n = max(1, (w - 2 + gap) // (2 + gap))
+            bw = 2
+            peaks = self._peaks[:n]
+        else:
+            peaks = self._peaks
+        total = bw * len(peaks) + gap * max(0, len(peaks) - 1)
+        x = max(0, (w - total) // 2)
         played = self._progress
-        for i, pk in enumerate(self._peaks):
-            bh = max(3, int(pk * (h - 8)))
-            if i / n <= played:
-                p.setBrush(QColor("#2f6fd0"))
-                p.setPen(Qt.PenStyle.NoPen)
-            else:
-                p.setBrush(QColor("#c4cddd"))
-                p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(QRectF(x, mid - bh / 2, bw, bh), 1.5, 1.5)
+        on = QColor(_CHAT_THEME["vc_wave_on"])
+        off = QColor(_CHAT_THEME["vc_wave_off"])
+        p.setPen(Qt.PenStyle.NoPen)
+        for i, pk in enumerate(peaks):
+            bh = max(3, int(pk * (h - 4)))
+            p.setBrush(on if (i + 1) / len(peaks) <= played + 1e-9 else off)
+            p.drawRoundedRect(QRectF(x, mid - bh / 2, bw, bh), 1.0, 1.0)
             x += bw + gap
         p.end()
 
@@ -999,19 +1232,24 @@ class ChatWindow(QWidget):
         side.addWidget(self.session_list, 1)
 
         foot = QHBoxLayout()
-        foot.setSpacing(6)
+        foot.setSpacing(8)
         self.memory_btn = QPushButton("记忆")
         self.memory_btn.setObjectName("SideSmallBtn")
+        self.memory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.memory_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.memory_btn.clicked.connect(self.pet._open_memory)
-        foot.addWidget(self.memory_btn)
+        foot.addWidget(self.memory_btn, 1)
         self.settings_btn = QPushButton("设置")
         self.settings_btn.setObjectName("SideSmallBtn")
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.settings_btn.setPopupMode = None
         self.settings_menu = QMenu(self.settings_btn)
+        self.settings_menu.setFixedWidth(168)
+        # 菜单项顺序：Key → 重命名 → 清空 → ─── → 删除 → 打开完整设置
         # 文字在 aboutToShow 时刷新（每次打开菜单都重新读 Key 状态）
         self.key_action = self.settings_menu.addAction("设置 Key（未设置）",
                                                        self.pet._set_key_dialog)
-        self.settings_menu.addSeparator()
         self.rename_action = self.settings_menu.addAction("重命名当前对话", self._rename_current)
         self.clear_action = self.settings_menu.addAction("清空当前对话", self.clear_chat)
         # 清空 / 删除之间用分隔线隔开，删除是危险操作 → 红字
@@ -1019,11 +1257,26 @@ class ChatWindow(QWidget):
         self.delete_action = self.settings_menu.addAction("删除当前对话",
                                                           self._delete_current_session)
         self.delete_action.setObjectName("DangerAction")
-        self.settings_menu.addSeparator()
         self.settings_menu.addAction("打开完整设置…", lambda: self.pet.open_settings())
+        # 菜单阴影（QSS 不支持 box-shadow，用 QGraphicsDropShadowEffect）
+        try:
+            from PySide6.QtWidgets import QGraphicsDropShadowEffect
+            from PySide6.QtGui import QColor as _QC
+            _sh = QGraphicsDropShadowEffect(self.settings_menu)
+            _sh.setBlurRadius(24)
+            _sh.setXOffset(0)
+            _sh.setYOffset(8)
+            _sh.setColor(_QC(40, 50, 120, 38))
+            self.settings_menu.setGraphicsEffect(_sh)
+        except Exception:
+            pass
         self.settings_menu.aboutToShow.connect(self._refresh_settings_menu)
+        # 展开时按钮保持高亮：换 objectName，收起后还原
+        self.settings_menu.aboutToShow.connect(
+            lambda: self.settings_btn.setObjectName("SideSmallBtnActive"))
+        self.settings_menu.aboutToHide.connect(self._restore_settings_btn_style)
         self.settings_btn.setMenu(self.settings_menu)
-        foot.addWidget(self.settings_btn)
+        foot.addWidget(self.settings_btn, 1)
         side.addLayout(foot)
         root.addWidget(self.sidebar)
 
@@ -1548,6 +1801,17 @@ class ChatWindow(QWidget):
         s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._refresh_combo()
 
+    def _restore_settings_btn_style(self):
+        """菜单收起后把「设置」按钮还原成普通样式（重新应用 QSS）。"""
+        try:
+            self.settings_btn.setObjectName("SideSmallBtn")
+            # objectName 改变后必须重新 polish 才能生效
+            self.settings_btn.style().unpolish(self.settings_btn)
+            self.settings_btn.style().polish(self.settings_btn)
+            self.settings_btn.update()
+        except Exception:
+            pass
+
     def _refresh_settings_menu(self):
         """菜单每次打开时重新读取：Key 是否已设置、生成中禁用哪些项。"""
         try:
@@ -1593,6 +1857,7 @@ class ChatWindow(QWidget):
             pass
         for b in self.findChildren(ChatBubble):
             b._style()
+            b._refresh_voice_theme()
 
     def _load_avatar(self):
         for name in ("正面.png", "icon.png"):

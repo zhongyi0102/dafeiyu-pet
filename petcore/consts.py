@@ -1082,6 +1082,29 @@ CHAT_THEME_LIGHT = {
     "accent_fg": "#ffffff",
     "code_bg": "#f1f3f9",
     "scroll": "#e2e6ef",
+    # ---- 语音卡片 ----
+    "vc_card_bg": "rgba(255,255,255,0.88)",
+    "vc_card_border": "#e6e9f5",
+    "vc_play_bg": "#5b6cff",
+    "vc_play_fg": "#ffffff",
+    "vc_wave_on": "#5b6cff",
+    "vc_wave_off": "#c3cbf5",
+    "vc_time_fg": "#4a5170",
+    "vc_rate_bg": "#eef0fd",
+    "vc_rate_fg": "#4a5170",
+    "vc_rate_border": "#dfe3f6",
+    "vc_song_fg": "#1f2540",
+    # ---- 底部按钮 / 菜单 ----
+    "side_btn_fg": "#4a5170",
+    "side_btn_hover": "#eef0fd",
+    "menu_bg": "#ffffff",
+    "menu_border": "#dfe3f6",
+    "menu_item_fg": "#1f2540",
+    "menu_item_hover": "#eef0fd",
+    "menu_sep": "#e8ebf8",
+    "menu_danger_fg": "#c42b31",
+    "menu_danger_hover": "#fdeceb",
+    "focus_bg": "#eef0fd",
 }
 
 CHAT_THEME_DARK = {
@@ -1115,6 +1138,29 @@ CHAT_THEME_DARK = {
     "accent_fg": "#ffffff",
     "code_bg": "#22252c",
     "scroll": "#3a3e48",
+    # ---- 语音卡片（深色）----
+    "vc_card_bg": "rgba(39,42,49,0.92)",
+    "vc_card_border": "#3a3f52",
+    "vc_play_bg": "#6b7cff",
+    "vc_play_fg": "#ffffff",
+    "vc_wave_on": "#6b7cff",
+    "vc_wave_off": "#3f4661",
+    "vc_time_fg": "#aab2c8",
+    "vc_rate_bg": "#2f3446",
+    "vc_rate_fg": "#aab2c8",
+    "vc_rate_border": "#3f4661",
+    "vc_song_fg": "#e8ecf8",
+    # ---- 底部按钮 / 菜单（深色）----
+    "side_btn_fg": "#aab2c8",
+    "side_btn_hover": "#2f3446",
+    "menu_bg": "#272a31",
+    "menu_border": "#3a3f52",
+    "menu_item_fg": "#e6e8ee",
+    "menu_item_hover": "#2f3446",
+    "menu_sep": "#3a3f52",
+    "menu_danger_fg": "#ff7b72",
+    "menu_danger_hover": "#3d2626",
+    "focus_bg": "#2f3446",
 }
 
 _CHAT_THEME = CHAT_THEME_LIGHT
@@ -1174,8 +1220,26 @@ def chat_qss(t):
         padding: 6px 10px; font-family: '%(font)s'; font-size: 12px;
     }
     QToolButton:hover { background: %(accent)s; color: %(accent_fg)s; }
-    QMenu { background: %(card)s; color: %(fg)s; border: 1px solid %(border)s; }
-    QMenu::item:selected { background: %(accent)s; color: %(accent_fg)s; }
+    /* ---- 下拉菜单（设置）---- */
+    QMenu {
+        background: %(menu_bg)s; color: %(menu_item_fg)s;
+        border: 1px solid %(menu_border)s; border-radius: 12px;
+        padding: 6px; font-family: '%(font)s'; font-size: 13px;
+    }
+    QMenu::item {
+        background: transparent; color: %(menu_item_fg)s;
+        padding: 0 10px; margin: 1px 0;
+        height: 32px; border-radius: 8px;
+    }
+    QMenu::item:selected { background: %(menu_item_hover)s; color: %(menu_item_fg)s; }
+    QMenu::item:disabled { color: %(sub)s; }
+    QMenu::separator {
+        height: 1px; background: %(menu_sep)s; margin: 4px 6px;
+    }
+    QMenu::item#DangerAction { color: %(menu_danger_fg)s; }
+    QMenu::item#DangerAction:selected {
+        background: %(menu_danger_hover)s; color: %(menu_danger_fg)s;
+    }
 
     /* ---- 左侧会话栏 ---- */
     QWidget#ChatSidebar { background: %(sidebar)s; border-right: 1px solid %(border)s; }
@@ -1185,17 +1249,27 @@ def chat_qss(t):
         font-weight: bold; border-radius: 9px; padding: 7px 8px;
     }
     QPushButton#NewChatBtn:hover { background: %(accent)s; }
-    /* 次要按钮（记忆 / 设置）：浅色底、灰蓝字，明显弱于「＋ 新对话」主按钮 */
+    /* 底部按钮（记忆 / 设置）：高 36、圆角 10、透明底 */
     QPushButton#SideSmallBtn {
-        background: %(secondary_bg)s; color: %(secondary_fg)s;
-        border: 1px solid %(secondary_border)s;
-        border-radius: 8px; padding: 5px 4px; font-size: 11px;
+        background: transparent; color: %(side_btn_fg)s;
+        border: none; border-radius: 10px;
+        min-height: 36px; max-height: 36px;
+        padding: 0 6px; font-size: 13px;
+        outline: none;
     }
-    QPushButton#SideSmallBtn:hover {
-        background: %(card)s; color: %(accent)s; border-color: %(accent)s;
+    QPushButton#SideSmallBtn:hover { background: %(side_btn_hover)s; }
+    QPushButton#SideSmallBtn:pressed { background: %(side_btn_hover)s; }
+    /* 键盘焦点：浅蓝底，不用系统蓝框 */
+    QPushButton#SideSmallBtn:focus {
+        background: %(focus_bg)s; outline: none; border: none;
     }
-    /* 菜单里的危险操作（删除对话）用红字 */
-    QMenu::item#DangerAction { color: %(danger_fg)s; }
+    /* 「设置」展开菜单时保持高亮（动态 objectName = SideSmallBtnActive）*/
+    QPushButton#SideSmallBtnActive {
+        background: %(side_btn_hover)s; color: %(side_btn_fg)s;
+        border: none; border-radius: 10px;
+        min-height: 36px; max-height: 36px;
+        padding: 0 6px; font-size: 13px; outline: none;
+    }
     QPushButton#CollapseBtn {
         background: transparent; color: %(sub)s; border: none; font-size: 14px;
         padding: 2px;
@@ -1225,6 +1299,12 @@ def chat_qss(t):
         "secondary_bg": t["secondary_bg"], "secondary_fg": t["secondary_fg"],
         "secondary_border": t["secondary_border"], "danger_fg": t["danger_fg"],
         "font": CHAT_FONT_FAMILY, "fs": CHAT_FONT_SIZE, "small": CHAT_SMALL_SIZE,
+        # ---- 新增：底部按钮 / 菜单 ----
+        "side_btn_fg": t["side_btn_fg"], "side_btn_hover": t["side_btn_hover"],
+        "menu_bg": t["menu_bg"], "menu_border": t["menu_border"],
+        "menu_item_fg": t["menu_item_fg"], "menu_item_hover": t["menu_item_hover"],
+        "menu_sep": t["menu_sep"], "menu_danger_fg": t["menu_danger_fg"],
+        "menu_danger_hover": t["menu_danger_hover"], "focus_bg": t["focus_bg"],
     }
 
 

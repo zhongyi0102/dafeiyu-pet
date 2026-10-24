@@ -151,34 +151,29 @@ if bubbles:
     b = bubbles[-1]
     ck("3", "有暂停按钮", getattr(b, "voice_pause_btn", None) is not None)
     ck("3", "有转文字按钮", getattr(b, "voice_text_btn", None) is not None)
-    ck("3", "控制条默认隐藏", not b.voice_ctrl.isVisible())
+    ck("3", "播放条常驻显示", b.voice_ctrl.isVisible())
     # 播放
     b._play_voice()
     pump(0.8)
-    ck("3", "播放后控制条显示", b.voice_ctrl.isVisible())
-    ck("3", "播放中按钮显示暂停图标", b.voice_pause_btn.text() == "⏸",
+    ck("3", "播放中按钮显示 ⏸", b.voice_pause_btn.text() == "⏸",
        b.voice_pause_btn.text())
-    ck("3", "语音条显示播放中", "播放中" in b.voice_btn.text(),
-       b.voice_btn.text())
     # 再点 → 暂停
     b._play_voice()
     pump(0.5)
-    ck("3", "暂停后语音条显示已暂停", "已暂停" in b.voice_btn.text(),
-       b.voice_btn.text())
-    ck("3", "暂停后按钮变继续图标", b.voice_pause_btn.text() == "▶",
+    ck("3", "暂停后按钮变 ▶", b.voice_pause_btn.text() == "▶",
        b.voice_pause_btn.text())
     # 再点 → 继续
     b._play_voice()
     pump(0.6)
-    ck("3", "继续后显示播放中", "播放中" in b.voice_btn.text(),
-       b.voice_btn.text())
-    ck("3", "继续后按钮变暂停图标", b.voice_pause_btn.text() == "⏸",
+    ck("3", "继续后按钮变 ⏸", b.voice_pause_btn.text() == "⏸",
        b.voice_pause_btn.text())
     # 停止
     b._stop_voice()
     pump(0.4)
-    ck("3", "停止后控制条隐藏", not b.voice_ctrl.isVisible())
-    ck("3", "停止后语音条复位", "\"" in b.voice_btn.text(), b.voice_btn.text())
+    ck("3", "停止后复位为 ▶", b.voice_pause_btn.text() == "▶",
+       b.voice_pause_btn.text())
+    ck("3", "停止后时间复位", b.voice_time.text() == "00:00 / 00:06",
+       b.voice_time.text())
 
 try:
     for w in c.pets: w.hide()

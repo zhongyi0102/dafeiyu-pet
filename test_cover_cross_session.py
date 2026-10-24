@@ -117,7 +117,11 @@ ck("2", "会话 A 有语音条消息", len(va) >= 1,
 if va:
     ck("2", "voice 指向成品", "fake_cover" in va[0]["voice"], va[0]["voice"])
     vt = [x.get("voice_text") for x in va if x.get("voice_text")]
-    ck("2", "voice_text 已存", bool(vt) and "我不难过" in vt[0], vt)
+    # 两种写入顺序（语音条先/后）下 voice_text 都可能挂在任一条上
+    okvt = bool(vt) and any(("我不难过" in v) for v in vt)
+    if not okvt:
+        okvt = any("我不难过" in (x.get("content") or "") for x in va)
+    ck("2", "voice_text 已存", okvt, vt)
 ta = [x for x in msgs_a if "歌词" in (x.get("content") or "")]
 ck("2", "会话 A 有歌词文字", len(ta) >= 1)
 

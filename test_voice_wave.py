@@ -129,12 +129,14 @@ ck("3", "有转文字按钮", getattr(b, "voice_text_btn", None) is not None)
 ck("3", "原文已存", getattr(b, "_voice_text", "") != "",
    getattr(b, "_voice_text", "")[:20])
 
-# 播放 → 出现面板
+ck("3", "播放条常驻显示", b.voice_ctrl.isVisible())
+# 播放 → 按钮变 ⏸，角标显示剩余秒数
 b._play_voice()
 pump(1.0)
-ck("3", "播放后控制条显示", b.voice_ctrl.isVisible())
-ck("3", "时间在走", "00:0" in b.voice_time.text() or "00:1" in b.voice_time.text(),
-   b.voice_time.text())
+ck("3", "播放钮变 ⏸", b.voice_pause_btn.text() == "⏸",
+   b.voice_pause_btn.text())
+ck("3", "时间格式为 进度/总时长",
+   b.voice_time.text() == "00:00 / 00:06", b.voice_time.text())
 
 # 倍速循环
 b._cycle_voice_rate()
@@ -171,14 +173,15 @@ b._toggle_voice_text()
 pump(0.3)
 ck("3", "再点收起", not b.voice_text_area.isVisible())
 
-# 暂停 / 继续 / 停止（已有功能回归）
-b._play_voice()
-pump(0.8)
-ck("3", "暂停可用", "已暂停" in b.voice_btn.text() or "播放中" in b.voice_btn.text(),
-   b.voice_btn.text())
+# 暂停 / 停止回归
+b._toggle_pause_voice()
+pump(0.4)
+ck("3", "暂停后按钮变 ▶", b.voice_pause_btn.text() == "▶",
+   b.voice_pause_btn.text())
 b._stop_voice()
 pump(0.4)
-ck("3", "停止后复位", "\"" in b.voice_btn.text())
+ck("3", "停止后复位为 00:00 / 总时长",
+   b.voice_time.text() == "00:00 / 00:06", b.voice_time.text())
 try:
     for w in c.pets: w.hide()
     if c.tray: c.tray.hide()
