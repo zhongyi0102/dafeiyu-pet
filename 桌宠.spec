@@ -97,6 +97,41 @@ datas = [(s, d) for (s, d) in datas
 # 收集 petcore 子模块（PyInstaller 不会自动发现动态 import）
 hiddenimports += collect_submodules("petcore")
 
+# ===== Qt Multimedia（语音播放）=====
+# 关键：PyInstaller 不会自动收集 Qt 的插件目录，
+# 少了 plugins/multimedia/*.dll 就会「播放器不可用」→ 语音静默不响。
+# 两个后端都收：windowsmediaplugin（体积小）+ ffmpegmediaplugin（兼容性最好，
+# 能处理非常规采样率的 wav；代价约 21MB，占总体积 4.6%）。
+hiddenimports += ["PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets"]
+
+try:
+    import PySide6 as _PySide6
+    _PS6_DIR = _os.path.dirname(_PySide6.__file__)
+    _PLUG = _os.path.join(_PS6_DIR, "plugins")
+
+    # 1) 插件：plugins/multimedia → PySide6/plugins/multimedia
+    _mm_dir = _os.path.join(_PLUG, "multimedia")
+    if _os.path.isdir(_mm_dir):
+        for _f in _os.listdir(_mm_dir):
+            if _f.lower().endswith(".dll"):
+                binaries.append((_os.path.join(_mm_dir, _f),
+                                 "PySide6/plugins/multimedia"))
+
+    # 2) Qt6Multimedia 系列 DLL（放 PySide6/ 根，跟其它 Qt DLL 同目录）
+    for _f in _os.listdir(_PS6_DIR):
+        _low = _f.lower()
+        if _low.startswith("qt6multimedia") and _low.endswith(".dll"):
+            binaries.append((_os.path.join(_PS6_DIR, _f), "PySide6"))
+
+    # 3) ffmpeg 后端依赖的编解码库（av*/sw*），只收 ffmpegmediaplugin 需要的
+    for _f in ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll",
+               "swresample-7.dll", "swscale-10.dll"):
+        _p = _os.path.join(_PS6_DIR, _f)
+        if _os.path.exists(_p):
+            binaries.append((_p, "PySide6"))
+except Exception as _ex:
+    print("[spec] Qt Multimedia 收集失败: %s" % _ex)
+
 # 图标 + **素材包**（单文件核心）
 datas += [
     ("icon.ico", "."),

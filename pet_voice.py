@@ -620,6 +620,47 @@ class VoicePlayer:
         self._cooldown = 3.0            # 两次语音至少隔 3 秒，防止刷屏轰炸
 
     # ---- 内部 ----
+    @staticmethod
+    def backend_info():
+        """自检：QtMultimedia 是否可用 + 找到哪些后端插件。
+
+        返回 (ok, 描述文字)。ok=False 表示播放器不可用。
+        只做诊断，不影响播放流程。
+        """
+        parts = []
+        try:
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            parts.append("QtMultimedia=可用")
+        except Exception as ex:
+            return False, ("QtMultimedia 导入失败: %s: %s"
+                           % (type(ex).__name__, ex))
+        # 找后端插件
+        found = []
+        try:
+            import PySide6 as _P6
+            base = os.path.dirname(_P6.__file__)
+            for cand in (os.path.join(base, "plugins", "multimedia"),
+                         os.path.join(base, "multimedia")):
+                if os.path.isdir(cand):
+                    for f in os.listdir(cand):
+                        if f.lower().endswith(".dll"):
+                            found.append(f)
+                    break
+        except Exception as ex:
+            parts.append("插件扫描失败: %s" % type(ex).__name__)
+        if found:
+            parts.append("后端插件=" + ",".join(sorted(found)))
+        else:
+            parts.append("后端插件=未找到")
+        # 输出设备
+        try:
+            from PySide6.QtMultimedia import QMediaDevices
+            d = QMediaDevices.defaultAudioOutput()
+            parts.append("输出设备=" + (d.description() if d else "无"))
+        except Exception:
+            parts.append("输出设备=查询失败")
+        return bool(found), "; ".join(parts)
+
     def _ensure_player(self):
         if self._player is not None:
             return self._player
@@ -628,6 +669,10 @@ class VoicePlayer:
             self._player = QMediaPlayer()
             self._audio = QAudioOutput()
             self._player.setAudioOutput(self._audio)
+            ok, desc = self.backend_info()
+            log("[语音] 播放后端自检: %s%s"
+                % (desc, "" if ok else "（缺少后端插件，语音将无法播放）"),
+                logging.INFO if ok else logging.WARNING)
         except Exception as ex:
             log("[语音] QtMultimedia 不可用: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)

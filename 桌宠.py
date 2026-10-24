@@ -782,6 +782,16 @@ class PetApp(QObject):
         # 语音播放器（外部 RVC 服务，未启用时不请求）
         try:
             self._voice_player = VOICE.VoicePlayer(self.voice_cfg)
+            # 启动自检：QtMultimedia 是否可用、找到哪些后端插件
+            # （打包漏收 multimedia 插件时，这里会明确告警，便于排查静默无声）
+            try:
+                _ok, _desc = VOICE.VoicePlayer.backend_info()
+                log("[语音] QtMultimedia %s: %s"
+                    % ("可用" if _ok else "不可用", _desc),
+                    logging.INFO if _ok else logging.WARNING)
+            except Exception as _iex:
+                log("[语音] 后端自检异常: %s: %s"
+                    % (type(_iex).__name__, _iex), logging.WARNING)
         except Exception as ex:
             log("[语音] 初始化失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)

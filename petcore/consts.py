@@ -1094,6 +1094,7 @@ CHAT_THEME_LIGHT = {
     "vc_rate_fg": "#4a5170",
     "vc_rate_border": "#dfe3f6",
     "vc_song_fg": "#1f2540",
+    "vc_error_fg": "#c42b31",
     # ---- 底部按钮 / 菜单 ----
     "side_btn_fg": "#4a5170",
     "side_btn_hover": "#eef0fd",
@@ -1150,6 +1151,7 @@ CHAT_THEME_DARK = {
     "vc_rate_fg": "#aab2c8",
     "vc_rate_border": "#3f4661",
     "vc_song_fg": "#e8ecf8",
+    "vc_error_fg": "#ff9b93",
     # ---- 底部按钮 / 菜单（深色）----
     "side_btn_fg": "#aab2c8",
     "side_btn_hover": "#2f3446",
@@ -1305,6 +1307,7 @@ def chat_qss(t):
         "menu_item_fg": t["menu_item_fg"], "menu_item_hover": t["menu_item_hover"],
         "menu_sep": t["menu_sep"], "menu_danger_fg": t["menu_danger_fg"],
         "menu_danger_hover": t["menu_danger_hover"], "focus_bg": t["focus_bg"],
+        "vc_error_fg": t["vc_error_fg"],
     }
 
 

@@ -689,6 +689,49 @@ class ChatBubble(QFrame):
         except Exception:
             pass
 
+    def _show_voice_error(self, msg, disable_play=True):
+        """在卡片歌名行位置显示一行红色提示；播放键置灰。
+
+        纯文字，不用 emoji/符号。转文字按钮保持可点。
+        """
+        try:
+            if disable_play and getattr(self, "voice_pause_btn", None):
+                self.voice_pause_btn.setEnabled(False)
+                self.voice_pause_btn.setToolTip(msg)
+                self.voice_pause_btn.setStyleSheet(
+                    "QPushButton#VoicePlayBtn{"
+                    "background:#c9ccd6;color:#ffffff;border:none;"
+                    "border-radius:16px;font-size:13px;}")
+            lab = getattr(self, "voice_song_label", None)
+            if lab is None:
+                from PySide6.QtWidgets import QLabel as _QL
+                self.voice_song_label = _QL()
+                self.voice_song_label.setObjectName("VoiceSong")
+                self.voice_song_label.setWordWrap(False)
+                self.voice_song_label.setMinimumWidth(0)
+                self.voice_song_label.setSizePolicy(
+                    QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                try:
+                    lay = self.layout()
+                    lay.insertWidget(lay.indexOf(self.voice_ctrl) + 1,
+                                     self.voice_song_label)
+                    lay.setSpacing(0)
+                except Exception:
+                    self.layout().addWidget(self.voice_song_label)
+                lab = self.voice_song_label
+            _t = _CHAT_THEME
+            lab.setText(msg)
+            lab.setToolTip(msg)
+            lab.setStyleSheet(
+                "QLabel#VoiceSong{color:%s;font-size:12px;"
+                "background:transparent;padding:2px 0 0 2px;}"
+                % _t.get("vc_error_fg", "#c42b31"))
+            lab.show()
+            self._voice_error = msg
+        except Exception as ex:
+            log("[聊天] 语音错误提示失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+
     def _fmt_pos(self, pos_s, dur_s):
         """播放进度显示：00:12 / 03:58"""
         try:
@@ -783,7 +826,11 @@ class ChatBubble(QFrame):
         try:
             player = self._voice_player()
             if player is None:
-                self.voice_time.setText("不可用")
+                self._show_voice_error("播放组件缺失，暂时无法播放")
+                return
+            # 播放器存在但后端不可用（_player 为 False）
+            if getattr(player, "_player", None) is False:
+                self._show_voice_error("播放组件缺失，暂时无法播放")
                 return
 
             # 正在播这条 → 暂停
@@ -806,7 +853,7 @@ class ChatBubble(QFrame):
             # 全新播放
             p = getattr(self, "_voice_path", "")
             if not p or not os.path.exists(p):
-                self.voice_time.setText("文件丢失")
+                self._show_voice_error("音频文件已丢失")
                 return
             with open(p, "rb") as f:
                 data = f.read()
@@ -829,6 +876,7 @@ class ChatBubble(QFrame):
         except Exception as ex:
             log("[聊天] 语音播放失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
+            self._show_voice_error("播放失败")
 
     def _fmt_time(self, pos_s, dur_s):
         """mm:ss / mm:ss。"""
