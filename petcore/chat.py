@@ -2824,6 +2824,11 @@ class ChatWindow(QWidget):
             self._pending_voice_usage = usage
             self._turn_user_bubble = None
             self._turn_user_text = ""
+            # 流式期间 _on_chunk 已创建了文字气泡。记下它，
+            # 成功路径里随语音条一起处理（语音条在前、文字在后），
+            # 失败路径里复用它显示文字，避免出现两条相同回复。
+            self._stream_bubble_for_sing = self.current_bubble
+            self.current_bubble = None
             self._finish_busy()
             # 唱歌：走完整翻唱流水线（有旋律）
             _q = getattr(self, "_sing_query", "") or ""
@@ -3153,10 +3158,23 @@ class ChatWindow(QWidget):
 
         if err or not path:
             log("[语音] 语音条生成失败：%s" % (err or "空路径"))
-            # 失败也要把文字回复补上，不能什么都不显示
+            # 失败也要把文字回复补上，不能什么都不显示。
+            # 复用流式气泡（已在屏上显示同一段文字），没有才新建，
+            # 否则同一句回复会出现两条气泡。
             if pending:
                 try:
-                    self._add_bubble("assistant", pending)
+                    reuse = getattr(self, "_stream_bubble_for_sing", None)
+                    if reuse is not None:
+                        try:
+                            import shiboken6 as _sb
+                            if not _sb.isValid(reuse):
+                                reuse = None
+                        except Exception:
+                            reuse = None
+                    if reuse is not None:
+                        reuse.set_text(pending)
+                    else:
+                        self._add_bubble("assistant", pending)
                     self.messages.append({"role": "assistant",
                                           "content": pending,
                                           "ts": time.time()})
@@ -3166,15 +3184,27 @@ class ChatWindow(QWidget):
                         self.pet.say(first)
                 except Exception as ex:
                     log("[语音] 补文字失败: %s" % ex, logging.WARNING)
+            self._stream_bubble_for_sing = None
             return
         try:
             # 1) 先插语音条（不自动播放，用户点了才播）
             self.append_external("assistant", "\U0001F3B5 唱给你听",
                                  voice_path=path, voice_sec=sec)
             log("[语音] 语音条已插入：%s（%.1f 秒）" % (path, sec))
-            # 2) 再补文字回复
+            # 2) 再补文字回复（复用流式气泡，避免两条相同文字）
             if pending:
-                self._add_bubble("assistant", pending)
+                reuse = getattr(self, "_stream_bubble_for_sing", None)
+                if reuse is not None:
+                    try:
+                        import shiboken6 as _sb
+                        if not _sb.isValid(reuse):
+                            reuse = None
+                    except Exception:
+                        reuse = None
+                if reuse is not None:
+                    reuse.set_text(pending)
+                else:
+                    self._add_bubble("assistant", pending)
                 self.messages.append({"role": "assistant",
                                       "content": pending,
                                       "ts": time.time()})
@@ -3184,6 +3214,7 @@ class ChatWindow(QWidget):
                     self.pet.say(first)
                 if _usage:
                     self._update_usage(_usage, pending)
+            self._stream_bubble_for_sing = None
         except Exception as ex:
             log("[语音] 插入语音条失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
