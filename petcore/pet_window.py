@@ -202,6 +202,14 @@ class PetWindow(QWidget):
         self.remind_walk = None         # {"fx","fy","tx","ty","t0","dur","on_done","return_to"}
         self.remind_origin = None       # 提醒前的位置 (x, y)，回位用
         self.remind_user_moved = False  # 提醒中被用户拖拽 → 取消回位
+        # 气泡出现 / 淡出动画
+        self._remind_pop_t0 = 0.0       # 出现动画起点（0 = 无动画）
+        self._remind_pop_dur = 0.15
+        self._remind_fade = 1.0         # 当前不透明度
+        self._remind_fade_t0 = 0.0      # 淡出起点（0 = 未在淡出）
+        # 气泡显示时临时扩宽窗口（0 = 未扩宽）
+        self._remind_widen_orig = 0
+        self._remind_widen_h = 0
         self.bubble_inner = False
         self.last_speak_tick = 0
         self.t = 0
@@ -1666,7 +1674,10 @@ class PetWindow(QWidget):
         # 提醒气泡：悬停时冻结剩余时间，移开后继续倒计时
         if self.remind_text:
             now_s = self.t * TICK / 1000.0
-            if self.remind_hover:
+            # 淡出中：只推进透明度，不再处理倒计时
+            if self._remind_fade_t0 > 0:
+                self._step_remind_fade(now_s)
+            elif self.remind_hover:
                 # 每 tick 把截止时间整体后移，等效"暂停"（剩余时间不变）
                 if self._remind_last_tick is not None:
                     self.remind_until += max(0.0, now_s - self._remind_last_tick)
@@ -1674,8 +1685,8 @@ class PetWindow(QWidget):
             else:
                 self._remind_last_tick = None
                 if now_s >= self.remind_until:
-                    self.hide_remind_bubble()
-                    # 气泡自然消失 → 走回原位
+                    # 先 150ms 淡出，淡出结束才回位
+                    self._remind_fade_out()
                     try:
                         self.app._return_pet_after_remind()
                     except Exception:
@@ -1790,17 +1801,22 @@ class PetWindow(QWidget):
 
     # ---------- 提醒气泡（加大版） ----------
     # ---------- 提醒走动 ----------
+    REMIND_WALK_FIXED_SEC = 1.2      # 固定走动时长
+    REMIND_WALK_TELEPORT_PX = 1500   # 超过这个直线距离（跨屏）直接到位
+
     def remind_walk_to(self, tx, ty, on_done=None, return_to=None):
-        """平滑走到 (tx, ty)（窗口左上角目标），最长 REMIND_WALK_MAX_MS。
+        """平滑走到 (tx, ty)（窗口左上角目标），固定 1.2 秒 ease-in-out。
 
         - 用侧面朝向（水平走），到达后转正面；
-        - 距离远时自动加速，保证 2 秒内到达；
-        - 减少动效时直接瞬移（仍触发 on_done）。
+        - 减少动效（_anim_enabled() 为 False）时直接瞬移，仍触发 on_done；
+        - 直线距离超过 REMIND_WALK_TELEPORT_PX（跨屏）直接 move + on_done，
+          不做走动，避免出现飞奔。
         """
         fx, fy = self.x(), self.y()
         dx, dy = float(tx) - fx, float(ty) - fy
         dist = (dx * dx + dy * dy) ** 0.5
-        if self._anim_enabled() is False or dist < 2:
+
+        def _teleport():
             self.move(int(tx), int(ty))
             self._clamp_into_work_area()
             try:
@@ -1809,11 +1825,14 @@ class PetWindow(QWidget):
                 pass
             if callable(on_done):
                 on_done()
+
+        # 减少动效 / 几乎没位移 / 跨屏太远 → 直接到位
+        if self._anim_enabled() is False or dist < 2 \
+                or dist > self.REMIND_WALK_TELEPORT_PX:
+            _teleport()
             return
-        # 速度：基础速度，但保证 2 秒内到；距离很远时用上限
-        speed = max(REMIND_WALK_SPEED, dist / (REMIND_WALK_MAX_MS / 1000.0))
-        speed = min(speed, REMIND_WALK_SPEED_MAX)
-        dur = max(0.12, min(REMIND_WALK_MAX_MS / 1000.0, dist / max(1.0, speed)))
+
+        dur = self.REMIND_WALK_FIXED_SEC
         # 面朝行走方向（侧面）
         if abs(dx) >= abs(dy) * 0.6:
             d = "right" if dx > 0 else "left"
@@ -1855,8 +1874,8 @@ class PetWindow(QWidget):
                 except Exception as ex:
                     log("提醒走动回调失败: %s" % ex, logging.WARNING)
             return True
-        # ease-out 缓动，起步稳、接近目标时减速
-        k = 1.0 - (1.0 - prog) ** 2
+        # ease-in-out：两头慢、中间快（起步柔和、停下不突兀）
+        k = 0.5 - 0.5 * math.cos(prog * math.pi)
         nx = w["fx"] + (w["tx"] - w["fx"]) * k
         ny = w["fy"] + (w["ty"] - w["fy"]) * k
         self.move(int(round(nx)), int(round(ny)))
@@ -1867,9 +1886,49 @@ class PetWindow(QWidget):
     def cancel_remind_walk(self):
         self.remind_walk = None
 
+    def _ensure_bubble_width(self, need_w):
+        """气泡需要的最小宽度；窗口不够时临时扩宽（保持中心，气泡结束后恢复）。
+
+        宠物窗口宽度由 sprite 决定（size=0.7 时约 214px），而提醒气泡要求
+        至少 260px。这里在不改变高度的前提下把窗口临时加宽，避免气泡被裁剪。
+        """
+        try:
+            if self._remind_widen_orig > 0:
+                return                      # 已扩宽
+            if self.width() >= need_w + 8:
+                return                      # 本来就够
+            self._remind_widen_orig = self.width()
+            self._remind_widen_h = self.height()
+            new_w = int(need_w + 8)
+            cx = self.x() + self.width() / 2.0
+            self.setFixedSize(new_w, self._remind_widen_h)
+            self.move(int(round(cx - new_w / 2.0)), self.y())
+            self._body_state()
+        except Exception as ex:
+            log("[提醒] 扩宽气泡窗口失败: %s" % ex, logging.DEBUG)
+
+    def _restore_bubble_width(self):
+        """恢复气泡显示前的窗口宽度（保持中心）。"""
+        try:
+            if self._remind_widen_orig <= 0:
+                return
+            old_w = self._remind_widen_orig
+            self._remind_widen_orig = 0
+            cx = self.x() + self.width() / 2.0
+            self.setFixedSize(old_w, self.height())
+            self.move(int(round(cx - old_w / 2.0)), self.y())
+            self._body_state()
+        except Exception as ex:
+            log("[提醒] 恢复气泡窗口宽度失败: %s" % ex, logging.DEBUG)
+
     def show_remind_bubble(self, text, icon, kind, hold=10.0,
                            todo_id=None, schedule_id=None):
-        """显示加大的提醒气泡：图标 + 文字 + 两个按钮，默认 10 秒后消失。"""
+        """显示加大的提醒气泡：图标 + 文字 + 两个按钮，默认 10 秒后消失。
+
+        气泡显示期间宠物保持休息（rest_until 跟随气泡生命周期），
+        不再固定 +5 秒，避免气泡还在而宠物自己走开。
+        出现动画：150ms 从尾巴位置缩放弹出。
+        """
         self.remind_text = text or ""
         self.remind_icon = icon or ""
         self.remind_kind = kind or ""
@@ -1880,15 +1939,85 @@ class PetWindow(QWidget):
         self.remind_todo_id = todo_id
         self.remind_schedule_id = schedule_id
         self._remind_btn_rects = {}
+        # 窗口不够宽时临时扩宽（气泡最小 260px）
+        self._ensure_bubble_width(260.0)
+        # 出现动画：0 → 1（150ms）
+        self._remind_pop_t0 = self.t * TICK / 1000.0
+        self._remind_pop_dur = 0.15
+        # 淡出动画：1 → 0（150ms），由 hide_remind_bubble 触发
+        self._remind_fade = 1.0
+        self._remind_fade_t0 = 0.0
+        # 气泡期间保持休息
+        self._sync_remind_rest()
+        # 提示音（三类不同音高）
+        self._play_remind_sound()
         self.update()
 
+    def _sync_remind_rest(self):
+        """气泡显示期间宠物保持休息；气泡结束由 app 解除。
+
+        只延长、不缩短：别的逻辑可能设了更长的 rest（如睡觉 9999 秒）。
+        """
+        try:
+            if self.remind_text:
+                need = self.t * TICK + int(max(1.0, self.remind_hold) * 1000) + 600
+                if self.rest_until < need:
+                    self.rest_until = need
+        except Exception:
+            pass
+
     def hide_remind_bubble(self):
+        """立刻收起气泡（点按钮时走这里，无淡出）。"""
         self.remind_text = ""
         self.remind_until = 0.0
         self.remind_hover = False
         self._remind_last_tick = None
         self._remind_btn_rects = {}
+        self._remind_fade = 0.0
+        self._remind_pop_t0 = 0.0
+        self._restore_bubble_width()
         self.update()
+
+    def _remind_fade_out(self):
+        """气泡自然到时：150ms 淡出后再清空（不是瞬间消失）。"""
+        try:
+            if self._remind_fade_t0 <= 0:
+                self._remind_fade_t0 = self.t * TICK / 1000.0
+        except Exception:
+            self.hide_remind_bubble()
+
+    def _step_remind_fade(self, now_s):
+        """推进淡出；返回 True 表示淡出还没结束。"""
+        if self._remind_fade_t0 <= 0:
+            return False
+        prog = (now_s - self._remind_fade_t0) / 0.15
+        if prog >= 1.0:
+            self.remind_text = ""
+            self.remind_until = 0.0
+            self._remind_fade = 0.0
+            self._remind_fade_t0 = 0.0
+            self._remind_btn_rects = {}
+            self._restore_bubble_width()
+            self.update()
+            return False
+        self._remind_fade = max(0.0, 1.0 - prog)
+        self.update()
+        return True
+
+    def _remind_pop_scale(self):
+        """出现动画缩放系数：0.15 秒内从 0.6 弹到 1.0（ease-out）。"""
+        try:
+            if self._remind_pop_t0 <= 0:
+                return 1.0
+            now_s = self.t * TICK / 1000.0
+            prog = (now_s - self._remind_pop_t0) / max(0.01, self._remind_pop_dur)
+            if prog >= 1.0:
+                self._remind_pop_t0 = 0.0
+                return 1.0
+            k = 1.0 - (1.0 - prog) ** 2
+            return 0.6 + 0.4 * k
+        except Exception:
+            return 1.0
 
     def _remind_active(self):
         if not self.remind_text:
@@ -1896,83 +2025,85 @@ class PetWindow(QWidget):
         return self.t * TICK / 1000.0 < self.remind_until
 
     def _remind_rects(self):
-        """算提醒气泡几何：返回 (bubble, btn_know, btn_snooze, text_lines, line_h, title_h)。
+        """算提醒气泡几何：返回 (bubble, btn_know, btn_snooze, text_lines, line_h, title_h, btn_mute)。
 
         布局（左图标 / 右内容）：
           ┌───────────────────────────────┐
-          │  ●   标题（加粗，小一号）      │
-          │      正文（可多行）            │
+          │  ●   标题（14px 加粗主题色）   │
+          │      正文（13px 深灰，最多 2 行）│
           │      [知道了] [稍后再提醒] 第N次│
           └───────────────────────────────┘
-        图标在气泡内部左侧垂直居中，直径 REMIND_ICON_DIAMETER，绝不越界。
+        宽度自适应 260~340px；正文不截断，必要时增高气泡。
         """
-        fm = QFontMetrics(self.remind_font)
-        pad = 12.0
-        gap = 10.0
-        icon_d = REMIND_ICON_DIAMETER
-        line_h = fm.height()
-
-        # 标题字体（比正文小一号、加粗）
+        # 标题 14px 加粗 / 正文 13px 常规（正文不再比标题大）
         title_font = QFont(self.remind_font)
-        title_font.setPixelSize(max(10, int(self.remind_font.pixelSize() * 0.86)))
+        title_font.setPixelSize(14)
         title_font.setBold(True)
         tfm = QFontMetrics(title_font)
         title_h = tfm.height()
+
+        body_font = QFont(self.remind_font)
+        body_font.setPixelSize(13)
+        body_font.setBold(False)
+        fm = QFontMetrics(body_font)
+        line_h = fm.height()
+
+        pad = 12.0
+        gap = 10.0
+        icon_d = REMIND_ICON_DIAMETER
         title = REMIND_TITLES.get(self.remind_kind, REMIND_TITLES["water"])
 
         # 左侧图标区 + 右侧内容区
         left_w = icon_d + gap
-        # 按钮（并排一行）
-        btn_h = int(24 * REMIND_BUBBLE_SCALE)
+        btn_h = 30                      # 按钮等高等宽，内边距 ≥8px
         btn_gap = 8
-        # 窗口窄（放不下标准气泡）时用短标签
         narrow = self.width() < REMIND_BUBBLE_MIN_W + 16
         label1 = "知道了"
         label2 = "稍后" if narrow else "稍后再提醒"
         # 第三个按钮：只有「关心类」才有（待办/日程是约定，不给这个选项）
         self._remind_has_mute = self.remind_kind in CARE_KINDS
         label3 = "别提" if narrow else "别提这个"
-        w1min = fm.horizontalAdvance(label1) + 20
-        w2min = fm.horizontalAdvance(label2) + 20
-        w3min = (fm.horizontalAdvance(label3) + 20) if self._remind_has_mute else 0
-        # 计数文字（今天第 N 次）宽度
+        w1min = fm.horizontalAdvance(label1) + 16   # 左右各 8px
+        w2min = fm.horizontalAdvance(label2) + 16
+        w3min = (fm.horizontalAdvance(label3) + 16) if self._remind_has_mute else 0
         cnt_text = "" if narrow else self._remind_count_text()
         cnt_w = fm.horizontalAdvance(cnt_text) + 6 if cnt_text else 0.0
 
-        # 气泡宽度：至少 REMIND_BUBBLE_MIN_W；并保证按钮 + 计数放得下
+        # ---- 宽度：自适应 260~340px ----
+        BUBBLE_W_MIN = 260.0
+        BUBBLE_W_MAX = 340.0
         min_btn_row = (w1min + btn_gap + w2min
                        + ((btn_gap + w3min) if self._remind_has_mute else 0)
                        + (cnt_w + 6 if cnt_w else 0))
-        max_w = min(int(360 * REMIND_BUBBLE_SCALE), max(160, self.width() - 4))
-        bw = max(REMIND_BUBBLE_MIN_W, min_btn_row + pad * 2 + left_w,
-                 min(REMIND_BUBBLE_MIN_W, max_w))
-        bw = min(bw, max_w)
-        # 窗口比按钮行还窄时，计数让位、按钮压缩
+        # 窗口比 340 还窄时以窗口为准
+        avail_max = max(160.0, self.width() - 4.0)
+        bw = max(BUBBLE_W_MIN, min_btn_row + pad * 2 + left_w)
+        bw = min(bw, BUBBLE_W_MAX, avail_max)
         if bw < min_btn_row + pad * 2 + left_w:
-            cnt_w = 0.0
+            cnt_w = 0.0                 # 窗口太窄，计数让位
 
         # 正文可用宽
         text_w = bw - pad * 2 - left_w
 
-        # 正文折行：不在「数字+单位」「站起来」「看远处」等词中间断开
+        # 正文折行（不在保护词中间断开）
         lines = self._wrap_remind_text(self.remind_text, fm, text_w)
-        th = len(lines) * line_h
 
-        # 高度：pad + 标题 + 4 + 正文 + 10 + 按钮 + pad
+        # 高度：pad + 标题 + 4 + 正文（不限行数，绝不截断）+ 10 + 按钮 + pad
+        th = len(lines) * line_h
         bh = pad + title_h + 4 + th + 10 + btn_h + pad
         bx = (self.width() - bw) / 2.0
         by = 6.0
         bubble = QRectF(bx, by, bw, bh)
 
         btn_y = by + bh - pad - btn_h
-        # 按钮宽度：关心类有三个按钮，待办/日程只有两个
+        # 按钮等宽：三个（关心类）或两个（待办/日程）
         n_btn = 3 if getattr(self, "_remind_has_mute", False) else 2
         btn_min_w = max([w1min, w2min] + ([w3min] if n_btn == 3 else []))
         avail = bw - pad * 2 - left_w
         gaps = btn_gap * (n_btn - 1)
         btn_w = (avail - gaps - cnt_w) / float(n_btn)
         if btn_w < btn_min_w:
-            # 计数让位，仍不够就压按钮宽（文字会略挤但不截断）
+            # 计数让位，仍不够就按最小宽排（文字不贴边）
             btn_w = max(btn_min_w, (avail - gaps) / float(n_btn))
             cnt_w = 0.0
         b1 = QRectF(bx + pad + left_w, btn_y, btn_w, btn_h)
@@ -1981,6 +2112,9 @@ class PetWindow(QWidget):
         if n_btn == 3:
             b3 = QRectF(b2.right() + btn_gap, btn_y, btn_w, btn_h)
         self._remind_r3 = b3
+        # 供绘制用（字号/字体统一）
+        self._remind_title_font = title_font
+        self._remind_body_font = body_font
         return bubble, b1, b2, lines, line_h, title_h, b3
 
     def _remind_count_text(self):
@@ -2066,8 +2200,84 @@ class PetWindow(QWidget):
             log("提醒按钮命中测试失败: %s" % ex, logging.DEBUG)
         return None
 
+    # ---------- 提醒提示音（三类不同音高，音量低一档）----------
+    # (频率Hz, 时长ms, 振幅0.0~1.0)。振幅从 0.60 降到 0.38 = 低一档。
+    REMIND_SOUNDS = {
+        "water": (880, 110, 0.38),      # 高音，清脆（水滴感）
+        "stand": (660, 130, 0.38),      # 中音
+        "eyes":  (520, 150, 0.38),      # 低音，柔和
+        "_neutral": (740, 120, 0.38),   # 待办/定时
+    }
+
+    def _remind_wav_bytes(self, freq, dur_ms, amp):
+        """生成一段带淡入淡出的正弦波 WAV（内存），振幅即音量。"""
+        import io as _io
+        import math as _m
+        import struct
+        import wave as _wave
+
+        sr = 22050
+        n = max(1, int(sr * dur_ms / 1000.0))
+        fade = max(1, int(n * 0.15))        # 15% 淡入淡出，避免爆音
+        frames = bytearray()
+        for i in range(n):
+            env = 1.0
+            if i < fade:
+                env = i / float(fade)
+            elif i > n - fade:
+                env = (n - i) / float(fade)
+            v = int(32767 * amp * env * _m.sin(2.0 * _m.pi * freq * i / sr))
+            frames += struct.pack("<h", max(-32768, min(32767, v)))
+        buf = _io.BytesIO()
+        with _wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(bytes(frames))
+        return buf.getvalue()
+
+    def _play_remind_sound(self):
+        """播放提醒提示音：按类型取音高，振幅低一档（真的更轻）。"""
+        freq, dur, amp = self.REMIND_SOUNDS.get(
+            self.remind_kind or "", self.REMIND_SOUNDS["_neutral"])
+        try:
+            import winsound
+            data = self._remind_wav_bytes(freq, dur, amp)
+            winsound.PlaySound(data, winsound.SND_MEMORY | winsound.SND_ASYNC)
+            return
+        except Exception:
+            pass
+        try:
+            import winsound
+            winsound.Beep(int(freq), int(dur))   # 兜底：不支持内存播放时
+        except Exception:
+            pass
+
+    # ---------- 提醒气泡主题（三类不同色 + 中性暖色）----------
+    # (bg_top, bg_bot, border, title, primary_btn, primary_border, primary_text)
+    REMIND_THEMES = {
+        "water": (QColor(240, 248, 255), QColor(219, 236, 255),
+                  QColor(120, 176, 235), QColor(30, 108, 180),
+                  QColor(120, 176, 235), QColor(80, 145, 215), QColor(255, 255, 255)),
+        "stand": (QColor(242, 252, 244), QColor(220, 245, 226),
+                  QColor(118, 200, 138), QColor(34, 128, 62),
+                  QColor(118, 200, 138), QColor(78, 172, 102), QColor(255, 255, 255)),
+        "eyes":  (QColor(255, 252, 238), QColor(255, 243, 205),
+                  QColor(235, 198, 92), QColor(160, 118, 20),
+                  QColor(240, 205, 100), QColor(212, 168, 50), QColor(80, 56, 8)),
+        # 待办 / 定时：中性暖色（沿用原配色）
+        "_neutral": (QColor(255, 252, 244), QColor(255, 243, 222),
+                     QColor(247, 181, 92), QColor(196, 116, 24),
+                     QColor(255, 193, 110), QColor(238, 146, 44), QColor(96, 52, 8)),
+    }
+
+    def _remind_theme(self):
+        """当前提醒的类型主题（水/起身/护眼各一色，待办定时用中性暖色）。"""
+        k = self.remind_kind or ""
+        return self.REMIND_THEMES.get(k, self.REMIND_THEMES["_neutral"])
+
     def _paint_remind_bubble(self, p):
-        """画提醒气泡：暖色卡片 + 左侧圆形图标 + 标题/正文/按钮行。"""
+        """画提醒气泡：主题色卡片 + 左侧圆形图标 + 标题/正文/按钮行。"""
         if not self._remind_active():
             return
         bubble, r1, r2, lines, line_h, title_h, r3 = self._remind_rects()
@@ -2076,18 +2286,30 @@ class PetWindow(QWidget):
         icon_d = REMIND_ICON_DIAMETER
         kind = self.remind_kind or "water"
 
-        # ---- 配色 ----
-        bg_top = QColor(255, 252, 244)
-        bg_bot = QColor(255, 243, 222)
-        border = QColor(247, 181, 92)
-        fg = QColor(78, 52, 18)
-        sub_fg = QColor(150, 128, 100)
-        shadow = QColor(120, 84, 30, 38)
+        # ---- 主题配色 ----
+        (bg_top, bg_bot, border, title_fg,
+         pri_bg, pri_bd, pri_fg) = self._remind_theme()
+        fg = QColor(70, 74, 82)                 # 正文深灰
+        sub_fg = QColor(150, 152, 158)
+        shadow = QColor(90, 90, 100, 34)
+
+        # ---- 出现动画（150ms 从尾巴缩放）+ 淡出（150ms）----
+        scale = self._remind_pop_scale()
+        alpha = max(0.0, min(1.0, self._remind_fade))
 
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        p.setOpacity(alpha)
+
+        if abs(scale - 1.0) > 0.001:
+            # 以尾巴（气泡底部中点）为锚点缩放
+            ax = bubble.center().x()
+            ay = bubble.bottom()
+            p.translate(ax, ay)
+            p.scale(scale, scale)
+            p.translate(-ax, -ay)
 
         # ---- 投影 ----
         p.setPen(Qt.PenStyle.NoPen)
@@ -2135,44 +2357,42 @@ class PetWindow(QWidget):
         p.setPen(QColor(255, 255, 255))
         p.drawText(circle, Qt.AlignmentFlag.AlignCenter, emoji)
 
-        # ---- 右侧：标题（加粗、小一号）----
+        # ---- 右侧：标题（14px 加粗主题色）----
         text_x = bubble.left() + pad + icon_d + gap
         text_w = bubble.right() - pad - text_x
         title = REMIND_TITLES.get(kind, REMIND_TITLES["water"])
-        tf = QFont(self.remind_font)
-        tf.setPixelSize(max(10, int(self.remind_font.pixelSize() * 0.86)))
-        tf.setBold(True)
-        p.setFont(tf)
-        p.setPen(QColor(196, 116, 24))
+        p.setFont(getattr(self, "_remind_title_font", self.remind_font))
+        p.setPen(title_fg)
         p.drawText(QRectF(text_x, bubble.top() + pad, text_w, title_h),
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                    title)
 
-        # ---- 右侧：正文 ----
+        # ---- 右侧：正文（13px 深灰，不限行数，绝不截断）----
         body_y = bubble.top() + pad + title_h + 4
-        p.setFont(self.remind_font)
+        p.setFont(getattr(self, "_remind_body_font", self.remind_font))
         p.setPen(fg)
         for i, line in enumerate(lines):
             p.drawText(QRectF(text_x, body_y + i * line_h, text_w, line_h),
                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                        line)
 
-        # ---- 按钮（主实心 / 次描边）----
+        # ---- 按钮（等宽等高；主实心 / 次描边；内边距 ≥8px）----
         btn_font = QFont(self.remind_font)
-        btn_font.setPixelSize(max(10, int(self.remind_font.pixelSize() * 0.80)))
+        btn_font.setPixelSize(12)
         btns = [(r1, "知道了", True), (r2, "稍后再提醒", False)]
         if r3 is not None:
             btns.append((r3, "别提这个", False))
         for rect, label, primary in btns:
             if primary:
-                bg, bd, tf2 = QColor(255, 193, 110), QColor(238, 146, 44), QColor(96, 52, 8)
+                bg, bd, tf2 = pri_bg, pri_bd, pri_fg
             else:
-                bg, bd, tf2 = QColor(255, 250, 240), QColor(247, 205, 150), QColor(150, 96, 30)
+                # 次要按钮：白底 + 主题色描边 + 主题色文字
+                bg, bd, tf2 = QColor(255, 255, 255), border, title_fg
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(180, 130, 60, 26))
+            p.setBrush(QColor(0, 0, 0, 18))
             p.drawRoundedRect(rect.adjusted(0, 1, 0, 2), 8, 8)
             p.setBrush(bg)
-            p.setPen(QPen(bd, 1.2))
+            p.setPen(QPen(bd, 1.4))
             p.drawRoundedRect(rect, 8, 8)
             p.setFont(btn_font)
             p.setPen(tf2)
@@ -2530,10 +2750,14 @@ class PetWindow(QWidget):
         ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
     def hideEvent(self, e):
-        """隐藏：暂停动画解码与 tick（省 CPU，隐藏时接近 0 占用）。"""
+        """隐藏：暂停动画解码与 tick（省 CPU，隐藏时接近 0 占用）。
+
+        这个行为以前由「隐藏时暂停动画」开关控制，现改为永远开启；
+        旧配置里的 pause_when_hidden 字段读取时忽略（不再影响行为）。
+        """
         super().hideEvent(e)
         try:
-            if self.app.cfg.get("pause_when_hidden", True) and not self.dragging:
+            if not self.dragging:
                 self._paused_for_hidden = True
                 if self.timer.isActive():
                     self.timer.stop()

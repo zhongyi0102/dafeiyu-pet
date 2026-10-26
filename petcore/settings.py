@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QLabel, QScrollArea, QTextEdit, QListWidget,
                                QListWidgetItem, QSizePolicy, QComboBox, QCheckBox,
                                QSlider, QSpinBox, QDoubleSpinBox, QStackedWidget,
-                               QAbstractItemView, QFormLayout)
+                               QAbstractItemView, QFormLayout, QTabWidget)
 
 from petcore.consts import *          # noqa: F401,F403
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
@@ -189,6 +189,207 @@ class CollapsibleSection(QWidget):
         self.body.setVisible(self._expanded)
 
 
+class ChatGroupBox(QWidget):
+    """聊天页里的一个可折叠分组（外壳）。
+
+    只做三件事：套一个 CollapsibleSection、暴露 body_layout、转发状态小字。
+    具体内容由 SettingsWindow 既有的 build 代码填充 —— 不重写、不复制，
+    这样原来的视觉页 / 记忆页控件可以原样搬进来。
+    """
+
+    def __init__(self, title, expanded=True, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.section = CollapsibleSection(title, expanded=expanded)
+        outer.addWidget(self.section)
+
+    @property
+    def body_layout(self):
+        """内容区布局（build 方法往里 addWidget / addLayout）。"""
+        return self.section.body_layout
+
+    def set_state(self, text, color="#8a8f9c"):
+        self.section.set_state(text, color)
+
+    def set_summary(self, text):
+        self.section.set_summary(text)
+
+    def is_expanded(self):
+        return self.section.is_expanded()
+
+    def set_expanded(self, on):
+        self.section.set_expanded(on, emit=False)
+
+
+class _ChatModelGroup(ChatGroupBox):
+    """① 聊天模型：Key / 地址 / 模型 + 回复风格 + 单次输出上限。默认展开。"""
+
+    def __init__(self, parent=None):
+        super().__init__("聊天模型", expanded=True, parent=parent)
+
+
+class _PersonaGroup(ChatGroupBox):
+    """② 人设：风格的唯一来源。默认折叠，标题右侧显示「无风格」或人设摘要。"""
+
+    def __init__(self, parent=None):
+        super().__init__("人设", expanded=False, parent=parent)
+
+
+class _MemoryGroup(ChatGroupBox):
+    """③ 长期记忆：说明 + 打开记忆管理。默认折叠，标题右侧显示「N 条」。"""
+
+    def __init__(self, parent=None):
+        super().__init__("长期记忆", expanded=False, parent=parent)
+
+
+class _VisionGroup(ChatGroupBox):
+    """④ 看屏幕 / 视觉：原「视觉」页全部控件原样搬入。默认折叠。
+
+    标题右侧显示「模型名 已配置」或「未配置」。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("看屏幕 / 视觉", expanded=False, parent=parent)
+
+
+class _FieldDialog(QDialog):
+    """带中文按钮的输入对话框基类。
+
+    - 父窗口是设置窗口 → 居中于设置窗口，不再跑到屏幕角落
+    - 模态，层级高于宠物窗口
+    - 打开期间临时取消宠物置顶，关闭后恢复（否则宠物压住对话框按钮）
+    - 按钮文字中文「确定 / 取消」
+    - 校验失败用对话框内红色小字，不弹第二个窗口
+    """
+
+    def __init__(self, parent, title, label_text, value="", password=False):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(360)
+        self._restore_topmost = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 12)
+        outer.setSpacing(8)
+
+        lab = QLabel(label_text)
+        lab.setWordWrap(True)
+        outer.addWidget(lab)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.edit = QLineEdit(value or "")
+        self.edit.setFixedHeight(30)
+        if password:
+            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit.textChanged.connect(self._clear_error)
+        row.addWidget(self.edit, 1)
+        if password:
+            self._eye = QPushButton("显示")
+            self._eye.setFixedSize(52, 30)
+            self._eye.setToolTip("显示 / 隐藏")
+            self._eye.clicked.connect(self._toggle_echo)
+            row.addWidget(self._eye)
+        outer.addLayout(row)
+
+        self._err = QLabel("")
+        self._err.setWordWrap(True)
+        self._err.setStyleSheet("color:#d93025;font-size:11px;")
+        self._err.hide()
+        outer.addWidget(self._err)
+
+        brow = QHBoxLayout()
+        brow.addStretch(1)
+        self._ok = QPushButton("确定")
+        self._ok.setFixedWidth(84)
+        self._ok.setDefault(True)
+        self._ok.clicked.connect(self._on_ok)
+        brow.addWidget(self._ok)
+        self._cancel = QPushButton("取消")
+        self._cancel.setFixedWidth(84)
+        self._cancel.clicked.connect(self.reject)
+        brow.addWidget(self._cancel)
+        outer.addLayout(brow)
+
+    # ---- 宠物置顶临时取消 ----
+    def showEvent(self, e):
+        super().showEvent(e)
+        try:
+            for w in getattr(self.parent().app, "pets", []) if self.parent() else []:
+                if w.isVisible() and (w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint):
+                    self._restore_topmost.append(w)
+                    w.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+                    w.show()
+        except Exception:
+            pass
+        self._center_on_parent()
+
+    def closeEvent(self, e):
+        self._restore_pets_topmost()
+        super().closeEvent(e)
+
+    def done(self, r):
+        self._restore_pets_topmost()
+        super().done(r)
+
+    def _restore_pets_topmost(self):
+        for w in self._restore_topmost:
+            try:
+                w.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                w.show()
+            except Exception:
+                pass
+        self._restore_topmost = []
+
+    def _center_on_parent(self):
+        try:
+            p = self.parent()
+            if p is None:
+                return
+            pg = p.frameGeometry()
+            self.adjustSize()
+            x = pg.center().x() - self.width() // 2
+            y = pg.center().y() - self.height() // 2
+            self.move(x, y)
+        except Exception:
+            pass
+
+    def _toggle_echo(self):
+        if self.edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._eye.setText("隐藏")
+        else:
+            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self._eye.setText("显示")
+
+    def _clear_error(self):
+        if self._err.isVisible():
+            self._err.hide()
+
+    def set_error(self, msg):
+        self._err.setText(msg)
+        self._err.show()
+
+    def _on_ok(self):
+        self.accept()
+
+
+class _CityDialog(_FieldDialog):
+    """设置城市。"""
+
+    def __init__(self, parent, value=""):
+        super().__init__(parent, "设置城市",
+                         "天气查询用的城市名（如 重庆 / 汕头）：", value)
+
+    def _on_ok(self):
+        if not (self.edit.text() or "").strip():
+            self.set_error("城市名不能为空")
+            return
+        self.accept()
+
 
 class SettingsWindow(QDialog):
     """统一设置窗口：左侧分页，右侧内容。所有入口都从这里进（右键「设置…」/ 托盘）。"""
@@ -196,25 +397,21 @@ class SettingsWindow(QDialog):
     # 主动搭话测试结果回主线程（worker 线程只 emit）
     _pro_test_done = Signal(object, str, str, float, str, bool, bool)
     _voice_test_done = Signal(object, str, float)   # 测试语音：wav, err, 耗时
+    _update_done = Signal(str, str, str)            # 检查更新：tag, page, err
 
     PAGES = [
         ("features", "功能开关"),
         ("pet", "宠物"),
-        ("physics", "物理"),
-        ("animation", "动画"),
+        ("motion", "物理·动画"),
         ("reminder", "提醒"),
-        ("balance", "余额"),
         ("chat", "聊天"),
-        ("visual", "视觉"),
         ("proactive", "主动搭话"),
         ("voice", "语音"),
-        ("memory", "记忆"),
         ("general", "通用"),
-        ("about", "关于"),
     ]
 
     # 人设台词生成完成: 成功, 消息, 池数量
-    _persona_gen_done = Signal(bool, str, int)
+    _persona_gen_result = Signal(object)   # 台词池生成结果（dict）
 
     def __init__(self, app, page=None):
         super().__init__(app.main_pet)
@@ -270,6 +467,10 @@ class SettingsWindow(QDialog):
         self._pages = {}
         # 主动搭话测试结果（一次性连接，避免重复触发）
         self._pro_test_done.connect(self._on_pro_test_done)
+        # 检查更新结果（后台线程 → 主线程）
+        self._update_done.connect(self._on_update_done)
+        # 台词池生成结果（后台线程 → 主线程）
+        self._persona_gen_result.connect(self._on_persona_gen_result)
         for key, label in self.PAGES:
             w = QWidget()
             lay = QVBoxLayout(w)
@@ -298,17 +499,12 @@ class SettingsWindow(QDialog):
 
         self._build_features_page(self._pages["features"])
         self._build_pet_page(self._pages["pet"])
-        self._build_physics_page(self._pages["physics"])
-        self._build_animation_page(self._pages["animation"])
+        self._build_motion_page(self._pages["motion"])
         self._build_reminder_page(self._pages["reminder"])
-        self._build_balance_page(self._pages["balance"])
         self._build_chat_page(self._pages["chat"])
-        self._build_visual_page(self._pages["visual"])
         self._build_proactive_page(self._pages["proactive"])
         self._build_voice_page(self._pages["voice"])
         self._build_general_page(self._pages["general"])
-        self._build_memory_page(self._pages["memory"])
-        self._build_about_page(self._pages["about"])
 
     def _select_page(self, key):
         for i, (k, _label) in enumerate(self.PAGES):
@@ -340,39 +536,65 @@ class SettingsWindow(QDialog):
             d.setStyleSheet("color:#8a8f9c;font-size:11px;")
             lay.addWidget(d)
 
-    def _check(self, lay, label, checked, on_toggle, desc=None, note=None):
+    def _check(self, lay, label, checked, on_toggle, desc=None, note=None,
+               indent=0):
         cb = QCheckBox(label)
         cb.setChecked(bool(checked))
         cb.toggled.connect(on_toggle)
-        lay.addWidget(cb)
+        if indent:
+            wrap = QHBoxLayout()
+            wrap.setContentsMargins(int(indent), 0, 0, 0)
+            wrap.addWidget(cb)
+            wrap.addStretch(1)
+            lay.addLayout(wrap)
+        else:
+            lay.addWidget(cb)
         if desc:
             d = QLabel(desc)
             d.setWordWrap(True)
-            d.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+            d.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:%dpx;"
+                            % (22 + int(indent)))
             lay.addWidget(d)
         if note:
             n = QLabel(note)
-            n.setStyleSheet("color:#d08a00;font-size:11px;margin-left:22px;")
+            n.setStyleSheet("color:#d08a00;font-size:11px;margin-left:%dpx;"
+                            % (22 + int(indent)))
             lay.addWidget(n)
         return cb
 
     def _slider_row(self, lay, label, value, lo, hi, step, fmt, on_change, suffix=""):
-        """一行：标签 + 滑块 + 数值框（双向同步）"""
+        """一行：标签 + 滑块 + 数值框（双向同步）
+
+        step 为小数时（如弹性 0.05），QSlider 内部用整数刻度
+        [0, (hi-lo)/step]，显示时再乘回 step —— 否则 0.05 会被
+        QSlider 的 int 截成 0，滑条只能整档跳（0 或 1）。
+        """
         row = QHBoxLayout()
         name = QLabel(label)
         name.setFixedWidth(96)
         row.addWidget(name)
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(lo, hi)
-        s.setSingleStep(step)
-        s.setPageStep(step * 5)
-        s.setValue(int(value))
+
+        is_float_step = isinstance(step, float) and step < 1
+        if is_float_step:
+            scale = step
+            s = QSlider(Qt.Orientation.Horizontal)
+            s.setRange(0, int(round((hi - lo) / scale)))
+            s.setSingleStep(1)
+            s.setPageStep(5)
+            s.setValue(int(round((float(value) - lo) / scale)))
+        else:
+            scale = 1.0
+            s = QSlider(Qt.Orientation.Horizontal)
+            s.setRange(int(lo), int(hi))
+            s.setSingleStep(int(step))
+            s.setPageStep(int(step) * 5)
+            s.setValue(int(value))
         s.setMinimumWidth(220)
         row.addWidget(s, 1)
         box = QDoubleSpinBox()
         box.setRange(lo, hi)
         box.setSingleStep(step)
-        box.setDecimals(2 if isinstance(step, float) and step < 1 else 0)
+        box.setDecimals(2 if is_float_step else 0)
         box.setValue(float(value))
         box.setFixedWidth(96)
         row.addWidget(box)
@@ -381,15 +603,22 @@ class SettingsWindow(QDialog):
         row.addWidget(unit)
         lay.addLayout(row)
 
-        def from_slider(v):
+        def slider_to_val(iv):
+            return lo + iv * scale if is_float_step else float(iv)
+
+        def val_to_slider(v):
+            return int(round((float(v) - lo) / scale)) if is_float_step else int(round(v))
+
+        def from_slider(iv):
+            v = slider_to_val(iv)
             if abs(box.value() - v) > 1e-9:
                 box.blockSignals(True)
-                box.setValue(float(v))
+                box.setValue(v)
                 box.blockSignals(False)
-            on_change(float(v))
+            on_change(v)
 
         def from_box(v):
-            iv = int(round(v))
+            iv = val_to_slider(v)
             if s.value() != iv:
                 s.blockSignals(True)
                 s.setValue(iv)
@@ -536,6 +765,8 @@ class SettingsWindow(QDialog):
             h.setStyleSheet("color:#5686fe;font-weight:bold;font-size:11px;margin-top:4px;")
             lay.addWidget(h)
             for key, spec in groups[gname]:
+                if key == "care_live_generate":
+                    continue        # 已由 _build_live_gen_row 显示（带今日计数），不重复
                 note = "重启生效" if spec.get("needs_restart") else None
                 cb = self._check(
                     lay, spec["name"], self.app.is_enabled(key),
@@ -547,6 +778,8 @@ class SettingsWindow(QDialog):
 
     # ---------- 宠物页 ----------
     def _build_pet_page(self, lay):
+        """宠物页：四组 —— 宠物管理 / 选中的宠物 / 物理 / 窗口。"""
+        # ================= ① 宠物管理 =================
         self._title(lay, "宠物管理", "可以养多只大肥鱼；至少保留一只 id 为 main 的宠物。")
         self.pet_list = QListWidget()
         self.pet_list.setFixedHeight(120)
@@ -555,7 +788,7 @@ class SettingsWindow(QDialog):
 
         row = QHBoxLayout()
         add = QPushButton("添加宠物")
-        add.clicked.connect(self.app.add_pet)
+        add.clicked.connect(self._on_add_pet)
         rm = QPushButton("删除选中")
         rm.clicked.connect(self._delete_selected_pet)
         row.addWidget(add)
@@ -563,9 +796,15 @@ class SettingsWindow(QDialog):
         row.addStretch(1)
         lay.addLayout(row)
 
+        # ================= ② 选中的宠物 =================
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line)
+
+        _sel_hdr = QLabel("选中的宠物")
+        _sel_hdr.setStyleSheet(
+            "color:#5686fe;font-weight:bold;font-size:11px;margin-top:4px;")
+        lay.addWidget(_sel_hdr)
 
         self._pet_size_row = QHBoxLayout()
         self.pet_size_box = self._combo_row(
@@ -576,6 +815,7 @@ class SettingsWindow(QDialog):
             [("自由散步", "wander"), ("跟随鼠标", "follow"), ("原地待着", "still")], "wander",
             lambda v: self._apply_to_selected("mode", v))
 
+        # 位置：X / Y / 应用位置 / 居中 全在一行
         pos = QHBoxLayout()
         name = QLabel("位置")
         name.setFixedWidth(96)
@@ -608,16 +848,116 @@ class SettingsWindow(QDialog):
         vis_row.addStretch(1)
         lay.addLayout(vis_row)
 
-        # ---- 隐私（原「功能开关-隐私」组移入这里）----
-        line_pv = QFrame()
-        line_pv.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line_pv)
+        # ================= ③ 物理 =================
+        line_ph = QFrame()
+        line_ph.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(line_ph)
+
+        _ph_hdr = QLabel("物理")
+        _ph_hdr.setStyleSheet(
+            "color:#5686fe;font-weight:bold;font-size:11px;margin-top:4px;")
+        lay.addWidget(_ph_hdr)
+
+        _ph = self.app._physics_cfg()
+        self._feature_boxes["physics"] = self._check(
+            lay, "甩抛物理", self.app.is_enabled("physics"),
+            lambda on: self._on_physics_toggle(on),
+            "拖拽用弹簧跟随、松手按速度甩抛、落地反弹与挤压")
+
+        # 缩进的子项：甩抛物理关闭时置灰
+        self._top_bounce_box = self._check(
+            lay, "顶部反弹", bool(_ph.get("top_bounce", True)),
+            lambda on: self.app.set_physics("top_bounce", bool(on)),
+            "撞到屏幕顶部时反弹；关闭则贴顶停住",
+            indent=22)
+        self._smash_spin_box = self._check(
+            lay, "撞飞彩蛋", bool(self.app.cfg.get("smash_spin", True)),
+            lambda on: self._set_anim_cfg("smash_spin", bool(on)),
+            "高速甩飞撞到屏幕边缘时，头部跟随速度方向旋转，停稳后回正",
+            indent=22)
+
+        # 宠物互撞：只有一只时置灰
+        _col_row = QHBoxLayout()
+        _col_row.setContentsMargins(22, 0, 0, 0)
+        _col_row.setSpacing(6)
+        self._pet_collision_box = QCheckBox("宠物互撞")
+        self._pet_collision_box.setChecked(bool(_ph.get("pet_collision", False)))
+        self._pet_collision_box.toggled.connect(
+            lambda on: self.app.set_physics("pet_collision", bool(on)))
+        _col_row.addWidget(self._pet_collision_box)
+        self._collision_hint = QLabel("多只时生效")
+        self._collision_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _col_row.addWidget(self._collision_hint)
+        _col_row.addStretch(1)
+        lay.addLayout(_col_row)
+        _col_desc = QLabel("多只宠物碰到会互相弹开")
+        _col_desc.setWordWrap(True)
+        _col_desc.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(_col_desc)
+
+        # ================= ④ 窗口 =================
+        line_w = QFrame()
+        line_w.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(line_w)
+
+        _w_hdr = QLabel("窗口")
+        _w_hdr.setStyleSheet(
+            "color:#5686fe;font-weight:bold;font-size:11px;margin-top:4px;")
+        lay.addWidget(_w_hdr)
+
+        cfg = self.app.cfg
+        self._check(lay, "窗口置顶", bool(cfg.get("topmost", True)),
+                    lambda on: self.app.set_topmost(on))
+        self._check(lay, "鼠标穿透（点不到它）", bool(cfg.get("passthrough", False)),
+                    lambda on: self.app.set_passthrough(on),
+                    "开启后只能从托盘菜单取消")
         self._feature_boxes["capture_hide"] = self._check(
             lay, "截屏时隐藏",
             self.app.is_enabled("capture_hide"),
             lambda on: self.app.set_feature("capture_hide", bool(on)),
             "从系统截图 / 录屏里排除，并在截图工具出现时自动隐藏（关闭后就能被拍到）")
+
         lay.addStretch(1)
+        self._refresh_pet_physics_state()
+
+    def _on_add_pet(self):
+        """添加宠物后刷新物理组联动状态（互撞从置灰恢复可用）。"""
+        self.app.add_pet()
+        self._refresh_pet_physics_state()
+
+    def _on_physics_toggle(self, on):
+        """甩抛物理开关：写配置 + 子项置灰联动。"""
+        self.app.set_feature("physics", bool(on))
+        self._refresh_pet_physics_state()
+
+    def _refresh_pet_physics_state(self):
+        """物理组联动：主开关关 → 子项置灰；宠物只有一只 → 互撞置灰。"""
+        try:
+            physics_on = self.app.is_enabled("physics")
+            for w in (getattr(self, "_top_bounce_box", None),
+                      getattr(self, "_smash_spin_box", None)):
+                if w is not None:
+                    w.setEnabled(physics_on)
+            box = getattr(self, "_pet_collision_box", None)
+            hint = getattr(self, "_collision_hint", None)
+            if box is not None:
+                n = len(self.app.cfg.get("pets") or [])
+                multi = n > 1
+                # 互撞要同时满足：有甩抛物理 + 多只宠物
+                box.setEnabled(physics_on and multi)
+                if hint is not None:
+                    if not multi:
+                        hint.setText("多只时生效")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                    elif not physics_on:
+                        hint.setText("需先开启甩抛物理")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                    else:
+                        hint.setText("多只时生效")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        except Exception as ex:
+            log("[设置] 刷新物理组状态失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _selected_pet(self):
         row = self.pet_list.currentRow()
@@ -750,10 +1090,13 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
 
-    # ---------- 物理页 ----------
-    def _build_physics_page(self, lay):
-        self._title(lay, "物理效果",
-                    "拖拽弹簧、甩抛重力与反弹。改完立即生效，保存在 config.json 的 physics。")
+    # ---------- 物理·动画页 ----------
+    def _build_motion_page(self, lay):
+        self._title(lay, "物理 · 动画",
+                    "上半是物理（拖拽/甩抛/反弹），下半是动画（权重/帧序列/强度）。"
+                    "改完立即生效。"
+                    "「顶部反弹 / 宠物互撞 / 隐藏时暂停动画 / 撞飞彩蛋」"
+                    "四个开关已在「宠物」页。")
         ph = self.app._physics_cfg()
         self._physics_sliders = {}
         specs = [
@@ -770,31 +1113,16 @@ class SettingsWindow(QDialog):
                 lay, label, cur, lo, hi, step, None,
                 lambda v, k=key: self.app.set_physics(k, v), suffix)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line)
-        self._check(lay, "顶部反弹", bool(ph.get("top_bounce", True)),
-                    lambda on: self.app.set_physics("top_bounce", bool(on)),
-                    "撞到屏幕顶部时反弹；关闭则贴顶停住")
-        self._check(lay, "宠物互撞（多开时生效）", bool(ph.get("pet_collision", False)),
-                    lambda on: self.app.set_physics("pet_collision", bool(on)),
-                    "多只宠物碰到会互相弹开")
+        # 「顶部反弹 / 宠物互撞」已移到「宠物」页（用户指定）
 
-        btn = QPushButton("恢复默认")
+        btn = QPushButton("恢复默认（物理）")
         btn.clicked.connect(self._reset_physics)
         lay.addWidget(btn)
-        lay.addStretch(1)
 
-    def _reset_physics(self):
-        self.app.cfg["physics"] = dict(DEFAULT_PHYSICS)
-        self.app.save_cfg()
-        self.reload()
-        self.app.say_main("物理参数已恢复默认")
-
-    # ---------- 动画页 ----------
-    def _build_animation_page(self, lay):
-        self._title(lay, "动画",
-                    "类别权重决定动作出现频率；移动/待机/转向的权重越高越常出现。")
+        # ==== 动画部分 ====
+        line_pa = QFrame()
+        line_pa.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(line_pa)
         self._anim_sliders = {}
         weights = self.app.cfg.get("animation_weights") or {}
         labels = {"idle": "待机权重", "turn": "转向权重", "move": "移动权重"}
@@ -829,52 +1157,56 @@ class SettingsWindow(QDialog):
             50, 300, 10, None,
             lambda v: self._set_bubble_scale(int(v)), "%")
 
-        # ---- 隐藏时暂停 ----
-        self._check(lay, "隐藏时暂停动画", bool(self.app.cfg.get("pause_when_hidden", True)),
-                    lambda on: self._set_anim_cfg("pause_when_hidden", bool(on)),
-                    "宠物隐藏后停止动画解码与定时器，CPU 接近 0；显示时立即恢复")
-
-        # ---- 撞飞彩蛋 ----
-        self._check(lay, "撞飞彩蛋", bool(self.app.cfg.get("smash_spin", True)),
-                    lambda on: self._set_anim_cfg("smash_spin", bool(on)),
-                    "高速甩飞撞到屏幕边缘时，头部跟随速度方向旋转，停稳后回正")
+        # 「隐藏时暂停动画 / 撞飞彩蛋」已移到「宠物」页（用户指定）
 
         # 主动搭话已独立成页（见「主动搭话」）
 
-        # ---- 帧序列动画 ----
+        # ---- 帧序列动画（可收缩）----
         line2 = QFrame()
         line2.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line2)
         fa = self.app.cfg.get("frame_anim")
         if not isinstance(fa, dict):
             fa = {}
+        self._frame_section = CollapsibleSection("帧序列动画", expanded=True)
+        _fbody = self._frame_section.body_layout
+
+        _fintro = QLabel(
+            "桌宠有两套动画引擎：\n"
+            "· 代码变形——实时拉伸/旋转一张图，省内存但略僵。\n"
+            "· 帧序列动画——每个动作一整套手绘 PNG 逐帧播放（12 fps），"
+            "像看动画一样流畅。\n"
+            "动作目录 sprites/anim/<动作名>/ 里有 png 就走帧序列，"
+            "没有的仍用代码变形。")
+        _fintro.setWordWrap(True)
+        _fintro.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _fbody.addWidget(_fintro)
+
         self._frame_anim_box = self._check(
-            lay, "帧序列动画", bool(fa.get("enabled", True)),
+            _fbody, "启用帧序列动画", bool(fa.get("enabled", True)),
             lambda on: self._set_frame_anim(on),
-            "动作目录 sprites/anim/<动作名>/ 里有 png 就按帧播放；"
-            "没有帧的动作仍用原来的代码变形")
+            "关掉后所有动作退回代码变形，画面变糙但能省内存"
+            "（缓存 4 个动作约 92 MB）。")
 
         self._frame_stat = QLabel("")
         self._frame_stat.setWordWrap(True)
         self._frame_stat.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._frame_stat)
+        _fbody.addWidget(self._frame_stat)
 
         row = QHBoxLayout()
         row.addSpacing(22)
         reload_btn = QPushButton("重新扫描帧目录")
+        reload_btn.setToolTip("往 sprites/anim/ 加了新动作文件夹后点这里，不用重启")
         reload_btn.clicked.connect(lambda _=False: self._reload_frames())
         row.addWidget(reload_btn)
         clear_btn = QPushButton("释放帧缓存")
+        clear_btn.setToolTip("立刻清空内存里的帧图，下次播放时再从磁盘加载")
         clear_btn.clicked.connect(lambda _=False: self._clear_frames())
         row.addWidget(clear_btn)
         row.addStretch(1)
-        lay.addLayout(row)
+        _fbody.addLayout(row)
 
-        btn = QPushButton("恢复默认权重")
-        btn.clicked.connect(self._reset_anim)
-        lay.addWidget(btn)
-        lay.addStretch(1)
-        self._refresh_frame_stat()
+        lay.addWidget(self._frame_section)
 
         # ---- 强度 ----
         line3 = QFrame()
@@ -928,12 +1260,65 @@ class SettingsWindow(QDialog):
         row2.addStretch(1)
         lay.addLayout(row2)
 
-        btn = QPushButton("恢复默认权重")
+        btn = QPushButton("恢复默认（动画）")
         btn.clicked.connect(self._reset_anim)
         lay.addWidget(btn)
-        lay.addStretch(1)
         self._refresh_frame_stat()
         self._refresh_debug()
+
+    def _refresh_motion_controls(self):
+        """把物理/权重/tier 滑条回填成当前配置值。
+
+        reload() 不刷这些滑条（历史上只刷功能开关/宠物/聊天/视觉），
+        导致「恢复默认」后 UI 停在旧值、配置却是新值 —— 看起来像没生效。
+
+        回填只动 box 并 blockSignals：spin 的 from_box 会同步滑条位置
+        （小数 step 时滑条内部是整数刻度，由 _slider_row 的映射换算）。
+        """
+        try:
+            ph = self.app._physics_cfg()
+            for key, pair in getattr(self, "_physics_sliders", {}).items():
+                s, box = pair
+                v = float(ph.get(key, DEFAULT_PHYSICS.get(key, box.minimum())))
+                box.blockSignals(True)
+                box.setValue(v)
+                box.blockSignals(False)
+                # 手动同步滑条位置（与 _slider_row 的映射一致）
+                lo = box.minimum()
+                if isinstance(box.singleStep(), float) and 0 < box.singleStep() < 1:
+                    scale = box.singleStep()
+                    s.blockSignals(True)
+                    s.setValue(int(round((v - lo) / scale)))
+                    s.blockSignals(False)
+                else:
+                    s.blockSignals(True)
+                    s.setValue(int(round(v)))
+                    s.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            weights = self.app.cfg.get("animation_weights") or {}
+            for key, pair in getattr(self, "_anim_sliders", {}).items():
+                s, box = pair
+                v = float(weights.get(key, ACTION_CATEGORY_WEIGHTS.get(key, 5)))
+                s.blockSignals(True); box.blockSignals(True)
+                s.setValue(int(v)); box.setValue(v)
+                s.blockSignals(False); box.blockSignals(False)
+            tiers = self.app.cfg.get("animation_tiers") or {}
+            for key, pair in getattr(self, "_tier_sliders", {}).items():
+                s, box = pair
+                v = float(tiers.get(key, ANIMATION_TIERS_DEFAULT.get(key, 0))) * 100.0
+                s.blockSignals(True); box.blockSignals(True)
+                s.setValue(int(v)); box.setValue(v)
+                s.blockSignals(False); box.blockSignals(False)
+        except Exception:
+            pass
+
+    def _reset_physics(self):
+        self.app.cfg["physics"] = dict(DEFAULT_PHYSICS)
+        self.app.save_cfg()
+        self._refresh_motion_controls()
+        self.app.say_main("物理参数已恢复默认")
 
     # ---- 强度 / tier / 调试 ----
     def _set_strength(self, key, value):
@@ -1069,7 +1454,9 @@ class SettingsWindow(QDialog):
         self.app.cfg["turn_strength"] = TURN_STRENGTH_DEFAULT
         self.app.cfg["action_strength"] = ACTION_STRENGTH_DEFAULT
         self.app.save_cfg()
-        self.reload()
+        self._refresh_motion_controls()
+        self._refresh_frame_stat()
+        self._refresh_debug()
         self.app.say_main("动画参数已恢复默认")
 
     # ---------- 提醒页 ----------
@@ -1080,135 +1467,188 @@ class SettingsWindow(QDialog):
                     "每类可单独设间隔；到点会停下来播动作并放大气泡。"
                     "免打扰时段内不弹。")
 
-        # ---- 三类开关 + 独立间隔 ----
+        # ================= ① 健康提醒 =================
+        self._health_section = CollapsibleSection("健康提醒", expanded=True)
+        _hbody = self._health_section.body_layout
+
+        _hrow = QHBoxLayout()
+        _hrow.addSpacing(2)
+        _uni = QPushButton("全部统一设置…")
+        _uni.setToolTip("把喝水 / 起身 / 护眼三个间隔一次改成同一个值")
+        _uni.clicked.connect(self._unify_reminder_interval)
+        _hrow.addWidget(_uni)
+        _hrow.addStretch(1)
+        _hbody.addLayout(_hrow)
+
+        # 三行：开关 + 名称 + 每 [间隔] 分钟 + 今日确认次数 + 小测试按钮
         self._rem_boxes = {}
         self._rem_spins = {}
+        self._rem_done_labs = {}
+        self._rem_test_btns = {}
         for kind, label in REMINDERS.items():
             row = QHBoxLayout()
-            cb = QCheckBox(label)
+            row.setSpacing(6)
+
+            cb = QCheckBox()
             cb.setChecked(self.app._rem_on(kind))
+            cb.setToolTip("开启 / 关闭%s" % label)
             cb.toggled.connect(lambda on, k=kind: self.app.set_reminder_on(k, on))
             row.addWidget(cb)
-            row.addStretch(1)
+
+            name = QLabel(label)
+            name.setFixedWidth(88)
+            row.addWidget(name)
+
             row.addWidget(QLabel("每"))
             sp = QSpinBox()
             sp.setRange(1, 600)
             sp.setValue(self.app._rem_minutes(kind))
             sp.setSuffix(" 分钟")
-            sp.setFixedWidth(96)
-            sp.valueChanged.connect(lambda v, k=kind: self.app.set_reminder_min(k, int(v)))
+            sp.setFixedWidth(110)       # 保证「120 分钟」不被截断
+            sp.setAlignment(Qt.AlignmentFlag.AlignRight
+                            | Qt.AlignmentFlag.AlignVCenter)
+            sp.valueChanged.connect(
+                lambda v, k=kind: self.app.set_reminder_min(k, int(v)))
             row.addWidget(sp)
+
+            done = QLabel("")
+            done.setFixedWidth(52)
+            done.setStyleSheet("color:#5686fe;font-size:11px;")
+            done.setAlignment(Qt.AlignmentFlag.AlignRight
+                              | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(done)
+
+            # 「测试」是调试控件：打包版隐藏（见 is_dev_mode），
+            # 隐藏后不留空位，今日次数列自然靠右
+            test = QPushButton("测试")
+            test.setFixedWidth(52)
+            test.setToolTip("立刻弹一次%s（不影响间隔计时）" % label)
+            test.clicked.connect(lambda _=False, kk=kind: self.app._fire_reminder(kk))
+            test.setVisible(is_dev_mode())
+            row.addWidget(test)
+
+            row.addStretch(1)
+            _hbody.addLayout(row)
+
             self._rem_boxes[kind] = cb
             self._rem_spins[kind] = sp
-            lay.addLayout(row)
+            self._rem_done_labs[kind] = done
+            self._rem_test_btns[kind] = test
 
-        # ---- 本页功能开关（从「功能开关」页移入）----
-        self._feature_boxes["remind_todo"] = self._check(
-            lay, "待办提醒", self.app.is_enabled("remind_todo"),
-            lambda on: self.app.set_feature("remind_todo", bool(on)),
-            "到点提醒待办事项；聊天里说「提醒我 X 分钟后 xxx」也能加")
-        self._feature_boxes["remind_schedule"] = self._check(
-            lay, "定时提醒", self.app.is_enabled("remind_schedule"),
-            lambda on: self.app.set_feature("remind_schedule", bool(on)),
-            "固定时刻提醒（如 12:00 吃饭），可设每天 / 工作日 / 仅一次")
-        urow = QHBoxLayout()
-        urow.addSpacing(22)
-        uni = QPushButton("全部统一设置…")
-        uni.clicked.connect(self._unify_reminder_interval)
-        urow.addWidget(uni)
-        for lbl, k in (("测试喝水", "water"), ("测试起身", "stand"), ("测试护眼", "eyes")):
-            test = QPushButton(lbl)
-            test.clicked.connect(lambda _=False, kk=k: self.app._fire_reminder(kk))
-            urow.addWidget(test)
-        urow.addStretch(1)
-        lay.addLayout(urow)
+        lay.addWidget(self._health_section)
 
-        # ---- 今日已完成 ----
-        line0 = QFrame()
-        line0.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line0)
-        dt = self.app._done_today()
-        self._rem_done_label = QLabel(
-            "今日已确认：喝水 %d 次 · 起身 %d 次 · 护眼 %d 次 · 待办 %d 条"
-            % (dt.get("water", 0), dt.get("stand", 0), dt.get("eyes", 0), dt.get("todo", 0)))
-        self._rem_done_label.setStyleSheet("color:#5686fe;font-size:11px;margin-left:2px;")
-        lay.addWidget(self._rem_done_label)
+        # ================= ② 待办与定时（标签页）=================
+        self._todo_section = CollapsibleSection("待办与定时", expanded=True)
+        _tbody = self._todo_section.body_layout
 
-        # ---- 气泡 / 提示音 ----
-        line1 = QFrame()
-        line1.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line1)
-        self._feature_boxes["remind_walk"] = self._check(
-            lay, "提醒时走到屏幕中间", self.app.is_enabled("remind_walk"),
-            lambda on: self.app.set_feature("remind_walk", bool(on)),
-            "关闭后原地提醒，不移动宠物")
+        self._rem_tabs = QTabWidget()
+        self._rem_tabs.setDocumentMode(True)
 
-
-        # ---- 免打扰 ----
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line2)
-        dnd = ex.get("dnd") or {}
-        self._feature_boxes["remind_dnd"] = self._check(
-            lay, "免打扰时段", bool(dnd.get("enabled", True)),
-            lambda on: self._set_dnd("enabled", bool(on)),
-                    "期间提醒静音且不弹气泡，到点后不补发；检测到全屏/演示模式也会自动暂停")
-        drow = QHBoxLayout()
-        drow.addSpacing(22)
-        drow.addWidget(QLabel("从"))
-        self.dnd_start = QLineEdit(dnd.get("start", "22:00"))
-        self.dnd_start.setFixedWidth(72)
-        self.dnd_start.editingFinished.connect(
-            lambda: self._set_dnd("start", self.dnd_start.text()))
-        drow.addWidget(self.dnd_start)
-        drow.addWidget(QLabel("到"))
-        self.dnd_end = QLineEdit(dnd.get("end", "08:00"))
-        self.dnd_end.setFixedWidth(72)
-        self.dnd_end.editingFinished.connect(
-            lambda: self._set_dnd("end", self.dnd_end.text()))
-        drow.addWidget(self.dnd_end)
-        drow.addStretch(1)
-        lay.addLayout(drow)
-
-        # ---- 待办 ----
-        line3 = QFrame()
-        line3.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line3)
-        self._title(lay, "待办提醒",
-                    "最多 %d 条；到点用同样的方式提醒。聊天里说「提醒我 10 分钟后 xxx」也能加。"
-                    % TODO_MAX)
+        # ---- 标签「待办」----
+        _todo_page = QWidget()
+        _tl = QVBoxLayout(_todo_page)
+        _tl.setContentsMargins(8, 8, 8, 8)
+        _tl.setSpacing(6)
+        self._feature_boxes["remind_todo"] = QCheckBox("启用待办提醒")
+        self._feature_boxes["remind_todo"].setChecked(
+            self.app.is_enabled("remind_todo"))
+        self._feature_boxes["remind_todo"].toggled.connect(
+            lambda on: self.app.set_feature("remind_todo", bool(on)))
+        _tl.addWidget(self._feature_boxes["remind_todo"])
+        _tl.addWidget(self._sub_hint(
+            "最多 %d 条；到点用同样的方式提醒。"
+            "聊天里说「提醒我 10 分钟后 xxx」也能加。" % TODO_MAX))
         self.todo_list = QListWidget()
         self.todo_list.setFixedHeight(110)
-        lay.addWidget(self.todo_list)
-        trow = QHBoxLayout()
+        _tl.addWidget(self.todo_list)
+        _trow = QHBoxLayout()
         for text, fn in (("添加", self._add_todo_dialog),
                          ("编辑", self._edit_todo_dialog),
                          ("删除", self._remove_todo_dialog),
                          ("启用/停用", self._toggle_todo_dialog)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
-            trow.addWidget(b)
-        trow.addStretch(1)
-        lay.addLayout(trow)
+            _trow.addWidget(b)
+        _trow.addStretch(1)
+        _tl.addLayout(_trow)
+        _tl.addStretch(1)
+        self._rem_tabs.addTab(_todo_page, "待办")
 
-        # ---- 自定义定时 ----
-        line4 = QFrame()
-        line4.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line4)
-        self._title(lay, "定时提醒",
-                    "固定时刻提醒（如 12:00 吃饭）；可设每天 / 工作日 / 仅一次，台词留空用默认。")
+        # ---- 标签「定时」----
+        _sch_page = QWidget()
+        _sl = QVBoxLayout(_sch_page)
+        _sl.setContentsMargins(8, 8, 8, 8)
+        _sl.setSpacing(6)
+        self._feature_boxes["remind_schedule"] = QCheckBox("启用定时提醒")
+        self._feature_boxes["remind_schedule"].setChecked(
+            self.app.is_enabled("remind_schedule"))
+        self._feature_boxes["remind_schedule"].toggled.connect(
+            lambda on: self.app.set_feature("remind_schedule", bool(on)))
+        _sl.addWidget(self._feature_boxes["remind_schedule"])
+        _sl.addWidget(self._sub_hint(
+            "固定时刻提醒（如 12:00 吃饭）；可设每天 / 工作日 / 仅一次，"
+            "台词留空用默认。"))
         self.sch_list = QListWidget()
         self.sch_list.setFixedHeight(100)
-        lay.addWidget(self.sch_list)
-        srow = QHBoxLayout()
+        _sl.addWidget(self.sch_list)
+        _srow = QHBoxLayout()
         for text, fn in (("添加", self._add_schedule_dialog),
                          ("删除", self._remove_schedule_dialog),
                          ("启用/停用", self._toggle_schedule_dialog)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
-            srow.addWidget(b)
-        srow.addStretch(1)
-        lay.addLayout(srow)
+            _srow.addWidget(b)
+        _srow.addStretch(1)
+        _sl.addLayout(_srow)
+        _sl.addStretch(1)
+        self._rem_tabs.addTab(_sch_page, "定时")
+
+        _tbody.addWidget(self._rem_tabs)
+        lay.addWidget(self._todo_section)
+
+        # ================= ③ 提醒规则 =================
+        self._rule_rem_section = CollapsibleSection("提醒规则", expanded=True)
+        _rbody = self._rule_rem_section.body_layout
+
+        self._feature_boxes["remind_walk"] = self._check(
+            _rbody, "提醒时走到屏幕中间", self.app.is_enabled("remind_walk"),
+            lambda on: self.app.set_feature("remind_walk", bool(on)),
+            "关闭后原地提醒，不移动宠物")
+
+        _rline = QFrame()
+        _rline.setFrameShape(QFrame.Shape.HLine)
+        _rbody.addWidget(_rline)
+
+        dnd = ex.get("dnd") or {}
+        _dnd_row = QHBoxLayout()
+        _dnd_row.setSpacing(6)
+        self._feature_boxes["remind_dnd"] = QCheckBox("免打扰时段")
+        self._feature_boxes["remind_dnd"].setChecked(bool(dnd.get("enabled", True)))
+        self._feature_boxes["remind_dnd"].toggled.connect(
+            lambda on: self._set_dnd("enabled", bool(on)))
+        _dnd_row.addWidget(self._feature_boxes["remind_dnd"])
+        _dnd_row.addSpacing(8)
+        _dnd_row.addWidget(QLabel("从"))
+        self.dnd_start = QLineEdit(dnd.get("start", "22:00"))
+        self.dnd_start.setFixedWidth(72)
+        self.dnd_start.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dnd_start.editingFinished.connect(
+            lambda: self._set_dnd("start", self.dnd_start.text()))
+        _dnd_row.addWidget(self.dnd_start)
+        _dnd_row.addWidget(QLabel("到"))
+        self.dnd_end = QLineEdit(dnd.get("end", "08:00"))
+        self.dnd_end.setFixedWidth(72)
+        self.dnd_end.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dnd_end.editingFinished.connect(
+            lambda: self._set_dnd("end", self.dnd_end.text()))
+        _dnd_row.addWidget(self.dnd_end)
+        _dnd_row.addStretch(1)
+        _rbody.addLayout(_dnd_row)
+        _rbody.addWidget(self._sub_hint(
+            "期间提醒静音且不弹气泡，到点后不补发；"
+            "检测到全屏 / 演示模式也会自动暂停。"))
+
+        lay.addWidget(self._rule_rem_section)
 
         self._refresh_remind_lists()
         lay.addStretch(1)
@@ -1243,23 +1683,45 @@ class SettingsWindow(QDialog):
                                     cur, 1, 600, 5)
         if ok:
             self.app.set_all_reminder_min(v)
-            self.reload()
+            # 只回填三个间隔框，不用 reload()（避免整页控件重建丢状态）
+            for kind, sp in getattr(self, "_rem_spins", {}).items():
+                sp.blockSignals(True)
+                sp.setValue(self.app._rem_minutes(kind))
+                sp.blockSignals(False)
+            self.app.say_main("三个提醒间隔都改成 %d 分钟" % v)
 
     def _refresh_remind_lists(self):
+        """刷新待办/定时列表 + 标签页标题条数 + 三个健康提醒的今日次数。"""
         try:
             ex = self.app._rem_extras()
+            todos = ex.get("todos") or []
+            schs = ex.get("schedules") or []
+
             self.todo_list.clear()
-            for t in (ex.get("todos") or []):
+            for t in todos:
                 mark = "✓ " if t.get("done") else ("" if t.get("enabled", True) else "⏸ ")
                 rep = dict((k, l) for l, k in TODO_REPEATS).get(t.get("repeat"), "")
                 self.todo_list.addItem("%s%s  [%s %s]" % (mark, t.get("text"),
                                                          rep, t.get("at", "")))
             self.sch_list.clear()
-            for it in (ex.get("schedules") or []):
+            for it in schs:
                 mark = "" if it.get("enabled", True) else "⏸ "
                 rep = dict((k, l) for l, k in TODO_REPEATS).get(it.get("repeat"), "")
                 self.sch_list.addItem("%s%s  [%s %s]" % (mark, it.get("at"),
                                                         rep, it.get("name", "")))
+
+            # 标签标题带条数
+            try:
+                self._rem_tabs.setTabText(0, "待办 %d" % len(todos))
+                self._rem_tabs.setTabText(1, "定时 %d" % len(schs))
+            except Exception:
+                pass
+
+            # 每行右侧的今日确认次数
+            dt = self.app._done_today()
+            for kind, lab in getattr(self, "_rem_done_labs", {}).items():
+                lab.setText("%d 次" % int(dt.get(kind, 0) or 0))
+                lab.setToolTip("今日已确认 %d 次" % int(dt.get(kind, 0) or 0))
         except Exception as ex:
             log("刷新待办/定时列表失败: %s" % ex, logging.WARNING)
 
@@ -1371,48 +1833,6 @@ class SettingsWindow(QDialog):
         self._refresh_remind_lists()
 
     # ---------- 余额页 ----------
-    def _build_balance_page(self, lay):
-        self._title(lay, "余额",
-                    "支持 DeepSeek 与智谱 GLM；档位按「满额基准」折算已用百分比。")
-        bc = self.app._balance_cfg()
-        self._balance_provider_combo = self._combo_row(
-            lay, "查询范围",
-            [("两家同时查（推荐）", "auto"),
-             ("只查 DeepSeek", "deepseek"),
-             ("只查智谱 GLM", "zhipu")],
-            bc.get("provider", "auto"),
-            lambda v: self._set_balance_provider(str(v)))
-        self._balance_provider_hint = QLabel("")
-        self._balance_provider_hint.setWordWrap(True)
-        self._balance_provider_hint.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._balance_provider_hint)
-        self._refresh_balance_provider_hint()
-
-        self._check(lay, "自动查询余额", bool(bc["auto"]),
-                    lambda on: self.app.set_balance_auto(on),
-                    "默认关闭；开启后按下面间隔自动查询")
-        self._balance_interval = self._slider_row(
-            lay, "查询间隔", bc["interval_min"], 30, 720, 5, None,
-            lambda v: self.app.set_balance_interval(int(v)), "分钟")
-
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line)
-        self._balance_full = self._slider_row(
-            lay, "满额基准", self.app.cfg.get("balance_full", BALANCE_FULL),
-            5.0, 500.0, 5.0, None,
-            lambda v: self._set_balance_full(v), "元")
-
-        self._balance_hint = QLabel("")
-        self._balance_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        lay.addWidget(self._balance_hint)
-        btn = QPushButton("立即查询一次")
-        btn.clicked.connect(lambda _=False: self.app.query_balance(True))
-        lay.addWidget(btn)
-        lay.addStretch(1)
-        self._refresh_balance_hint()
-
     def _set_balance_provider(self, value):
         """切换余额来源：auto / deepseek / zhipu。"""
         v = str(value or "auto").lower()
@@ -1424,50 +1844,59 @@ class SettingsWindow(QDialog):
         b["provider"] = v
         self.app.cfg["balance"] = b
         self.app.save_cfg()
-        self._refresh_balance_provider_hint()
 
-    def _refresh_balance_provider_hint(self):
-        """说明当前会查哪几家、各自的 Key 是否就绪。"""
+    def _on_balance_click(self):
+        """点「立即查询」：禁用按钮、显示查询中…，结果回同一行。"""
+        if getattr(self, "_balance_busy", False):
+            return
+        self._balance_busy = True
         try:
-            dk = (self.app._balance_key("deepseek") or "").strip()
-            zk = (self.app._balance_key("zhipu") or "").strip()
-            scope = (self.app._balance_cfg().get("provider") or "auto")
-            bits = []
-            if scope in ("auto", "deepseek"):
-                bits.append("DeepSeek %s" % ("✓" if dk else "未填 Key"))
-            if scope in ("auto", "zhipu"):
-                bits.append("智谱 %s" % ("✓" if zk else "未填 Key"))
-            self._balance_provider_hint.setText("会查询：" + "，".join(bits))
+            self._balance_btn.setEnabled(False)
+            self._balance_btn.setText("查询中…")
+            self._balance_result.setText("")
+        except Exception:
+            pass
+
+        def done(parts, ok_count, total):
+            self._balance_busy = False
+            try:
+                self._balance_btn.setEnabled(True)
+                self._balance_btn.setText("立即查询")
+            except Exception:
+                pass
+            try:
+                if not parts:
+                    self._balance_result.setText("未配置")
+                    self._balance_result.setStyleSheet(
+                        "color:#8a8f9c;font-size:11px;")
+                elif ok_count == 0:
+                    self._balance_result.setText("查询失败")
+                    self._balance_result.setStyleSheet(
+                        "color:#d93025;font-size:11px;")
+                else:
+                    self._balance_result.setText(" · ".join(parts))
+                    self._balance_result.setStyleSheet(
+                        "color:#2f3542;font-size:11px;")
+            except Exception:
+                pass
+
+        try:
+            self.app.query_balance(True, on_done=done)
         except Exception as ex:
-            log("[%s] %s 失败: %s: %s"
-                % (__name__, "_refresh_balance_provider_hint", type(ex).__name__, ex),
-                logging.WARNING)
-
-
-    def _set_balance_full(self, value):
-        self.app.cfg["balance_full"] = max(1.0, float(value))
-        self.app.save_cfg()
-        self._refresh_balance_hint()
-
-    def _refresh_balance_hint(self):
-        full = float(self.app.cfg.get("balance_full", BALANCE_FULL) or BALANCE_FULL)
-        parts = []
-        for limit, name, _action, _lines in BALANCE_TIERS:
-            parts.append("%s<%.0f%%" % (name, limit))
-        self._balance_hint.setText(
-            "满额按 ¥%.0f 折算；当前档位划分：%s" % (full, "、".join(parts)))
+            log("[设置] 查询余额失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            done([], 0, 0.0)
 
     # ---------- 聊天页 ----------
     def _build_chat_page(self, lay):
         self._title(lay, "聊天",
                     "回复长度与单次输出上限。风格只改 system 末尾那一句固定文字，"
-                    "同一风格下前缀缓存稳定；切换风格时缓存失效一次属正常。")
+                    "同一风格下前缀缓存稳定；切换风格时缓存失效一次属正常。"
+                    "下面四组可点标题展开 / 收起。")
 
-        # ---- 聊天模型（可收缩，默认展开）----
-        _c_exp = bool((self.app.cfg.get("ui_sections") or {}).get("chat_model", True))
-        self._chat_section = CollapsibleSection("聊天模型", expanded=_c_exp)
-        self._chat_section.toggled.connect(
-            lambda on: self._save_section_state("chat_model", on))
+        # ================= ① 聊天模型（默认展开）=================
+        self._chat_section = _ChatModelGroup()
+        _body = self._chat_section.body_layout
 
         _rowh = 30
         _cf = QFormLayout()
@@ -1512,7 +1941,7 @@ class SettingsWindow(QDialog):
         self.chat_model.editTextChanged.connect(self._on_chat_model_changed)
         _cf.addRow("聊天模型", self.chat_model)
 
-        self._chat_section.body_add_layout(_cf)
+        _body.addLayout(_cf)
 
         # 按钮：保存 / 测试 / 取消 / 清空
         _cbtn = QHBoxLayout()
@@ -1533,25 +1962,25 @@ class SettingsWindow(QDialog):
         self._chat_clear_btn.clicked.connect(self._clear_chat_cfg)
         _cbtn.addWidget(self._chat_clear_btn)
         _cbtn.addStretch(1)
-        self._chat_section.body_add_layout(_cbtn)
+        _body.addLayout(_cbtn)
 
         # 状态行
         self._chat_status = QLabel("")
         self._chat_status.setWordWrap(True)
         self._chat_status.setStyleSheet(
             "color:#8a8f9c;font-size:11px;margin-left:22px;")
-        self._chat_section.body_add(self._chat_status)
+        _body.addWidget(self._chat_status)
 
         # 缓存提示
-        self._chat_section.body_add(self._hint_label("更换模型后缓存失效一次属正常"))
-
-        lay.addWidget(self._chat_section)
+        _body.addWidget(self._hint_label("更换模型后缓存失效一次属正常"))
         self._chat_fill_from_cfg()
 
-
-
-        self._combo_row(
-            lay, "回复风格",
+        # ---- 回复风格 ----
+        _sep = QFrame()
+        _sep.setFrameShape(QFrame.Shape.HLine)
+        _body.addWidget(_sep)
+        self._reply_style_box = self._combo_row(
+            _body, "回复风格",
             [(label, key) for label, key in REPLY_STYLE_CHOICES],
             self.app.cfg.get("reply_style", REPLY_STYLE_DEFAULT),
             lambda v: self._set_reply_style(str(v)))
@@ -1559,24 +1988,68 @@ class SettingsWindow(QDialog):
         self._style_hint = QLabel("")
         self._style_hint.setWordWrap(True)
         self._style_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._style_hint)
+        _body.addWidget(self._style_hint)
 
-        # ---- 人设（可收缩）----
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line2)
+        # ---- 单次输出上限（滑块 + 数字框）----
+        self._max_tokens_field, self.max_tokens_slider, self.max_tokens_spin = \
+            self._tokens_field(
+                int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT)),
+                MAX_TOKENS_MIN, MAX_TOKENS_MAX, 50,
+                lambda v: self._set_max_tokens(int(v)), "tokens")
+        _mt_row = QHBoxLayout()
+        _mt_row.addWidget(QLabel("单次输出上限"))
+        _mt_row.addWidget(self._max_tokens_field, 1)
+        _mt_row.addStretch(0)
+        _body.addLayout(_mt_row)
+        hint2 = QLabel("模型单次最多输出多少 token（中文约 1.5 字/token）。"
+                       "「回复风格」决定说多长，这个值决定最多能说多长。")
+        hint2.setWordWrap(True)
+        hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
+        _body.addWidget(hint2)
 
-        _p_exp = bool((self.app.cfg.get("ui_sections") or {}).get("persona", True))
-        self._persona_section = CollapsibleSection("人设", expanded=_p_exp)
-        self._persona_section.toggled.connect(
-            lambda on: self._save_section_state("persona", on))
+        # ---- 余额（原「余额」页迁入，一行）----
+        _bsep = QFrame()
+        _bsep.setFrameShape(QFrame.Shape.HLine)
+        _body.addWidget(_bsep)
+        _brow = QHBoxLayout()
+        _brow.setSpacing(6)
+        _brow.addWidget(QLabel("余额"))
+        bc = self.app._balance_cfg()
+        self._balance_provider_box = QComboBox()
+        self._balance_provider_box.setFixedHeight(26)
+        for _txt, _val in (("两家同时查", "auto"),
+                           ("只查 DeepSeek", "deepseek"),
+                           ("只查智谱", "zhipu")):
+            self._balance_provider_box.addItem(_txt, _val)
+        for _i in range(self._balance_provider_box.count()):
+            if self._balance_provider_box.itemData(_i) == bc.get("provider", "auto"):
+                self._balance_provider_box.setCurrentIndex(_i)
+                break
+        self._balance_provider_box.currentIndexChanged.connect(
+            lambda _i: self._set_balance_provider(
+                self._balance_provider_box.currentData()))
+        _brow.addWidget(self._balance_provider_box)
+        self._balance_btn = QPushButton("立即查询")
+        self._balance_btn.setFixedWidth(84)
+        self._balance_btn.clicked.connect(self._on_balance_click)
+        _brow.addWidget(self._balance_btn)
+        self._balance_result = QLabel("")
+        self._balance_result.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _brow.addWidget(self._balance_result, 1)
+        _body.addLayout(_brow)
+
+        lay.addWidget(self._chat_section)
+
+        # ================= ② 人设（默认折叠）=================
+        self._persona_section = _PersonaGroup()
+        _pbody = self._persona_section.body_layout
         _p_desc = QLabel(
             "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
             "也决定固定台词的语气。留空 = 无风格。\n"
             "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。")
         _p_desc.setWordWrap(True)
         _p_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        self._persona_section.body_add(_p_desc)
+        _pbody.addWidget(_p_desc)
 
         self.persona_edit = QTextEdit()
         self.persona_edit.setFixedHeight(150)
@@ -1587,7 +2060,7 @@ class SettingsWindow(QDialog):
             "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
         self.persona_edit.setPlainText(self.app.cfg.get("persona") or "")
         self.persona_edit.textChanged.connect(self._on_persona_edited)
-        self._persona_section.body_add(self.persona_edit)
+        _pbody.addWidget(self.persona_edit)
 
         prow = QHBoxLayout()
         save_btn = QPushButton("保存人设")
@@ -1600,27 +2073,91 @@ class SettingsWindow(QDialog):
         example_btn.setToolTip("填入示例人设文本，不自动保存")
         example_btn.clicked.connect(self._fill_example_persona)
         prow.addWidget(example_btn)
-        gen_btn = QPushButton("重新生成台词")
-        gen_btn.setToolTip("按当前人设重新生成固定台词池（耗 token）")
-        gen_btn.clicked.connect(self._regen_persona_lines)
-        prow.addWidget(gen_btn)
+        self._persona_regen_btn = QPushButton("重新生成")
+        self._persona_regen_btn.setToolTip("按当前人设重新生成固定台词池（耗 token）")
+        self._persona_regen_btn.clicked.connect(self._regen_persona_lines)
+        prow.addWidget(self._persona_regen_btn)
+        self._persona_reset_lines_btn = QPushButton("恢复默认台词")
+        self._persona_reset_lines_btn.setToolTip("清掉生成缓存，回落到内置中性台词")
+        self._persona_reset_lines_btn.clicked.connect(self._reset_persona_lines)
+        prow.addWidget(self._persona_reset_lines_btn)
         view_btn = QPushButton("查看/编辑台词")
         view_btn.setToolTip("查看当前人设生成出的台词，可手动修改")
         view_btn.clicked.connect(self._open_lines_dialog)
         prow.addWidget(view_btn)
         prow.addStretch(1)
-        self._persona_section.body_add_layout(prow)
+        _pbody.addLayout(prow)
+
+        # ---- 台词池状态行（常驻）----
+        _srow = QHBoxLayout()
+        _srow.setSpacing(8)
+        self._persona_lines_status = QLabel("")
+        self._persona_lines_status.setWordWrap(True)
+        self._persona_lines_status.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;")
+        _srow.addWidget(self._persona_lines_status, 1)
+        self._persona_retry_btn = QPushButton("重试")
+        self._persona_retry_btn.setFixedWidth(64)
+        self._persona_retry_btn.clicked.connect(self._regen_persona_lines)
+        self._persona_retry_btn.hide()
+        _srow.addWidget(self._persona_retry_btn)
+        self._persona_retry_failed_btn = QPushButton("重试失败项")
+        self._persona_retry_failed_btn.setFixedWidth(96)
+        self._persona_retry_failed_btn.clicked.connect(
+            self._retry_failed_persona_pools)
+        self._persona_retry_failed_btn.hide()
+        _srow.addWidget(self._persona_retry_failed_btn)
+        self._persona_reason_btn = QPushButton("查看原因")
+        self._persona_reason_btn.setFixedWidth(84)
+        self._persona_reason_btn.setCheckable(True)
+        self._persona_reason_btn.clicked.connect(self._toggle_persona_reasons)
+        self._persona_reason_btn.hide()
+        _srow.addWidget(self._persona_reason_btn)
+        _pbody.addLayout(_srow)
+
+        # 失败原因列表（默认收起）
+        self._persona_reasons = QLabel("")
+        self._persona_reasons.setWordWrap(True)
+        self._persona_reasons.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;background:#f7f8fa;"
+            "border-radius:6px;padding:8px;")
+        self._persona_reasons.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._persona_reasons.hide()
+        _pbody.addWidget(self._persona_reasons)
 
         self._persona_hint = QLabel("")
         self._persona_hint.setWordWrap(True)
         self._persona_hint.setStyleSheet("color:#d08a00;font-size:11px;margin-left:2px;")
-        self._persona_section.body_add(self._persona_hint)
+        _pbody.addWidget(self._persona_hint)
 
         lay.addWidget(self._persona_section)
         self._refresh_persona_state()
 
+        # ================= ③ 长期记忆（默认折叠）=================
+        self._memory_section = _MemoryGroup()
+        _mbody = self._memory_section.body_layout
+        _m_desc = QLabel("长期记忆会拼在系统提示词末尾，影响所有会话。")
+        _m_desc.setWordWrap(True)
+        _m_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _mbody.addWidget(_m_desc)
+        _mrow = QHBoxLayout()
+        _mb = QPushButton("打开记忆管理")
+        _mb.clicked.connect(self.app._open_memory)
+        _mrow.addWidget(_mb)
+        _mrow.addStretch(1)
+        _mbody.addLayout(_mrow)
+        self._memory_count = QLabel("")
+        self._memory_count.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _mbody.addWidget(self._memory_count)
+        lay.addWidget(self._memory_section)
 
-        # 聊天 system 摘要（放在人设区下方）
+        # ================= ④ 看屏幕 / 视觉（默认折叠）=================
+        self._vision_section = _VisionGroup()
+        self._build_vision_into(self._vision_section.body_layout)
+        lay.addWidget(self._vision_section)
+
+        # 聊天 system 摘要（四组下方，全局说明）
         self._chat_preview = QLabel("")
         self._chat_preview.setWordWrap(True)
         self._chat_preview.setStyleSheet(
@@ -1628,32 +2165,14 @@ class SettingsWindow(QDialog):
             "background:#f5f7fb;border-radius:6px;padding:8px;")
         lay.addWidget(self._chat_preview)
 
-        # ---- 单次输出上限（滑块 + 数字框）----
-        self._max_tokens_field, self.max_tokens_slider, self.max_tokens_spin = \
-            self._tokens_field(
-                int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT)),
-                MAX_TOKENS_MIN, MAX_TOKENS_MAX, 50,
-                lambda v: self._set_max_tokens(int(v)), "tokens")
-        _mt_row = QHBoxLayout()
-        _mt_row.addWidget(QLabel("单次输出上限"))
-        _mt_row.addWidget(self._max_tokens_field, 1)
-        _mt_row.addStretch(0)
-        lay.addLayout(_mt_row)
-        hint2 = QLabel("模型单次最多输出多少 token（中文约 1.5 字/token）。"
-                       "「回复风格」决定说多长，这个值决定最多能说多长。")
-        hint2.setWordWrap(True)
-        hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
-        lay.addWidget(hint2)
-
-
         lay.addStretch(1)
         self._refresh_chat_hint()
+        self._refresh_memory_summary()
+        self._refresh_vision_summary()
 
     # ---------- 看看屏幕：视觉配置 ----------
-    def _build_visual_page(self, lay):
-        self._title(lay, "视觉",
-                    "「看看屏幕」用的视觉模型配置。填一个视觉 Key，点「测试」自动识别服务商与可用视觉模型。"
-                    "高级设置里可调上限、图片大小、质量和超时。")
+    def _build_vision_into(self, lay):
+        """把原「视觉」页的全部控件原样填进给定布局（聊天页第 ④ 组）。"""
 
         _rowh = 30
 
@@ -1743,9 +2262,6 @@ class SettingsWindow(QDialog):
         self._vision_rule_save = QPushButton("保存规则")
         self._vision_rule_save.clicked.connect(self._save_vision_rule)
         _rrow.addWidget(self._vision_rule_save)
-        self._vision_rule_reset = QPushButton("恢复默认")
-        self._vision_rule_reset.clicked.connect(self._reset_vision_rule)
-        _rrow.addWidget(self._vision_rule_reset)
         _rrow.addStretch(1)
         self._rule_section.body_add_layout(_rrow)
 
@@ -1864,8 +2380,9 @@ class SettingsWindow(QDialog):
         self._vision_clear_btn.clicked.connect(self._clear_vision_cfg)
         vbtn_row.addWidget(self._vision_clear_btn)
         self._vision_reset_btn = QPushButton("恢复默认")
-        self._vision_reset_btn.setToolTip("把高级设置四项恢复为默认值（不影响 Key）")
-        self._vision_reset_btn.clicked.connect(self._reset_vision_advanced)
+        self._vision_reset_btn.setToolTip(
+            "把高级设置四项和识别规则恢复为默认值（不影响 Key / 地址 / 模型）")
+        self._vision_reset_btn.clicked.connect(self._reset_vision_defaults)
         vbtn_row.addWidget(self._vision_reset_btn)
         vbtn_row.addStretch(1)
         lay.addLayout(vbtn_row)
@@ -1885,8 +2402,6 @@ class SettingsWindow(QDialog):
         _keywarn.setStyleSheet(
             "color:#8a8f9c;font-size:11px;margin-left:22px;")
         lay.addWidget(_keywarn)
-
-        lay.addStretch(1)
 
 
     # ---------- 识别规则（视觉 system） ----------
@@ -1964,6 +2479,8 @@ class SettingsWindow(QDialog):
                 self._persona_section.set_state("已保存", "#1a7f37")
         else:
             self._persona_section.set_state("未保存", "#d08a00")
+        # 收起时的标题摘要跟着刷新
+        self._refresh_persona_summary()
 
     def _save_section_state(self, name, expanded):
         """把区块展开状态写进配置（只影响显示）。"""
@@ -1976,6 +2493,58 @@ class SettingsWindow(QDialog):
             self.app.save_cfg()
         except Exception as ex:
             log("保存区块状态失败: %s" % ex, logging.WARNING)
+
+    # ---------- 聊天页分组摘要 ----------
+    def _refresh_memory_summary(self):
+        """长期记忆组：标题右侧显示「N 条」。"""
+        try:
+            n = len(self.app.memory.items)
+        except Exception:
+            n = 0
+        try:
+            self._memory_section.set_summary("%d 条" % n)
+            self._memory_count.setText("当前共 %d 条记忆" % n)
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_memory_summary", type(ex).__name__, ex),
+                logging.WARNING)
+
+    def _refresh_vision_summary(self):
+        """看屏幕 / 视觉组：标题右侧显示「模型名 已配置」或「未配置」。"""
+        try:
+            ls = self.app.cfg.get("look_screen") or {}
+            model = (ls.get("vision_model") or "").strip()
+            base = (ls.get("vision_base") or "").strip()
+            key = (ls.get("vision_key") or "").strip()
+            if model and base and key:
+                self._vision_section.set_summary("%s 已配置" % model)
+            elif model:
+                self._vision_section.set_summary("%s 未配置" % model)
+            else:
+                self._vision_section.set_summary("未配置")
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_vision_summary", type(ex).__name__, ex),
+                logging.WARNING)
+
+    def _refresh_persona_summary(self):
+        """人设组：标题右侧显示「无风格」或人设摘要（收起时才显示）。"""
+        try:
+            txt = (self.app.cfg.get("persona") or "").strip()
+        except Exception:
+            txt = ""
+        try:
+            if not txt:
+                self._persona_section.set_summary("无风格")
+                return
+            one = re.sub(r"\s+", " ", txt)
+            if len(one) > 18:
+                one = one[:18] + "…"
+            self._persona_section.set_summary(one)
+        except Exception as ex:
+            log("[%s] %s 失败: %s: %s"
+                % (__name__, "_refresh_persona_summary", type(ex).__name__, ex),
+                logging.WARNING)
 
 
     def _save_vision_rule(self):
@@ -1995,16 +2564,17 @@ class SettingsWindow(QDialog):
             "✓ 已保存（跟随默认）" if not saved else "✓ 已保存自定义规则", "ok")
 
 
-    def _reset_vision_rule(self):
+    def _reset_vision_rule(self, ask=True):
         """恢复默认 = 清除配置里的副本（之后自动跟随代码里的最新默认值）。"""
-        ans = QMessageBox.question(
-            self, "恢复默认规则",
-            "确定把识别规则恢复成内置默认吗？\n"
-            "（会清除你自定义的副本，之后默认规则更新时自动跟随）",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ans != QMessageBox.StandardButton.Yes:
-            return
+        if ask:
+            ans = QMessageBox.question(
+                self, "恢复默认规则",
+                "确定把识别规则恢复成内置默认吗？\n"
+                "（会清除你自定义的副本，之后默认规则更新时自动跟随）",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
         # 清空副本
         ls = self._vision_cfg_dict()
         ls["vision_system"] = ""
@@ -2015,7 +2585,9 @@ class SettingsWindow(QDialog):
         self.vision_rule_edit.setPlainText(VISION_SYSTEM_DEFAULT)
         self.vision_rule_edit.blockSignals(False)
         self._on_vision_rule_edited()
-        self._set_vision_status("✓ 已恢复默认（副本已清除，将跟随新版默认）", "ok")
+        if ask:
+            self._set_vision_status(
+                "✓ 已恢复默认（副本已清除，将跟随新版默认）", "ok")
 
 
     def _chat_cfg_dict(self):
@@ -2557,6 +3129,7 @@ class SettingsWindow(QDialog):
         self._restore_vision_status()
 
         self._refresh_vision_model_hint()
+        self._refresh_vision_summary()
 
     def _toggle_vision_key(self):
         """显示 / 隐藏 Key。"""
@@ -2675,6 +3248,7 @@ class SettingsWindow(QDialog):
         self.app.save_cfg()
         self._set_vision_status("✓ 已保存：%s @ %s" % (model, base), "ok")
         self.app.say_main("视觉配置已保存")
+        self._refresh_vision_summary()
         return True
 
     def _reset_vision_test_ui(self):
@@ -2722,9 +3296,29 @@ class SettingsWindow(QDialog):
         }
         self.app.save_cfg()
         self._set_vision_status("已清空 Key/地址/模型（规则与其余设置保留）", "info")
+        self._refresh_vision_summary()
 
 
-    def _reset_vision_advanced(self):
+    def _reset_vision_defaults(self):
+        """恢复默认：高级设置四项 + 识别规则，一起恢复（不动 Key / 地址 / 模型）。
+
+        原来「识别规则」子折叠里有个独立的「恢复默认」，视觉组底部还有一个，
+        两个同名按钮容易点错，现合并成一个。
+        """
+        ans = QMessageBox.question(
+            self, "恢复默认",
+            "确定把「高级设置」四项和「识别规则」都恢复成内置默认吗？\n"
+            "（不影响视觉 Key / 接口地址 / 模型）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._reset_vision_advanced(ask=False)
+        self._reset_vision_rule(ask=False)
+        self._set_vision_status(
+            "✓ 高级设置与识别规则均已恢复默认（Key / 地址 / 模型保留）", "ok")
+
+    def _reset_vision_advanced(self, ask=True):
         """恢复默认：只把高级设置四项恢复为默认值，**不动 Key / 地址 / 模型**。"""
         ls = self._vision_cfg_dict()
         defaults = {
@@ -2761,10 +3355,11 @@ class SettingsWindow(QDialog):
         self.app.cfg["look_screen"] = ls
         self.app.save_cfg()
         self._refresh_advanced_summary()
-        self._set_vision_status(
-            "✓ 高级设置已恢复默认（上限 %d · 最长边 %d · 质量 %d · 超时 %d 秒）"
-            % (defaults["max_tokens"], defaults["max_side"],
-               defaults["quality"], defaults["timeout"]), "ok")
+        if ask:
+            self._set_vision_status(
+                "✓ 高级设置已恢复默认（上限 %d · 最长边 %d · 质量 %d · 超时 %d 秒）"
+                % (defaults["max_tokens"], defaults["max_side"],
+                   defaults["quality"], defaults["timeout"]), "ok")
 
 
     def _test_vision(self):
@@ -3057,8 +3652,12 @@ class SettingsWindow(QDialog):
         self._restore_vision_status()
 
     def _save_persona(self):
-        """保存人设。空 = 无风格（台词走中性池）。"""
+        """保存人设。空 = 无风格（台词走中性池）。
+
+        只有点「保存人设」才触发生成，且仅在哈希变化时。
+        """
         text = (self.persona_edit.toPlainText() or "").strip()
+        old = (self.app.cfg.get("persona") or "").strip()
         self.app.cfg["persona"] = text[:4000]
         self.app.save_cfg()
         if text:
@@ -3067,19 +3666,32 @@ class SettingsWindow(QDialog):
         else:
             self._persona_hint.setText("已清空人设：无风格，台词使用中性池。")
         self._refresh_persona_state()
-        try:
-            self._persona_gen_done.connect(self._on_persona_gen_done)
-        except Exception:
-            pass
         self.app.say_main("人设已保存")
         self._refresh_chat_hint()
         log("[聊天] 人设已更新（%d 字）" % len(text))
-        # 人设非空且已配 Key → 后台按人设生成台词池
-        if text:
-            self._generate_persona_lines(text)
 
-    def _generate_persona_lines(self, persona_text):
-        """后台按人设生成台词池，完成后写缓存并提示。"""
+        # 人设为空：不调用模型，状态行显示「未设置人设」，池回落中性
+        if not text:
+            self._cancel_persona_gen()
+            self._refresh_persona_lines_status(force_text="未设置人设，使用默认台词")
+            return
+        # 哈希一致：直接读缓存，不发起请求
+        try:
+            from petcore import persona_lines as PL
+            if PL.persona_hash(text) == PL.persona_hash(old) and \
+                    PL.get_persona_pools(APP_DIR, text):
+                self._refresh_persona_lines_status()
+                log("[台词] 人设未变，跳过生成")
+                return
+        except Exception:
+            pass
+        self._generate_persona_lines(text)
+
+    def _generate_persona_lines(self, persona_text, only_pools=None):
+        """后台按人设生成台词池，完成后写缓存并提示。
+
+        only_pools 非空时只生成这些池（「重试失败项」用）。
+        """
         import threading
         try:
             from petcore import persona_lines as PL
@@ -3088,51 +3700,277 @@ class SettingsWindow(QDialog):
             return
         _b, _k, _m = self.app._chat_cfg()
         if not (_b and _k and _m):
-            self._persona_hint.setText(
-                "已保存人设。未配置聊天 Key，台词暂用中性池。")
+            self._set_persona_status(
+                "未配置聊天模型 Key，请先到「聊天模型」填写", "#d93025")
             return
 
-        self._persona_hint.setText("正在按人设生成台词池…")
-        self.app.say_main("正在按人设生成台词…")
+        # 生成中再次保存：取消上一次
+        self._cancel_persona_gen()
+        self._persona_gen_seq = getattr(self, "_persona_gen_seq", 0) + 1
+        seq = self._persona_gen_seq
+        self._persona_gen_busy = True
+        self._persona_gen_only = list(only_pools or [])
+        self._set_persona_status("生成中… 0/%d" % max(1, len(
+            only_pools) if only_pools else len(PL.POOL_SPECS)), "#8a8f9c")
+        self._refresh_persona_btns()
 
         def progress(done, total, msg):
             try:
-                self._persona_hint.setText("%s（%d/%d）" % (msg, done, total))
+                if seq != getattr(self, "_persona_gen_seq", 0):
+                    return
+                self._set_persona_status("生成中… %d/%d" % (done, total),
+                                         "#8a8f9c")
             except Exception:
                 pass
 
+        def cancelled():
+            return seq != getattr(self, "_persona_gen_seq", 0)
+
         def work():
-            okk, msg, n = PL.generate_all(
-                persona_text, (_b, _k, _m), APP_DIR, on_progress=progress)
             try:
-                self._persona_gen_done.emit(bool(okk), str(msg), int(n))
+                res = PL.generate_all(
+                    persona_text, (_b, _k, _m), APP_DIR,
+                    on_progress=progress, only_pools=only_pools,
+                    cancel_check=cancelled)
+            except Exception as ex:
+                log("[台词] 生成线程异常: %s: %s"
+                    % (type(ex).__name__, ex), logging.ERROR)
+                res = {"ok": False, "status": "fail",
+                       "reason": "生成失败，已使用默认台词",
+                       "total": 0, "done": 0, "failed_pools": [], "pools": {}}
+            if seq != getattr(self, "_persona_gen_seq", 0):
+                return
+            try:
+                self._persona_gen_result.emit(res)
             except Exception:
                 pass
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_persona_gen_done(self, okk, msg, n):
-        """台词生成完成（主线程）。"""
+    def _cancel_persona_gen(self):
+        """让进行中的生成作废（结果会被丢弃）。"""
+        self._persona_gen_seq = getattr(self, "_persona_gen_seq", 0) + 1
+        self._persona_gen_busy = False
+
+    def _set_persona_status(self, text, color="#8a8f9c"):
         try:
-            if okk:
-                self._persona_hint.setText(
-                    "已按人设生成 %d 个台词池。" % n)
-                self.app.say_main("台词已按人设生成")
-                log("[台词] 生成成功：%s" % msg)
-            else:
-                self._persona_hint.setText(
-                    "台词生成失败：%s（继续使用中性池）" % msg)
-                self.app.say_main("台词生成失败，先用中性池")
-                log("[台词] 生成失败：%s" % msg, logging.WARNING)
+            self._persona_lines_status.setText(text or "")
+            self._persona_lines_status.setStyleSheet(
+                "color:%s;font-size:11px;" % color)
+        except Exception:
+            pass
+
+    def _refresh_persona_btns(self):
+        busy = bool(getattr(self, "_persona_gen_busy", False))
+        for name in ("_persona_regen_btn", "_persona_retry_btn",
+                     "_persona_retry_failed_btn", "_persona_reason_btn"):
+            b = getattr(self, name, None)
+            if b is None:
+                continue
+            try:
+                b.setEnabled(not busy)
+            except Exception:
+                pass
+        failed = list(getattr(self, "_persona_failed_pools", []) or [])
+        try:
+            self._persona_retry_failed_btn.setVisible(bool(failed))
+        except Exception:
+            pass
+        try:
+            self._persona_reason_btn.setVisible(bool(failed))
+            if not failed:
+                self._persona_reasons.hide()
+                self._persona_reason_btn.setChecked(False)
+        except Exception:
+            pass
+
+    def _toggle_persona_reasons(self):
+        """展开/收起失败原因列表。"""
+        try:
+            show = self._persona_reason_btn.isChecked()
+            if not show:
+                self._persona_reasons.hide()
+                return
+            self._persona_reasons.setText(self._persona_reasons_html())
+            self._persona_reasons.show()
         except Exception as ex:
-            log("[台词] 完成回调异常: %s: %s"
+            log("[台词] 展开原因失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _persona_reasons_html(self):
+        """把失败池渲染成每行一条的纯文本（带池中文名与原因）。"""
+        from petcore import persona_lines as PL
+        out = []
+        for f in (getattr(self, "_persona_failed_pools", []) or []):
+            if not isinstance(f, dict):
+                continue
+            name = f.get("pool") or ""
+            label = PL.pool_label(name)
+            txt = PL.format_failure(f)
+            out.append("✕ %s：%s" % (label, txt))
+        return "\n".join(out) if out else ""
+
+    def _on_persona_gen_result(self, res):
+        """生成完成（主线程）：更新状态行 + 一次性气泡。"""
+        self._persona_gen_busy = False
+        status = (res or {}).get("status") or "fail"
+        done = int((res or {}).get("done") or 0)
+        total = int((res or {}).get("total") or 0)
+        failed = list((res or {}).get("failed_pools") or [])
+        self._persona_failed_pools = failed
+        self._refresh_persona_btns()
+
+        if status == "ok":
+            self._set_persona_status(
+                "台词已按当前人设生成 · %d 个池 · 刚刚" % done, "#1a7f37")
+        elif status == "partial":
+            self._set_persona_status(
+                "已生成 %d/%d 个池 · %d 个使用默认台词"
+                % (done, total, len(failed)), "#d08a00")
+        elif status == "nokey":
+            self._set_persona_status(
+                "未配置聊天模型 Key，请先到「聊天模型」填写", "#d93025")
+        elif status == "empty":
+            self._set_persona_status("未设置人设，使用默认台词", "#8a8f9c")
+        else:
+            self._set_persona_status(
+                res.get("reason") or "生成失败，已使用默认台词", "#d93025")
+
+        # 失败原因列表若正展开，内容跟着刷新
+        try:
+            if self._persona_reason_btn.isChecked() and failed:
+                self._persona_reasons.setText(self._persona_reasons_html())
+                self._persona_reasons.show()
+        except Exception:
+            pass
+
+        log("[台词] 生成结果：%s done=%d/%d failed=%d"
+            % (status, done, total, len(failed)))
+
+        # 一次性气泡：设置窗口开着且停在聊天页时不弹
+        if status == "ok":
+            msg = "新人设的台词准备好啦"
+        elif status == "partial":
+            msg = "大部分台词好了，有几个没成功"
+        else:
+            msg = "台词生成失败了，先用默认的"
+        self._maybe_persona_bubble(msg)
+
+    def _maybe_persona_bubble(self, msg):
+        """按规则决定是否在桌宠上弹一次气泡（程序固定文字，0 token）。"""
+        try:
+            if not msg:
+                return
+            # 设置窗口打开且停在聊天页 → 只更新状态行
+            if self.isVisible():
+                try:
+                    row = self.list.currentRow()
+                    if 0 <= row < len(self.PAGES) and \
+                            self.PAGES[row][0] == "chat":
+                        return
+                except Exception:
+                    pass
+            app = self.app
+            # 免打扰 / 小游戏 / 全屏 → 不弹
+            try:
+                if app.game_active or app._in_dnd() or app._notification_paused():
+                    return
+            except Exception:
+                pass
+            pet = app.main_pet
+            if pet is None:
+                return
+            pet.bubble_inner = False
+            pet.bubble_text = msg
+            pet.bubble_until = pet.t * TICK / 1000.0 + 5.0
+            pet.last_line = msg
+            pet.update()
+        except Exception as ex:
+            log("[台词] 气泡提示失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _refresh_persona_lines_status(self, force_text=None):
+        """重新打开设置窗口时恢复上次结果。"""
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            p = persona_from_cfg(self.app.cfg)
+            if force_text:
+                self._set_persona_status(force_text, "#8a8f9c")
+                self._persona_failed_pools = []
+                self._refresh_persona_btns()
+                return
+            if not p:
+                self._set_persona_status("未设置人设，使用默认台词", "#8a8f9c")
+                self._persona_failed_pools = []
+                self._refresh_persona_btns()
+                return
+            lr = PL.load_last_result(APP_DIR, p)
+            if not lr:
+                self._set_persona_status("尚未生成台词，点「重新生成」", "#8a8f9c")
+                self._persona_failed_pools = []
+                self._refresh_persona_btns()
+                return
+            st = lr.get("status")
+            failed = list(lr.get("failed_pools") or [])
+            self._persona_failed_pools = failed
+            if st == "ok":
+                n = len(PL.get_persona_pools(APP_DIR, p))
+                self._set_persona_status(
+                    "台词已按当前人设生成 · %d 个池 · %s"
+                    % (n, lr.get("time") or ""), "#1a7f37")
+            elif st == "partial":
+                self._set_persona_status(
+                    "已生成 %d/%d 个池 · %d 个使用默认台词"
+                    % (lr.get("done") or 0, lr.get("total") or 0, len(failed)),
+                    "#d08a00")
+            elif st == "cleared":
+                self._set_persona_status("已恢复默认台词", "#8a8f9c")
+            else:
+                self._set_persona_status(
+                    lr.get("reason") or "生成失败，已使用默认台词", "#d93025")
+            self._refresh_persona_btns()
+        except Exception as ex:
+            log("[台词] 恢复状态失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _retry_failed_persona_pools(self):
+        """只重试失败的池，成功的池保持不动。"""
+        failed = list(getattr(self, "_persona_failed_pools", []) or [])
+        names = []
+        for f in failed:
+            if isinstance(f, dict) and f.get("pool"):
+                names.append(f["pool"])
+            elif isinstance(f, str):
+                names.append(f)          # 兼容旧结构
+        if not names:
+            return
+        text = (self.app.cfg.get("persona") or "").strip()
+        if not text:
+            return
+        self._generate_persona_lines(text, only_pools=names)
+
+    def _reset_persona_lines(self):
+        """「恢复默认台词」：清缓存，回落中性池（不调模型）。"""
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            p = persona_from_cfg(self.app.cfg)
+            if p:
+                PL.clear_persona_pools(APP_DIR, p)
+            self._persona_failed_pools = []
+            self._set_persona_status("已恢复默认台词", "#8a8f9c")
+            self._refresh_persona_btns()
+            self.app.say_main("台词已恢复默认")
+        except Exception as ex:
+            log("[台词] 恢复默认失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
     def _regen_persona_lines(self):
         """手动重新生成：用编辑框里的当前文本（不保存）。"""
         text = (self.persona_edit.toPlainText() or "").strip()
         if not text:
-            self._persona_hint.setText("人设为空，台词使用中性池，无需生成。")
+            self._set_persona_status("未设置人设，使用默认台词", "#8a8f9c")
             return
         self._generate_persona_lines(text)
 
@@ -3213,51 +4051,371 @@ class SettingsWindow(QDialog):
                 logging.WARNING)
 
     def _build_general_page(self, lay):
-        self._title(lay, "通用", "Key、生日、城市、窗口行为与开机自启。")
-        row = QHBoxLayout()
-        b1 = QPushButton("设置 Key")
-        b1.clicked.connect(self.app._set_key_dialog)
-        b2 = QPushButton("设置生日")
-        b2.clicked.connect(self.app._set_birthday_dialog)
-        b3 = QPushButton("设置城市")
-        b3.clicked.connect(self._set_city_dialog)
-        row.addWidget(b1)
-        row.addWidget(b2)
-        row.addWidget(b3)
-        row.addStretch(1)
-        lay.addLayout(row)
+        self._title(lay, "通用", "生日、城市、开机自启与版本更新。")
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(line)
+        _BTN_W = 100
+
+        # ① 设置生日（页内内联编辑）
+        _r1 = QHBoxLayout()
+        self._birthday_btn = QPushButton("设置生日")
+        self._birthday_btn.setFixedWidth(_BTN_W)
+        self._birthday_btn.clicked.connect(self._toggle_birthday_editor)
+        _r1.addWidget(self._birthday_btn)
+        self._birthday_state_lab = QLabel("")
+        self._birthday_state_lab.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _r1.addWidget(self._birthday_state_lab)
+        _r1.addStretch(1)
+        lay.addLayout(_r1)
+
+        # 生日内联编辑区（默认隐藏，与按钮左对齐，上下各留 8px）
+        self._birthday_editor = QWidget()
+        _be = QHBoxLayout(self._birthday_editor)
+        _be.setContentsMargins(0, 8, 0, 8)
+        _be.setSpacing(8)
+        _BD_H = 28
+        self._bd_month = QSpinBox()
+        self._bd_month.setRange(1, 12)
+        self._bd_month.setSuffix(" 月")
+        self._bd_month.setFixedWidth(84)      # 保证「12 月」完整显示
+        self._bd_month.setFixedHeight(_BD_H)
+        self._bd_month.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        self._bd_month.valueChanged.connect(self._on_bd_month_changed)
+        _be.addWidget(self._bd_month)
+        self._bd_day = QSpinBox()
+        self._bd_day.setRange(1, 31)
+        self._bd_day.setSuffix(" 日")         # 与月对称
+        self._bd_day.setFixedWidth(84)        # 保证「12 日」完整显示
+        self._bd_day.setFixedHeight(_BD_H)
+        self._bd_day.setAlignment(Qt.AlignmentFlag.AlignRight
+                                  | Qt.AlignmentFlag.AlignVCenter)
+        _be.addWidget(self._bd_day)
+        _bd_save = QPushButton("保存")
+        _bd_save.setFixedWidth(64)
+        _bd_save.setFixedHeight(_BD_H)        # 与数字框等高
+        _bd_save.clicked.connect(self._save_birthday_inline)
+        _be.addWidget(_bd_save)
+        _bd_cancel = QPushButton("取消")
+        _bd_cancel.setFixedWidth(64)
+        _bd_cancel.setFixedHeight(_BD_H)      # 与数字框等高
+        _bd_cancel.clicked.connect(self._hide_birthday_editor)
+        _be.addWidget(_bd_cancel)
+        _be.addStretch(1)
+        self._birthday_editor.hide()
+        # 键盘跳转：月在满两位或首位 2-9 时跳日；月回车跳日，日回车保存
+        self._bd_month.lineEdit().textEdited.connect(self._on_bd_month_typed)
+        self._bd_month.lineEdit().returnPressed.connect(self._focus_bd_day)
+        self._bd_day.lineEdit().returnPressed.connect(self._save_birthday_inline)
+        lay.addWidget(self._birthday_editor)
+
+        # ② 设置城市
+        _r2 = QHBoxLayout()
+        b2 = QPushButton("设置城市")
+        b2.setFixedWidth(_BTN_W)
+        b2.clicked.connect(self._open_city_dialog)
+        _r2.addWidget(b2)
+        self._city_state_lab = QLabel("")
+        self._city_state_lab.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _r2.addWidget(self._city_state_lab)
+        _r2.addStretch(1)
+        lay.addLayout(_r2)
+
+        # ---- 分隔线 ----
+        lay.addWidget(self._hsep())
+
+        # ③ 开机自启
         cfg = self.app.cfg
-        self._check(lay, "窗口置顶", bool(cfg.get("topmost", True)),
-                    lambda on: self.app.set_topmost(on))
-        self._check(lay, "鼠标穿透（点不到它）", bool(cfg.get("passthrough", False)),
-                    lambda on: self.app.set_passthrough(on),
-                    "开启后只能从托盘菜单取消")
         self._check(lay, "开机自启", bool(cfg.get("autostart", False)),
                     lambda on: self.app.set_autostart(on))
-        row2 = QHBoxLayout()
-        row2.addSpacing(96)
-        tv = QPushButton("显示/隐藏宠物")
-        tv.clicked.connect(lambda _=False: self.app.toggle_visible(self.app.main_pet))
-        row2.addWidget(tv)
-        snap = QPushButton("回到屏幕内")
-        snap.clicked.connect(lambda _=False: self.app.main_pet.snap_into_screen())
-        row2.addWidget(snap)
-        row2.addStretch(1)
-        lay.addLayout(row2)
-        lay.addStretch(1)
 
-    def _set_city_dialog(self):
-        cur = self.app.cfg.get("city", "汕头")
-        text, ok = QInputDialog.getText(self, "设置城市", "天气查询用的城市名:",
-                                        QLineEdit.EchoMode.Normal, cur)
-        if ok and text.strip():
-            self.app.cfg["city"] = text.strip()
+        # ---- 分隔线 ----
+        lay.addWidget(self._hsep())
+
+        # ④ 检查更新
+        _r4 = QHBoxLayout()
+        self._update_btn = QPushButton("检查更新")
+        self._update_btn.setFixedWidth(_BTN_W)
+        self._update_btn.clicked.connect(self._check_update)
+        _r4.addWidget(self._update_btn)
+        self._version_lab = QLabel("")
+        self._version_lab.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _r4.addWidget(self._version_lab)
+        _r4.addStretch(1)
+        lay.addLayout(_r4)
+        # 结果显示在按钮下方一行
+        self._update_result = QLabel("")
+        self._update_result.setWordWrap(True)
+        self._update_result.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        lay.addWidget(self._update_result)
+        # 「前往下载」链接（默认隐藏，有新版本时才显示）
+        self._update_link = QLabel("")
+        self._update_link.setOpenExternalLinks(False)
+        self._update_link.setStyleSheet("font-size:11px;")
+        self._update_link.linkActivated.connect(self._on_update_link)
+        self._update_link.hide()
+        lay.addWidget(self._update_link)
+
+        lay.addStretch(1)
+        self._refresh_general_values()
+
+    def _hsep(self):
+        """通用页用的分隔线。"""
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        return line
+
+    # ---- 生日：页内内联编辑 ----
+    def _toggle_birthday_editor(self):
+        """展开/收起生日编辑区，展开时用当前值填好并聚焦月。"""
+        if self._birthday_editor.isVisible():
+            self._hide_birthday_editor()
+            return
+        self._fill_birthday_editor()
+        self._birthday_editor.setVisible(True)
+        # 自动聚焦月并全选
+        try:
+            self._bd_month.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._bd_month.lineEdit().selectAll()
+        except Exception:
+            pass
+
+    def _hide_birthday_editor(self):
+        self._birthday_editor.setVisible(False)
+
+    def _fill_birthday_editor(self):
+        """把配置里的生日解析进月/日控件（旧格式带年份时只取月和日）。"""
+        raw = (self.app.cfg.get("birthday") or "").strip()
+        _y, m, d = self._parse_birthday(raw)
+        m = m if m and 1 <= m <= 12 else 1
+        self._bd_month.blockSignals(True)
+        self._bd_month.setValue(m)
+        self._bd_month.blockSignals(False)
+        # 先按月份夹好日范围，再填日
+        self._apply_day_range(keep=d)
+
+    def _days_in_month(self, month):
+        """该月天数（2 月 29，4/6/9/11 月 30，其余 31）。"""
+        try:
+            m = int(month)
+        except Exception:
+            m = 1
+        if m in (1, 3, 5, 7, 8, 10, 12):
+            return 31
+        if m in (4, 6, 9, 11):
+            return 30
+        return 29
+
+    def _apply_day_range(self, keep=None):
+        """日范围随月份联动；超出新范围时自动夹到上限（不弹错误）。"""
+        try:
+            if keep is None:
+                keep = self._bd_day.value()
+            n = self._days_in_month(self._bd_month.value())
+            self._bd_day.blockSignals(True)
+            self._bd_day.setRange(1, n)
+            self._bd_day.setValue(min(max(1, int(keep or 1)), n))
+            self._bd_day.blockSignals(False)
+        except Exception as ex:
+            log("[设置] 同步生日日数失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _on_bd_month_changed(self, _v):
+        self._apply_day_range()
+
+    def _on_bd_month_typed(self, text):
+        """月输入满两位，或首位输入 2-9 → 自动跳到日。"""
+        t = (text or "").strip()
+        if not t:
+            return
+        if len(t) >= 2 or (len(t) == 1 and t[0] in "23456789"):
+            self._focus_bd_day()
+
+    def _focus_bd_day(self):
+        try:
+            self._bd_day.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._bd_day.lineEdit().selectAll()
+        except Exception:
+            pass
+
+    def _save_birthday_inline(self):
+        """保存生日（只存月日，不存年份）。存储格式 MM-DD，与旧读取方兼容。"""
+        try:
+            m = int(self._bd_month.value())
+            d = int(self._bd_day.value())
+            text = "%02d-%02d" % (m, d)
+            self.app.cfg["birthday"] = text
             self.app.save_cfg()
-            self.app.say_main("城市已设置为%s" % text.strip())
+            self._refresh_general_values()
+            self._hide_birthday_editor()
+            self.app.say_main("生日记住啦！到那天我会准时说生日快乐")
+        except Exception as ex:
+            log("[设置] 保存生日失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def keyPressEvent(self, e):
+        """生日编辑区打开时，Esc 收起。"""
+        try:
+            if (e.key() == Qt.Key.Key_Escape
+                    and getattr(self, "_birthday_editor", None) is not None
+                    and self._birthday_editor.isVisible()):
+                self._hide_birthday_editor()
+                e.accept()
+                return
+        except Exception:
+            pass
+        super().keyPressEvent(e)
+
+    # ---- 城市：子对话框（父窗口 = 设置窗口）----
+    def _open_city_dialog(self):
+        """设置城市：子对话框，居中于设置窗口，中文按钮。"""
+        try:
+            cur = self.app.cfg.get("city", "汕头")
+            dlg = _CityDialog(self, cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                city = (dlg.edit.text() or "").strip()
+                self.app.cfg["city"] = city
+                self.app.save_cfg()
+                self._refresh_general_values()
+                self.app.say_main("城市已设置为%s" % city)
+        except Exception as ex:
+            log("[设置] 打开城市对话框失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    # ---- 检查更新（只在点击时联网，0 token）----
+    def _check_update(self):
+        """检查 GitHub Releases latest，比较 tag 与 APP_VERSION。"""
+        if getattr(self, "_updating", False):
+            return
+        self._updating = True
+        self._update_btn.setEnabled(False)
+        self._update_btn.setText("检查中…")
+        self._update_result.setText("")
+        self._update_result.setStyleSheet("color:#8a8f9c;font-size:11px;")
+
+        def work():
+            tag = page = err = ""
+            try:
+                import requests
+                r = requests.get(
+                    UPDATE_LATEST_API,
+                    headers={"User-Agent": "dafeiyu-pet/%s" % APP_VERSION,
+                             "Accept": "application/vnd.github+json"},
+                    timeout=UPDATE_TIMEOUT_SEC)
+                if r.status_code == 200:
+                    d = r.json() or {}
+                    tag = (d.get("tag_name") or "").strip()
+                    page = (d.get("html_url") or "").strip()
+                else:
+                    err = "HTTP %d" % r.status_code
+            except Exception as ex:
+                err = "%s: %s" % (type(ex).__name__, ex)
+            try:
+                self._update_done.emit(tag, page, err)
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_done(self, tag, page, err):
+        """检查更新结果回主线程。"""
+        self._updating = False
+        try:
+            self._update_btn.setEnabled(True)
+            self._update_btn.setText("检查更新")
+        except Exception:
+            pass
+        self._update_link.hide()
+        if err or not tag:
+            self._update_result.setText("检查失败，请稍后再试")
+            self._update_result.setStyleSheet("color:#d93025;font-size:11px;")
+            return
+        if self._version_newer(tag, APP_VERSION):
+            self._update_result.setText("发现新版本 %s" % tag)
+            self._update_result.setStyleSheet("color:#1a7f37;font-size:11px;")
+            self._update_url = page or UPDATE_RELEASES_PAGE
+            self._update_link.setText(
+                '<a href="%s">前往下载</a>' % self._update_url)
+            self._update_link.show()
+        else:
+            self._update_result.setText("已是最新版本")
+            self._update_result.setStyleSheet("color:#8a8f9c;font-size:11px;")
+
+    def _on_update_link(self, url):
+        """点「前往下载」：用默认浏览器打开发布页。"""
+        self._open_url(url or getattr(self, "_update_url", UPDATE_RELEASES_PAGE))
+
+    @staticmethod
+    def _version_tuple(v):
+        """'v1.2.0' → (1, 2, 0)；无法解析返回 ()。"""
+        try:
+            s = (v or "").strip().lstrip("vV")
+            parts = [int(x) for x in re.findall(r"\d+", s)[:4]]
+            return tuple(parts)
+        except Exception:
+            return ()
+
+    def _version_newer(self, remote, local):
+        """remote 是否比 local 新。"""
+        a, b = self._version_tuple(remote), self._version_tuple(local)
+        if not a or not b:
+            return False
+        n = max(len(a), len(b))
+        a = a + (0,) * (n - len(a))
+        b = b + (0,) * (n - len(b))
+        return a > b
+
+    def _open_url(self, url):
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as ex:
+            log("[设置] 打开链接失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _refresh_general_values(self):
+        """通用页当前值：生日、城市、版本号。"""
+        try:
+            self._birthday_state_lab.setText(self._birthday_display())
+        except Exception:
+            self._birthday_state_lab.setText("未设置")
+        try:
+            city = (self.app.cfg.get("city") or "").strip()
+            self._city_state_lab.setText(city if city else "未设置")
+        except Exception:
+            self._city_state_lab.setText("未设置")
+        try:
+            self._version_lab.setText(APP_VERSION)
+        except Exception:
+            pass
+
+    def _birthday_display(self):
+        """生日显示成「3 月 12 日」（旧配置带年份时只取月和日）。"""
+        raw = (self.app.cfg.get("birthday") or "").strip()
+        if not raw:
+            return "未设置"
+        _y, m, d = self._parse_birthday(raw)
+        if m is None:
+            return raw          # 认不出的旧格式原样显示，不丢数据
+        return "%d 月 %d 日" % (m, d)
+
+    # 生日解析：带年份 / 只有月日 两种格式分开匹配
+    _BD_FULL_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$")
+    _BD_MD_RE = re.compile(r"^(\d{1,2})[-/.](\d{1,2})$")
+
+    def _parse_birthday(self, raw):
+        """解析生日字符串 → (year 或 None, month 或 None, day 或 None)。"""
+        s = (raw or "").strip()
+        if not s:
+            return None, None, None
+        m = self._BD_FULL_RE.match(s)
+        if m:
+            return m.group(1), int(m.group(2)), int(m.group(3))
+        m = self._BD_MD_RE.match(s)
+        if m:
+            return None, int(m.group(1)), int(m.group(2))
+        return None, None, None
 
     # ---------- 语音页 ----------
     def _build_voice_page(self, lay):
@@ -3553,17 +4711,27 @@ class SettingsWindow(QDialog):
 
     # ---------- 主动搭话页 ----------
     def _build_proactive_page(self, lay):
-        self._title(lay, "主动搭话",
-                    "工作时间段内，检测到你在发呆时，宠物会主动说一句话。"
-                    "段外完全不检测。")
+        self._title(lay, "主动搭话")
         cfg = self.app.proactive_cfg()
 
-        # ---- 总开关 ----
-        self._check(lay, "启用主动搭话", bool(cfg.get("enabled")),
-                    lambda on: self._pro_save({"enabled": bool(on)}),
-                    "关闭后不检测、不调用模型。")
+        # ================= 顶部：开关 + 状态摘要 =================
+        _top = QHBoxLayout()
+        _top.setSpacing(10)
+        self._pro_enable_box = QCheckBox("启用主动搭话")
+        self._pro_enable_box.setChecked(bool(cfg.get("enabled")))
+        self._pro_enable_box.toggled.connect(
+            lambda on: self._pro_save({"enabled": bool(on)}))
+        _top.addWidget(self._pro_enable_box)
+        self._pro_status = QLabel("")
+        self._pro_status.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _top.addWidget(self._pro_status)
+        _top.addStretch(1)
+        lay.addLayout(_top)
+        lay.addWidget(self._sub_hint(
+            "工作时间段内检测到你发呆时，宠物会主动说一句话，"
+            "关闭后不检测、不调用模型"))
 
-        # ---- 工作时间段 ----
+        # ================= 工作时间段 =================
         self._pro_line(lay)
         _sec = self._pro_section(lay, "工作时间段", expanded=True)
         self._pro_sessions_host = QWidget()
@@ -3576,95 +4744,112 @@ class SettingsWindow(QDialog):
         _btn.clicked.connect(self._pro_add_session)
         _sec.body_add(_btn)
         _sec.body_add(self._sub_hint(
-            "只在勾选的星期、且落在时间段内才检测。可添加多段。"))
+            "只在选中的星期、且落在时间段内才检测。可添加多段。"))
 
-        # ---- 发呆 / 离开阈值 ----
+        # ================= 触发与频率 =================
         self._pro_line(lay)
-        _sec2 = self._pro_section(lay, "状态阈值", expanded=True)
-        self._pro_idle = self._pro_slider(
-            _sec2, "发呆阈值", int(cfg.get("idle_min")), 1, 60, 1, "分钟",
-            "多久没动就当作在发呆（实际会在 ±20% 内随机浮动）")
-        self._pro_away = self._pro_slider(
-            _sec2, "离开阈值", int(cfg.get("away_min")), 2, 180, 1, "分钟",
-            "超过这个时间当作离开了，离开时不搭话")
+        _sec2 = self._pro_section(lay, "触发与频率", expanded=True)
+        self._pro_idle, self._pro_away = self._pro_threshold_pair(_sec2, cfg)
+        _sec2.body_add(self._sub_hint(
+            "多久没动就当作在发呆（实际会在 ±20% 内随机浮动）"))
+        # 原「频率控制」控件原样放在下方
+        _sec2.body_add(self._pro_sub_title("冷却与上限"))
+        self._pro_cool = self._pro_spin_row(
+            _sec2, "冷却时间", int(cfg.get("cooldown_min")), 1, 180, "分钟",
+            "两次搭话之间至少隔多久", "cooldown_min")
+        self._pro_daily = self._pro_spin_row(
+            _sec2, "每日上限", int(cfg.get("daily_max")), 1, 30, "次",
+            "一天最多主动几次，跨天自动重置", "daily_max")
 
-        # ---- 频率控制 ----
+        # ================= 内容（三个标签页）=================
         self._pro_line(lay)
-        _sec3 = self._pro_section(lay, "频率控制", expanded=False)
-        self._pro_cool = self._pro_slider(
-            _sec3, "冷却时间", int(cfg.get("cooldown_min")), 1, 180, 1, "分钟",
-            "两次搭话之间至少隔多久")
-        self._pro_daily = self._pro_slider(
-            _sec3, "每日上限", int(cfg.get("daily_max")), 1, 30, 1, "次",
-            "一天最多主动几次，跨天自动重置")
+        _sec3 = self._pro_section(lay, "内容", expanded=False)
+        _tabs = QTabWidget()
+        _tabs.setDocumentMode(True)
 
-        # ---- 隐私与过滤 ----
-        self._pro_line(lay)
-        _sec4 = self._pro_section(lay, "隐私与过滤", expanded=False)
-        self._pro_send_title = self._check(
-            _sec4.body_layout, "把前台窗口标题发给模型", bool(cfg.get("send_title")),
-            lambda on: self._pro_save({"send_title": bool(on)}),
-            "关闭后只发进程名，不发标题。")
-        _sec4.body_add(self._pro_sub_title("隐私黑名单"))
-        _sec4.body_add(self._sub_hint(
-            "命中这些词的窗口不搭话，标题也不会发出去。"))
-        self._pro_private = self._pro_word_editor(
-            _sec4, cfg.get("private_words") or [], self._pro_set_private)
-        _sec4.body_add(self._pro_sub_title("跳过关键词"))
-        _sec4.body_add(self._sub_hint(
-            "视频、游戏、会议等场景不搭话（命中就不调用模型，不耗额度）。"))
-        self._pro_skip = self._pro_word_editor(
-            _sec4, cfg.get("skip_words") or [], self._pro_set_skip)
-        _rst = QPushButton("恢复默认跳过词")
-        _rst.clicked.connect(self._pro_reset_skip)
-        _sec4.body_add(_rst)
-
-        # ---- 搭话提示词 ----
-        self._pro_line(lay)
-        _sec5 = self._pro_section(lay, "搭话提示词", expanded=False)
-        _sec5.body_add(self._sub_hint(
-            "作为 system 发给聊天模型。留空则用内置默认。"))
+        # ① 搭话提示词
+        _p1 = QWidget()
+        _l1 = QVBoxLayout(_p1)
+        _l1.setContentsMargins(8, 8, 8, 8)
+        _l1.setSpacing(6)
+        _l1.addWidget(self._sub_hint(
+            "只写场景规则，说话风格由「聊天」页的人设决定"))
         self._pro_prompt = QTextEdit()
         self._pro_prompt.setMinimumHeight(110)
         self._pro_prompt.setPlainText(cfg.get("prompt") or "")
         self._pro_prompt.textChanged.connect(self._pro_on_prompt_edited)
-        _sec5.body_add(self._pro_prompt)
+        _l1.addWidget(self._pro_prompt)
         _prow = QHBoxLayout()
         _pb = QPushButton("恢复默认提示词")
         _pb.clicked.connect(self._pro_reset_prompt)
         _prow.addWidget(_pb)
         _prow.addStretch(1)
-        _sec5.body_add_layout(_prow)
+        _l1.addLayout(_prow)
+        _l1.addStretch(1)
+        _tabs.addTab(_p1, "搭话提示词")
 
-        # ---- 回来打招呼 ----
-        self._pro_line(lay)
-        _sec6 = self._pro_section(lay, "回来打招呼", expanded=False)
-        self._pro_welcome = self._check(
-            _sec6.body_layout, "从离开回来时打一声招呼",
-            bool(cfg.get("welcome_enabled")),
-            lambda on: self._pro_save({"welcome_enabled": bool(on)}),
-            "只调一次模型，同样受冷却与每日上限约束。")
+        # ② 回来打招呼
+        _p2 = QWidget()
+        _l2 = QVBoxLayout(_p2)
+        _l2.setContentsMargins(8, 8, 8, 8)
+        _l2.setSpacing(6)
+        self._pro_welcome = QCheckBox("从离开回来时打一声招呼")
+        self._pro_welcome.setChecked(bool(cfg.get("welcome_enabled")))
+        self._pro_welcome.toggled.connect(
+            lambda on: self._pro_save({"welcome_enabled": bool(on)}))
+        _l2.addWidget(self._pro_welcome)
+        _l2.addWidget(self._sub_hint(
+            "只调一次模型，同样受冷却与每日上限约束。"
+            "说话风格由「聊天」页的人设决定"))
         self._pro_welcome_prompt = QTextEdit()
         self._pro_welcome_prompt.setMinimumHeight(72)
         self._pro_welcome_prompt.setPlainText(cfg.get("welcome_prompt") or "")
         self._pro_welcome_prompt.textChanged.connect(
             lambda: self._pro_save({"welcome_prompt":
                                     self._pro_welcome_prompt.toPlainText()}))
-        _sec6.body_add(self._pro_welcome_prompt)
+        _l2.addWidget(self._pro_welcome_prompt)
         _wrow = QHBoxLayout()
         _wb = QPushButton("恢复默认欢迎语")
         _wb.clicked.connect(self._pro_reset_welcome)
         _wrow.addWidget(_wb)
         _wrow.addStretch(1)
-        _sec6.body_add_layout(_wrow)
+        _l2.addLayout(_wrow)
+        _l2.addStretch(1)
+        _tabs.addTab(_p2, "回来打招呼")
 
-        # ---- 测试 ----
+        # ③ 隐私与过滤
+        _p3 = QWidget()
+        _l3 = QVBoxLayout(_p3)
+        _l3.setContentsMargins(8, 8, 8, 8)
+        _l3.setSpacing(6)
+        self._pro_send_title = QCheckBox("把前台窗口标题发给模型")
+        self._pro_send_title.setChecked(bool(cfg.get("send_title")))
+        self._pro_send_title.toggled.connect(
+            lambda on: self._pro_save({"send_title": bool(on)}))
+        _l3.addWidget(self._pro_send_title)
+        _l3.addWidget(self._sub_hint("关闭后只发进程名，不发标题。"))
+        _l3.addWidget(self._pro_sub_title("隐私黑名单"))
+        _l3.addWidget(self._sub_hint("命中这些词的窗口不搭话，标题也不会发出去。"))
+        self._pro_private = self._pro_word_editor(_l3, cfg.get("private_words") or [],
+                                                 self._pro_set_private)
+        _l3.addWidget(self._pro_sub_title("跳过关键词"))
+        _l3.addWidget(self._sub_hint(
+            "视频、游戏、会议等场景不搭话（命中就不调用模型，不耗额度）。"))
+        self._pro_skip = self._pro_word_editor(_l3, cfg.get("skip_words") or [],
+                                               self._pro_set_skip)
+        _rst = QPushButton("恢复默认跳过词")
+        _rst.clicked.connect(self._pro_reset_skip)
+        _l3.addWidget(_rst)
+        _l3.addStretch(1)
+        _tabs.addTab(_p3, "隐私与过滤")
+
+        _sec3.body_add(_tabs)
+
+        # ================= 测试（默认折叠，页面最底）=================
         self._pro_line(lay)
-        _sec7 = self._pro_section(lay, "测试", expanded=True)
-        _sec7.body_add(self._sub_hint(
-            "忽略工作时间段、发呆阈值和冷却，直接调一次模型看效果。"
-            "会自动截一张全屏图让视觉模型先看（用「视觉」页配置；"
-            "没配视觉模型则只发文字）。不会计入每日次数。"))
+        _sec4 = self._pro_section(lay, "测试", expanded=False)
+        _sec4.body_add(self._sub_hint(
+            "忽略时间段、阈值和冷却，直接调一次模型；不计入每日次数"))
         _trow = QHBoxLayout()
         self._pro_test_btn = QPushButton("测试搭话")
         self._pro_test_btn.setToolTip("立刻调一次模型，结果显示在下方")
@@ -3681,11 +4866,11 @@ class SettingsWindow(QDialog):
         self._pro_test_cancel_btn.hide()
         _trow.addWidget(self._pro_test_cancel_btn)
         _trow.addStretch(1)
-        _sec7.body_add_layout(_trow)
+        _sec4.body_add_layout(_trow)
 
         # 是否真实弹气泡
         self._pro_test_real = self._check(
-            _sec7.body_layout, "同时在桌宠上弹气泡",
+            _sec4.body_layout, "同时在桌宠上弹气泡",
             bool((self.app.cfg.get("proactive_test_real") if
                   isinstance(self.app.cfg.get("proactive_test_real"), bool) else True)),
             lambda on: self._pro_set_test_real(bool(on)),
@@ -3700,15 +4885,8 @@ class SettingsWindow(QDialog):
             "color:#2f3542;font-size:11px;background:#f5f7fb;"
             "border-radius:6px;padding:8px;")
         self._pro_test_out.hide()
-        _sec7.body_add(self._pro_test_out)
+        _sec4.body_add(self._pro_test_out)
 
-        # ---- 状态提示 ----
-        self._pro_line(lay)
-        self._pro_status = QLabel("")
-        self._pro_status.setWordWrap(True)
-        self._pro_status.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:2px;")
-        lay.addWidget(self._pro_status)
         self._pro_refresh_status()
         lay.addStretch(1)
 
@@ -3728,50 +4906,72 @@ class SettingsWindow(QDialog):
         w.setStyleSheet("color:#2f3542;font-size:11px;font-weight:bold;")
         return w
 
-    def _pro_slider(self, sec, label, value, lo, hi, step, suffix, desc):
-        """滑块 + 数字框 + 说明（返回数字框，便于读取）。"""
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(6)
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(lo, hi)
-        s.setSingleStep(step)
-        s.setPageStep(step * 5)
-        s.setValue(int(value))
-        s.setMinimumWidth(200)
-        h.addWidget(s, 1)
+    def _pro_threshold_pair(self, sec, cfg):
+        """发呆 / 离开阈值：只保留数字框，两者联动。
+
+        离开阈值必须大于发呆阈值：改发呆导致冲突时把离开顶到 发呆+5；
+        改离开导致冲突时把发呆压到 离开-5（不小于 1）。
+        返回 (发呆框, 离开框)。
+        """
+        idle = QSpinBox()
+        idle.setRange(1, 60)
+        idle.setSuffix(" 分钟")
+        idle.setFixedWidth(110)
+        idle.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        idle.setValue(max(1, int(cfg.get("idle_min") or 10)))
+        sec.body_add(self._pro_form_row("发呆阈值", idle))
+
+        away = QSpinBox()
+        away.setRange(2, 180)
+        away.setSuffix(" 分钟")
+        away.setFixedWidth(110)
+        away.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        away.setValue(max(2, int(cfg.get("away_min") or 20)))
+        sec.body_add(self._pro_form_row("离开阈值", away))
+
+        GAP = 5
+        guard = {"busy": False}
+
+        def on_idle(v):
+            if guard["busy"]:
+                return
+            guard["busy"] = True
+            try:
+                if away.value() <= v:
+                    away.setValue(min(away.maximum(), v + GAP))
+                self._pro_save({"idle_min": int(v),
+                                "away_min": int(away.value())})
+            finally:
+                guard["busy"] = False
+
+        def on_away(v):
+            if guard["busy"]:
+                return
+            guard["busy"] = True
+            try:
+                if v <= idle.value():
+                    idle.setValue(max(1, v - GAP))
+                self._pro_save({"idle_min": int(idle.value()),
+                                "away_min": int(v)})
+            finally:
+                guard["busy"] = False
+
+        idle.valueChanged.connect(on_idle)
+        away.valueChanged.connect(on_away)
+        return idle, away
+
+    def _pro_spin_row(self, sec, label, value, lo, hi, suffix, desc, key):
+        """数字框 + 说明（原「频率控制」控件，去掉滑条）。返回数字框。"""
         box = QSpinBox()
         box.setRange(lo, hi)
-        box.setSingleStep(step)
+        box.setSingleStep(1)
         box.setValue(int(value))
-        box.setFixedWidth(96)
+        box.setFixedWidth(110)
         box.setSuffix(" " + suffix)
-        h.addWidget(box)
-        sec.body_add(self._pro_form_row(label, row))
+        box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        sec.body_add(self._pro_form_row(label, box))
         sec.body_add(self._sub_hint(desc))
-
-        key = {"发呆阈值": "idle_min", "离开阈值": "away_min",
-               "冷却时间": "cooldown_min", "每日上限": "daily_max"}.get(label)
-
-        def from_slider(v):
-            if box.value() != v:
-                box.blockSignals(True)
-                box.setValue(int(v))
-                box.blockSignals(False)
-            if key:
-                self._pro_save({key: int(v)})
-
-        def from_box(v):
-            if s.value() != v:
-                s.blockSignals(True)
-                s.setValue(int(v))
-                s.blockSignals(False)
-            if key:
-                self._pro_save({key: int(v)})
-
-        s.valueChanged.connect(from_slider)
-        box.valueChanged.connect(from_box)
+        box.valueChanged.connect(lambda v: self._pro_save({key: int(v)}))
         return box
 
     def _pro_form_row(self, label, widget):
@@ -3787,14 +4987,20 @@ class SettingsWindow(QDialog):
         h.addWidget(widget, 1)
         return row
 
-    def _pro_word_editor(self, sec, words, on_save):
-        """多行关键词编辑（一行一个）+ 增删按钮。返回 QPlainTextEdit。"""
+    def _pro_word_editor(self, lay, words, on_save):
+        """多行关键词编辑（一行一个）。lay 可以是布局或 CollapsibleSection。
+
+        返回 QPlainTextEdit。
+        """
         ed = QTextEdit()
         ed.setMinimumHeight(64)
         ed.setPlainText("\n".join(str(w) for w in words))
         ed.textChanged.connect(lambda: on_save(
             [x.strip() for x in ed.toPlainText().split("\n") if x.strip()]))
-        sec.body_add(ed)
+        if hasattr(lay, "body_add"):
+            lay.body_add(ed)
+        else:
+            lay.addWidget(ed)
         return ed
 
     # ---- 时间段渲染 ----
@@ -3809,27 +5015,57 @@ class SettingsWindow(QDialog):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(6)
+            h.setSpacing(4)
+
+            # ---- 时间框（固定宽度，保证 09:00 完整显示）----
             st = QLineEdit(str(s.get("start") or "09:00"))
-            st.setFixedWidth(64)
+            st.setFixedWidth(72)
             st.setAlignment(Qt.AlignmentFlag.AlignCenter)
             en = QLineEdit(str(s.get("end") or "18:00"))
-            en.setFixedWidth(64)
+            en.setFixedWidth(72)
             en.setAlignment(Qt.AlignmentFlag.AlignCenter)
             h.addWidget(QLabel("从"))
             h.addWidget(st)
             h.addWidget(QLabel("到"))
             h.addWidget(en)
-            # 星期复选
+
+            # ---- 跨夜 / 非法提示（灰字「次日」或标红）----
+            st_txt = (st.text() or "").strip()
+            en_txt = (en.text() or "").strip()
+            oob = self._pro_time_state(st_txt, en_txt)
+            tip = QLabel(oob[1])
+            tip.setFixedWidth(46)
+            if oob[0] == "cross":
+                tip.setStyleSheet("color:#8a8f9c;font-size:11px;")
+            elif oob[0] == "equal":
+                tip.setStyleSheet("color:#d93025;font-size:11px;")
+            else:
+                tip.setStyleSheet("color:#8a8f9c;font-size:11px;")
+            h.addWidget(tip)
+            if oob[0] == "equal":
+                for w2 in (st, en):
+                    w2.setStyleSheet("border:1px solid #d93025;border-radius:4px;")
+            else:
+                for w2 in (st, en):
+                    w2.setStyleSheet("")
+
+            # ---- 星期：7 个紧凑切换按钮 ----
             days = set(s.get("days") or [])
-            day_boxes = []
             for di, dn in enumerate(("一", "二", "三", "四", "五", "六", "日")):
-                cb = QCheckBox(dn)
-                cb.setChecked(di in days)
-                cb.toggled.connect(
+                b = QPushButton(dn)
+                b.setCheckable(True)
+                b.setFixedSize(28, 24)
+                b.setChecked(di in days)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.setStyleSheet(
+                    "QPushButton{border:1px solid #dfe3ec;border-radius:4px;"
+                    "font-size:11px;background:#ffffff;color:#5a6070;}"
+                    "QPushButton:checked{background:#5686fe;color:#ffffff;"
+                    "border:1px solid #5686fe;}")
+                b.toggled.connect(
                     lambda on, i=idx, d=di: self._pro_toggle_day(i, d, on))
-                h.addWidget(cb)
-                day_boxes.append(cb)
+                h.addWidget(b)
+
             h.addStretch(1)
             rm = QPushButton("删除")
             rm.setFixedWidth(56)
@@ -3841,6 +5077,30 @@ class SettingsWindow(QDialog):
             en.editingFinished.connect(
                 lambda i=idx, w=en: self._pro_set_session_time(i, "end", w.text()))
             self._pro_sessions_lay.addWidget(row)
+
+    @staticmethod
+    def _pro_time_state(start, end):
+        """判断时间段状态：('cross', '次日') / ('equal', '时间相同') / ('ok', '')。
+
+        检测逻辑（proactive.in_work_session）已支持跨夜：a > b 时按
+        「cur >= a or cur < b」判定。所以这里只做提示，不改逻辑。
+        """
+        def _min(t):
+            m = re.match(r"^(\d{1,2}):(\d{2})$", (t or "").strip())
+            if not m:
+                return -1
+            hh, mm = int(m.group(1)), int(m.group(2))
+            if hh > 23 or mm > 59:
+                return -1
+            return hh * 60 + mm
+        a, b = _min(start), _min(end)
+        if a < 0 or b < 0:
+            return "ok", ""
+        if a == b:
+            return "equal", "时间相同"
+        if a > b:
+            return "cross", "次日"
+        return "ok", ""
 
     def _pro_toggle_day(self, idx, day, on):
         if idx >= len(getattr(self, "_pro_sessions", [])):
@@ -3863,6 +5123,13 @@ class SettingsWindow(QDialog):
             return
         hh, mm = t.split(":")
         t = "%02d:%02d" % (int(hh), int(mm))
+        # 结束时间 == 开始时间：禁止保存（检测逻辑会跳过该段）
+        other_key = "end" if key == "start" else "start"
+        other = str(self._pro_sessions[idx].get(other_key) or "")
+        if t == other:
+            log("[设置] 时间段开始/结束相同，已还原")
+            self._pro_render_sessions(self._pro_sessions)
+            return
         self._pro_sessions[idx][key] = t
         self._pro_save({"sessions": self._pro_sessions})
         self._pro_render_sessions(self._pro_sessions)
@@ -4105,69 +5372,30 @@ class SettingsWindow(QDialog):
                                "#8a8f9c")
 
     def _pro_refresh_status(self):
+        """顶部状态摘要：已关闭 / 当前不在工作时间段 / 工作时间内 · 今日 N/M 次。"""
         try:
             cfg = self.app.proactive_cfg()
-            inside, seg = False, -1
+            if not cfg.get("enabled"):
+                self._pro_status.setText("已关闭")
+                self._pro_status.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                return
+            inside = False
             try:
                 import proactive as _P
-                inside, seg = _P.in_work_session(cfg)
+                inside, _seg = _P.in_work_session(cfg)
             except Exception:
                 pass
+            if not inside:
+                self._pro_status.setText("当前不在工作时间段")
+                self._pro_status.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                return
             st = getattr(self.app, "_pro_state", None)
-            used = getattr(st, "used", 0)
-            bits = []
-            bits.append("当前%s工作时间段" % ("在" if inside else "不在"))
-            bits.append("今日已搭话 %d / %d 次" % (used, cfg.get("daily_max", 0)))
-            if cfg.get("enabled"):
-                bits.append("已启用")
-            else:
-                bits.append("未启用")
-            self._pro_status.setText(" · ".join(bits))
+            used = int(getattr(st, "used", 0) or 0)
+            mx = int(cfg.get("daily_max") or 0)
+            self._pro_status.setText("工作时间内 · 今日 %d/%d 次" % (used, mx))
+            self._pro_status.setStyleSheet("color:#1a7f37;font-size:11px;")
         except Exception:
             pass
-
-    # ---------- 记忆页 ----------
-    def _build_memory_page(self, lay):
-        self._title(lay, "记忆", "长期记忆会拼在系统提示词末尾，影响所有会话。")
-        row = QHBoxLayout()
-        b = QPushButton("打开记忆管理")
-        b.clicked.connect(self.app._open_memory)
-        row.addWidget(b)
-        row.addStretch(1)
-        lay.addLayout(row)
-        self._memory_count = QLabel("")
-        self._memory_count.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        lay.addWidget(self._memory_count)
-        lay.addStretch(1)
-
-    # ---------- 关于页 ----------
-    def _build_about_page(self, lay):
-        self._title(lay, "关于", None)
-        info = QLabel(
-            "大肥鱼桌宠 · DeepSeek 鲸鱼娘二创桌面宠物\n\n"
-            "聊天模型：deepseek-chat（流式）\n"
-            "余额接口：api.deepseek.com/user/balance\n"
-            "天气接口：wttr.in\n\n"
-            "配置文件：config.json\n"
-            "聊天记录：chats.json\n"
-            "长期记忆：memory.json\n"
-            "运行日志：error.log")
-        info.setWordWrap(True)
-        info.setStyleSheet("color:#5a6070;font-size:12px;")
-        lay.addWidget(info)
-        row = QHBoxLayout()
-        b = QPushButton("打开程序目录")
-        b.clicked.connect(self._open_app_dir)
-        row.addWidget(b)
-        row.addStretch(1)
-        lay.addLayout(row)
-        lay.addStretch(1)
-
-    def _open_app_dir(self):
-        try:
-            os.startfile(APP_DIR)
-        except Exception as ex:
-            QMessageBox.warning(self, "打开目录", "打不开：%s" % ex)
 
     # ---------- 刷新 ----------
     def reload(self):
@@ -4179,14 +5407,34 @@ class SettingsWindow(QDialog):
 
         # 宠物页统一走 refresh_pet_page（列表与按钮共用同一套状态逻辑）
         self.refresh_pet_page()
-
+        # 宠物页物理组联动（甩抛物理 / 互撞 置灰状态）
+        self._refresh_pet_physics_state()
+        # 通用页三个当前值
         try:
-            self._memory_count.setText("当前共 %d 条记忆" % len(self.app.memory.items))
+            self._refresh_general_values()
+        except Exception:
+            pass
+
+        # 提醒页：列表 / 标签条数 / 每行今日次数 / 间隔框
+        try:
+            for kind, sp in getattr(self, "_rem_spins", {}).items():
+                sp.blockSignals(True)
+                sp.setValue(self.app._rem_minutes(kind))
+                sp.blockSignals(False)
+            self._refresh_remind_lists()
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "reload", type(ex).__name__, ex),
                 logging.WARNING)
-        self._refresh_balance_hint()
+
+        # 聊天页三个折叠组的标题摘要
+        self._refresh_memory_summary()
+        self._refresh_persona_summary()
+        # 台词池状态行（重新打开窗口时恢复上次结果）
+        try:
+            self._refresh_persona_lines_status()
+        except Exception:
+            pass
 
         # 视觉字段：复用窗口时重新填，避免输入框变空
         try:
@@ -4272,9 +5520,21 @@ class PersonaLinesDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel("台词池"))
         self.pool_box = QComboBox()
-        self.pool_box.currentTextChanged.connect(self._load_pool)
+        self.pool_box.setMinimumWidth(320)          # 池名较长，避免被压成乱码
+        self.pool_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.pool_box.setMinimumContentsLength(28)
+        self.pool_box.currentIndexChanged.connect(
+            lambda _i: self._load_pool(self.pool_box.currentData()))
         row.addWidget(self.pool_box, 1)
         lay.addLayout(row)
+
+        # 失败池原因（选中失败池时显示）
+        self.fail_tip = QLabel("")
+        self.fail_tip.setWordWrap(True)
+        self.fail_tip.setStyleSheet("color:#d93025;font-size:11px;")
+        self.fail_tip.hide()
+        lay.addWidget(self.fail_tip)
 
         self.edit = QTextEdit()
         self.edit.setStyleSheet(
@@ -4310,12 +5570,54 @@ class PersonaLinesDialog(QDialog):
             from petcore import persona_lines as PL
             self.pool_box.clear()
             names = sorted(PL.POOL_SPECS.keys())
-            self.pool_box.addItems(names)
+            # 失败池用红色标记，并显示中文名
+            failed = self._failed_map()
+            for n in names:
+                label = PL.pool_label(n)
+                if n in failed:
+                    self.pool_box.addItem("✕ %s（%s）" % (label, n), n)
+                else:
+                    self.pool_box.addItem(label, n)
+            # 失败项标红：QComboBox 不支持逐项着色，用 tooltip + 上方提示
+            self._refresh_fail_marks(failed)
         except Exception as ex:
             log("[台词] 载入池列表失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
-    def _load_pool(self, name):
+    def _failed_map(self):
+        """当前人设的失败池 → 失败项 dict。"""
+        try:
+            from petcore import persona_lines as PL
+            p = self._persona()
+            if not p:
+                return {}
+            lr = PL.load_last_result(APP_DIR, p) or {}
+            out = {}
+            for f in (lr.get("failed_pools") or []):
+                if isinstance(f, dict) and f.get("pool"):
+                    out[f["pool"]] = f
+                elif isinstance(f, str):
+                    out[f] = {"pool": f, "reason_code": "",
+                              "detail": {}, "fail_count": 1}
+            return out
+        except Exception:
+            return {}
+
+    def _refresh_fail_marks(self, failed):
+        """给失败池的下拉项加 tooltip（原因文案）。"""
+        try:
+            from petcore import persona_lines as PL
+            for i in range(self.pool_box.count()):
+                n = self.pool_box.itemData(i)
+                if n in failed:
+                    self.pool_box.setItemData(
+                        i, PL.format_failure(failed[n]),
+                        Qt.ItemDataRole.ToolTipRole)
+        except Exception:
+            pass
+
+    def _load_pool(self, _text=None):
+        name = self.pool_box.currentData() or self.pool_box.currentText()
         if not name:
             return
         try:
@@ -4331,12 +5633,19 @@ class PersonaLinesDialog(QDialog):
             else:
                 self.edit.setPlaceholderText("")
             self.edit.setPlainText("\n".join(lines))
+            # 失败池：显示原因
+            f = self._failed_map().get(name)
+            if f:
+                self.fail_tip.setText("该池生成失败：%s" % PL.format_failure(f))
+                self.fail_tip.show()
+            else:
+                self.fail_tip.hide()
         except Exception as ex:
             log("[台词] 载入池失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
     def _save_pool(self):
-        name = self.pool_box.currentText()
+        name = self.pool_box.currentData() or self.pool_box.currentText()
         if not name:
             return
         p = self._persona()
@@ -4351,9 +5660,11 @@ class PersonaLinesDialog(QDialog):
             if not clean:
                 QMessageBox.warning(self, "台词", "没有合格台词：%s" % why)
                 return
-            pools = PL.get_persona_pools(APP_DIR, p)
-            pools[name] = clean
-            PL.save_persona_pools(APP_DIR, p, pools)
+            # 手写保存视为已生成：从失败列表移除、fail_count 清零
+            PL.save_pool_manually(APP_DIR, p, name, clean)
+            self._fill_pools()
+            self.pool_box.setCurrentIndex(
+                self.pool_box.findData(name))
             QMessageBox.information(
                 self, "台词", "已保存 %d 句（原 %d 句，已过滤不合规的）。"
                 % (len(clean), len(raw_lines)))
@@ -4361,7 +5672,7 @@ class PersonaLinesDialog(QDialog):
             QMessageBox.warning(self, "台词", "保存失败：%s" % ex)
 
     def _reset_pool(self):
-        name = self.pool_box.currentText()
+        name = self.pool_box.currentData() or self.pool_box.currentText()
         p = self._persona()
         if not name or not p:
             return

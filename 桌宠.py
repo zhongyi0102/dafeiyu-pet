@@ -485,7 +485,7 @@ def _http_error_message(status, body, kind="chat"):
 
     def _key_hint():
         if kind == "vision":
-            return "请到 设置 →「视觉」重新填写视觉 Key。"
+            return "请到 设置 →「聊天」→「看屏幕 / 视觉」重新填写视觉 Key。"
         return "请到 设置 →「聊天」→「聊天模型」重新填写聊天 Key。"
 
     if status == 401 or "authentication" in low or "invalid api key" in low or "api key" in low:
@@ -904,13 +904,7 @@ class PetApp(QObject):
             self._capture_timer.start(450)
 
         # 托盘
-        # 自动查询余额（默认关，间隔最少 30 分钟）
-        self._balance_timer = QTimer()
-        self._balance_timer.setInterval(BALANCE_MIN_INTERVAL_MIN * 60 * 1000)
-        self._balance_timer.timeout.connect(self._balance_tick)
-        _bc = self._balance_cfg()
-        if _bc["auto"] and self.is_enabled("balance_auto"):
-            self._balance_timer.start(max(60, _bc["interval_min"] * 60) * 1000)
+        # 余额：已移除自动查询与轮询，只在用户点「立即查询」时联网。
 
         # 时节特效：启动按日期触发一次，之后每 10 分钟看一次（带冷却）
         self._fx_timer = QTimer()
@@ -1177,6 +1171,27 @@ class PetApp(QObject):
             return False
         return True
 
+    def _pro_fallback_line(self, welcome=False):
+        """搭话/回来打招呼的模型请求失败时，从对应兜底池抽一句。
+
+        兜底池同样受人设控制（由「保存人设」时批量生成并缓存），
+        运行时 0 token。人设为空或该池未生成时用中性池。
+        """
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            name = ("WELCOME_FALLBACK_LINES" if welcome
+                    else "PROACTIVE_FALLBACK_LINES")
+            lines = PL.get_pool(name, persona_from_cfg(self.cfg), APP_DIR)
+            if not lines:
+                return ""
+            key = "pro_fallback_" + ("welcome" if welcome else "chat")
+            return self._pick_line(lines, key, pool_name=name)
+        except Exception as ex:
+            log("[主动] 兜底池抽取失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return ""
+
     def _pro_grab_fullscreen_jpg(self):
         """截当前屏幕全屏，返回 (QPixmap, PIL.Image)。失败返回 (None, None)。
 
@@ -1272,7 +1287,12 @@ class PetApp(QObject):
             text, err = PRO.call_chat(base, key, model, system, user2,
                                       timeout=timeout)
             if err:
-                log("[主动] 调用失败（静默）：%s" % err)
+                # 请求失败/超时 → 从兜底池抽一句（仍计入次数与冷却，
+                # 计数在 _proactive_tick 里已经 mark_fired 了）
+                log("[主动] 调用失败，改用兜底池：%s" % err)
+                line = self._pro_fallback_line(welcome)
+                if line:
+                    self.pro_active_say.emit(line, bool(welcome))
                 return
             line = PRO.clean_reply(text)
             if not line:
@@ -1539,30 +1559,6 @@ class PetApp(QObject):
         except Exception:
             return False
 
-    def _care_in_window(self, kind, now_dt=None):
-        """该关心类型此刻是否在其允许的时间窗口内。
-
-        没有 window/windows 配置的类型恒为 True。
-        """
-        spec = CARE_KINDS.get(kind) or {}
-        try:
-            cur = now_dt or datetime.datetime.now()
-        except Exception:
-            return True
-        w = spec.get("window")
-        if w:
-            try:
-                return self._in_time_window(cur, w[0], w[1])
-            except Exception:
-                return True
-        ws = spec.get("windows")
-        if ws:
-            try:
-                return any(self._in_time_window(cur, a, b) for a, b in ws)
-            except Exception:
-                return True
-        return True
-
     def mute_care_kind(self, kind):
         """「别提这个」：该类当天不再出现；连续多天则提示是否关闭。"""
         self._care_last_acked = True     # 已处理，不算忽略
@@ -1612,8 +1608,6 @@ class PetApp(QObject):
 
         water/stand/eyes 的冷却沿用用户在设置里配的间隔
         （cfg["reminders"][kind]["min"]），不用新默认值。
-        sleep/meal 用固定冷却（由 CARE_KINDS 的窗口天然限制频率）。
-        不在时间窗口内的类型不进入候选。
         """
         out = []
         # 主动搭话（阶段⑤）：由 proactive 自己判断时段/状态，
@@ -1632,18 +1626,11 @@ class PetApp(QObject):
                     continue
             except Exception:
                 continue
-            # 时间窗口（sleep / meal）
-            if not self._care_in_window(kind, now_dt):
-                continue
             spec = CARE_KINDS.get(kind) or {}
-            if "window" in spec or "windows" in spec:
-                # 窗口型：冷却按窗口间隔给个合理值
-                cd = 90 * 60
-            else:
-                try:
-                    cd = max(60, int(self._rem_minutes(kind)) * 60)
-                except Exception:
-                    cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
+            try:
+                cd = max(60, int(self._rem_minutes(kind)) * 60)
+            except Exception:
+                cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
             out.append((kind, cd, int(spec.get("daily_max") or 0)))
         return out
 
@@ -2044,10 +2031,13 @@ class PetApp(QObject):
             log("[提醒] %s 全屏/演示模式 → 跳过" % kind)
             return False
 
-        # 记下提醒前位置（回位用）
+        # ---- 记录回位原点（所有拦截判断之后，被拦时不留残留）----
+        # 只在为空时记录：提醒进行中（走动/气泡/回位途中）再触发新提醒，
+        # 沿用旧原点，不用当前位置覆盖，否则回位会回到半路。
         try:
-            pet.remind_origin = (pet.x(), pet.y())
-            pet.remind_user_moved = False
+            if getattr(pet, "remind_origin", None) is None:
+                pet.remind_origin = (pet.x(), pet.y())
+                pet.remind_user_moved = False
         except Exception:
             pet.remind_origin = None
 
@@ -2083,18 +2073,8 @@ class PetApp(QObject):
             return True
         tx, ty = target
 
-        # 减少动效：直接放到中间（不播走动），但**提醒动作照常播**
-        if not pet._anim_enabled():
-            try:
-                pet.move(int(tx), int(ty))
-                pet._clamp_into_work_area()
-                pet.raise_()
-            except Exception:
-                pass
-            self._begin_remind_at_pet(pet, ctx, animate=True)
-            return True
-
-        # 平滑走过去（侧面朝向），到达后开始提醒
+        # 平滑走过去（侧面朝向），到达后开始提醒。
+        # 「减少动效」与「跨屏直达」都由 remind_walk_to 内部处理。
         pet.remind_walk_to(tx, ty, on_done=lambda c=ctx: self._begin_remind_at_pet(
             pet, c, animate=True))
         return True
@@ -2120,15 +2100,23 @@ class PetApp(QObject):
             return None
 
     def _begin_remind_at_pet(self, pet, ctx, animate=True):
-        """宠物已就位：播动作 + 气泡 + 提示音 + 系统通知。"""
+        """宠物已就位：转正面 → 播动作 → 200ms 后弹气泡。
+
+        rest_until 由气泡生命周期控制（见 pet_window 的 _sync_remind_rest），
+        不再固定 +5 秒；气泡消失或点按钮并回位完成后才解除。
+        """
         text = ctx["text"]
         icon = ctx["icon"]
         kind = ctx["kind"]
         try:
             pet._interrupt_combo()
             pet.target = None
-            pet.rest_until = pet.t * TICK + 5000
             pet.raise_()
+            # 到达后先转正面
+            try:
+                pet._set_dir("down")
+            except Exception:
+                pass
             if animate:
                 # 提醒动作：优雅女仆舞，循环播放直到气泡结束（不冷却、不打断）
                 if pet._start_frame_anim("idle_maid"):
@@ -2138,9 +2126,20 @@ class PetApp(QObject):
                     pet._play_temp("remind", total=1.6)
         except Exception as ex:
             log("提醒动作失败: %s" % ex, logging.WARNING)
-        # 气泡（加大 + 图标 + 两个按钮，12 秒）
-        self._show_remind_bubble(pet, text, icon, kind,
-                                 ctx.get("todo_id"), ctx.get("schedule_id"))
+
+        # 动作先起，200ms 后再弹气泡（让动作先被看见）
+        def _show():
+            try:
+                self._show_remind_bubble(pet, text, icon, kind,
+                                         ctx.get("todo_id"),
+                                         ctx.get("schedule_id"))
+            except Exception as ex:
+                log("提醒气泡失败: %s" % ex, logging.WARNING)
+
+        try:
+            QTimer.singleShot(200, _show)
+        except Exception:
+            _show()
 
 
     def _bring_pet_visible(self, pet):
@@ -2169,16 +2168,21 @@ class PetApp(QObject):
             self.say_main(text)
 
     def _return_pet_after_remind(self):
-        """提醒结束后走回提醒前的位置（用户拖拽过则不回位）。"""
+        """提醒结束后走回提醒前的位置（用户拖拽过则不回位）。
+
+        回位完成后才解除 rest_until（气泡期间宠物保持休息）。
+        """
         pet = self.main_pet
         if pet is None:
             return
         if getattr(pet, "remind_user_moved", False):
             log("[提醒] 用户拖拽过，取消回位")
             pet.remind_origin = None
+            self._release_remind_rest(pet)
             return
         origin = getattr(pet, "remind_origin", None)
         if not origin:
+            self._release_remind_rest(pet)
             return
         try:
             tx, ty = origin
@@ -2186,10 +2190,30 @@ class PetApp(QObject):
             if not pet._anim_enabled():
                 pet.move(int(tx), int(ty))
                 pet._clamp_into_work_area()
+                self._release_remind_rest(pet)
                 return
-            pet.remind_walk_to(int(tx), int(ty))
+            # 回位走动完成后解除 rest（用 on_done，而不是立刻清）
+            pet.remind_walk_to(int(tx), int(ty),
+                               on_done=lambda p=pet: self._release_remind_rest(p))
         except Exception as ex:
             log("[提醒] 回位失败: %s" % ex, logging.WARNING)
+            self._release_remind_rest(pet)
+
+    def _release_remind_rest(self, pet):
+        """解除提醒期间的休息锁（回位完成后调用）。"""
+        try:
+            if pet is None:
+                return
+            # 睡觉状态（rest 远大于现在）不要误清
+            now_ms = pet.t * TICK
+            if getattr(pet, "_idle_stage", "normal") == "sleep":
+                return
+            if pet.rest_until > now_ms + 30000:
+                return
+            pet.rest_until = 0
+            pet.update()
+        except Exception as ex:
+            log("[提醒] 解除休息失败: %s" % ex, logging.DEBUG)
 
     def _remind_reply(self, pool, key):
         """提醒回话：随机取一条，避免连续重复。"""
@@ -2213,7 +2237,11 @@ class PetApp(QObject):
             log("[提醒] 短气泡失败: %s" % ex, logging.DEBUG)
 
     def acknowledge_reminder(self, kind, todo_id=None, schedule_id=None):
-        """点「知道了」：计入今日完成数 + 清零忽略计数 + 冒一句短回话。"""
+        """点「知道了」：计入今日完成数 + 清零忽略计数 + 播回应动作 + 回位。
+
+        节奏：短回话 → 回应动作（没有素材则轻微蹦跳）→ 动作结束再回位。
+        rest_until 在回位完成后才解除（见 _return_pet_after_remind）。
+        """
         self._care_last_acked = True     # 已处理，不算忽略
         # 关心类：清零连续忽略计数 + 好感 +2（待办/日程不参与）
         try:
@@ -2228,13 +2256,66 @@ class PetApp(QObject):
             self._todo_mark_done(todo_id)
         if schedule_id:
             self._schedule_mark_done(schedule_id)
-        if self.main_pet is not None:
-            self.main_pet.hide_remind_bubble()
+        pet = self.main_pet
+        if pet is not None:
+            pet.hide_remind_bubble()
         # 1.5 秒短回话
         pool = REMIND_ACK_LINES.get(kind) or REMIND_ACK_LINES["water"]
         self._say_short(self._remind_reply(pool, kind))
-        self._return_pet_after_remind()
+        # 回应动作播完再回位；没素材就轻微蹦跳
+        self._ack_action_then_return(pet)
         log("[提醒] 已确认 %s" % kind)
+
+    def _ack_action_then_return(self, pet):
+        """点「知道了」后的回应动作，结束后再回位。"""
+        if pet is None:
+            self._return_pet_after_remind()
+            return
+        # 先停掉提醒动作（女仆舞循环）
+        try:
+            pet._stop_frame_anim()
+            pet._frame_loop = False
+        except Exception:
+            pass
+        # 回应动作：优先 happy_jump 帧动作，没有就轻微蹦跳
+        played = False
+        try:
+            if pet._start_frame_anim("happy_jump"):
+                played = True
+                pet._frame_loop = False
+                pet._frame_hold = False
+        except Exception:
+            played = False
+        if not played:
+            try:
+                pet.jump_t = 0.42          # 轻微蹦跳
+                pet._play_temp("happy", total=0.42)
+            except Exception:
+                pass
+        # 动作时长：帧动作按帧数/帧率估算，否则 0.45 秒
+        delay_ms = 450
+        try:
+            act = getattr(pet, "_frame_action", None) if played else None
+            if act:
+                frames = pet._frame_list(act) or []
+                spec = action_spec(act) or {}
+                fps = float(spec.get("fps") or 12.0)
+                if frames:
+                    delay_ms = int(min(1200, max(300,
+                                                len(frames) / max(1.0, fps) * 1000)))
+        except Exception:
+            pass
+
+        def _done():
+            try:
+                self._return_pet_after_remind()
+            except Exception as ex:
+                log("[提醒] 回应动作后回位失败: %s" % ex, logging.WARNING)
+
+        try:
+            QTimer.singleShot(delay_ms, _done)
+        except Exception:
+            _done()
 
     def snooze_reminder(self, kind, todo_id=None, schedule_id=None):
         """点「稍后再提醒」：N 分钟后再来一次（关心类冷却 ×2）。"""
@@ -2811,13 +2892,6 @@ class PetApp(QObject):
                 else:
                     self._fx_timer.stop()
                     self.stop_fx()
-            elif key == "balance_auto":
-                if on:
-                    cfg = self._balance_cfg()
-                    self._balance_timer.start(max(60, cfg["interval_min"] * 60) * 1000)
-                    self.query_balance(manual=False)
-                else:
-                    self._balance_timer.stop()
             elif key == "reminders":
                 if on:
                     self._reset_reminder_clock()
@@ -3035,6 +3109,7 @@ class PetApp(QObject):
 
     # ---------- 余额 ----------
     def _balance_cfg(self):
+        """余额配置：只保留查询范围与上次结果（auto / interval_min 已废弃）。"""
         b = self.cfg.get("balance")
         if not isinstance(b, dict):
             b = {}
@@ -3042,9 +3117,6 @@ class PetApp(QObject):
         if prov not in ("auto", "deepseek", "zhipu"):
             prov = "auto"
         return {
-            "auto": bool(b.get("auto", False)),
-            "interval_min": max(BALANCE_MIN_INTERVAL_MIN,
-                                int(b.get("interval_min", BALANCE_MIN_INTERVAL_MIN) or 0)),
             "last_value": b.get("last_value"),
             "last_time": b.get("last_time"),
             "provider": prov,
@@ -3078,12 +3150,23 @@ class PetApp(QObject):
         self.cfg["balance"] = b
         self.save_cfg()
 
-    def query_balance(self, manual=True):
-        """查询余额：**同时**查 DeepSeek 与智谱，两边都回来后一起播报。"""
+    def query_balance(self, manual=True, on_done=None):
+        """查询余额：按配置范围查 DeepSeek / 智谱，结果通过 on_done 回调。
+
+        只在用户主动触发时调用（托盘菜单 / 设置页「立即查询」），
+        启动时不查、不做后台轮询。
+
+        on_done(parts, ok_count, total) 在主线程回调：
+          parts     —— 形如 ["DeepSeek ¥18.40", "智谱 未配置"]
+          ok_count  —— 成功拿到金额的家数
+          total     —— 成功金额合计
+        """
         running = [w for w in self.balance_workers if w is not None and w.isRunning()]
         if running:
             if manual:
                 self.say_main("正在查余额，稍等一下…")
+            if callable(on_done):
+                on_done([], 0, 0.0)
             return
         # 收集要查的服务商（有 Key 的才查）
         targets = []
@@ -3094,31 +3177,35 @@ class PetApp(QObject):
             order = ("zhipu",)
         else:
             order = ("deepseek", "zhipu")   # 两家同时查
+        # DeepSeek 余额接口只对 api.deepseek.com 有效
+        _cb = (self.cfg.get("chat_base") or "").strip().lower()
+        _deepseek_ok = ("deepseek" in _cb) if _cb else True
         for prov in order:
+            if prov == "deepseek" and not _deepseek_ok:
+                continue
             key = self._balance_key(prov)
             if key:
                 targets.append((prov, key))
-        # DeepSeek 余额接口只对 api.deepseek.com 有效；
-        # 换了别家就跳过（不报错），只查智谱或给出说明。
-        _cb = (self.cfg.get("chat_base") or "").strip().lower()
-        _deepseek_ok = ("deepseek" in _cb) if _cb else True
-        if not _deepseek_ok:
-            targets = [(pv, k) for (pv, k) in targets if pv != "deepseek"]
-            log("[余额] 聊天地址非 DeepSeek（%s），跳过 DeepSeek 余额" % _cb)
-
 
         if not targets:
-            if not _deepseek_ok:
-                self.say_main("当前聊天服务商不支持查询余额哦~"
-                              "（只有 DeepSeek 和智谱能查）")
-            else:
-                self.say_main("还没设置 API Key：右键桌宠 →「设置 Key」"
-                              "（智谱 Key 在 设置 →「视觉」）")
+            if manual:
+                if not _deepseek_ok and scope == "deepseek":
+                    self.say_main("当前聊天服务商不支持查询余额哦~"
+                                  "（只有 DeepSeek 和智谱能查）")
+                else:
+                    self.say_main("还没设置 API Key：右键桌宠 →「设置…」→"
+                                  "「聊天」页的「聊天模型」分组"
+                                  "（智谱 Key 在「看屏幕 / 视觉」分组）")
+            if callable(on_done):
+                on_done([], 0, 0.0)
             return
 
         self.balance_workers = []
         self._balance_results = {}
         self._balance_pending = len(targets)
+        self._balance_on_done = on_done if callable(on_done) else None
+        self._balance_scope = scope
+        self._balance_deepseek_ok = _deepseek_ok
         for prov, key in targets:
             w = BalanceWorker(key, provider=prov)
             w.done.connect(lambda amt, meta, pv=prov: self._on_one_balance(pv, True, amt, meta))
@@ -3135,18 +3222,28 @@ class PetApp(QObject):
         self._report_balances()
 
     def _report_balances(self):
-        """把各家的余额合并成一条播报：只显示「模型 + 金额」。"""
+        """把各家的余额合并成一条播报：只显示「模型 + 金额」。
+
+        档位判断与档位专属动作已移除，这里只做文字播报 + 回调。
+        """
         results = self._balance_results or {}
         if not results:
             return
         parts = []
         total = 0.0
         got_any = False
+        scope = getattr(self, "_balance_scope", "auto")
+        deepseek_ok = getattr(self, "_balance_deepseek_ok", True)
         for prov in ("deepseek", "zhipu"):
+            label = "智谱" if prov == "zhipu" else "DeepSeek"
             if prov not in results:
+                # 该查没查（没 Key 或范围外）→ 未配置
+                if prov == "deepseek" and not deepseek_ok:
+                    continue
+                if scope in ("auto", prov):
+                    parts.append("%s 未配置" % label)
                 continue
             ok, amount, payload = results[prov]
-            label = "智谱" if prov == "zhipu" else "DeepSeek"
             if not ok:
                 parts.append("%s 查询失败" % label)
                 continue
@@ -3159,83 +3256,24 @@ class PetApp(QObject):
                     logging.WARNING)
             parts.append("%s ¥%.2f" % (label, amount))
 
+        if got_any:
+            self._save_balance_cfg({"last_value": float(total),
+                                    "last_time": time.time()})
+
+        cb = getattr(self, "_balance_on_done", None)
+        self._balance_on_done = None
+        if callable(cb):
+            try:
+                cb(parts, 1 if got_any else 0, total)
+            except Exception as ex:
+                log("[余额] 回调失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
+            return
+        # 无回调（托盘菜单触发）→ 走原来的气泡播报
         if not got_any:
-            self.say_main("余额查询失败：" + "；".join(parts))
+            self.say_main("余额查询失败：" + ("；".join(parts) if parts else "未配置 Key"))
             return
-
-        text = " / ".join(parts)
-        self._save_balance_cfg({"last_value": float(total),
-                                "last_time": time.time()})
-        self.say_main(text)
-        # 档位动画按合计判断
-        tier = self._balance_tier(total)
-        pet = self.main_pet
-        if pet is not None and tier is not None:
-            name = tier[2]
-            if name in ACTIONS:
-                pet._start_chain_action(name)
-            elif name in CLICK_RESPONSES:
-                pet._play_temp(name, total=CLICK_RESPONSES[name]["duration"], squash=True)
-            line = self._pick_line(tier[3], "balance_" + tier[1])
-            QTimer.singleShot(3200, lambda t=line: self.say_main(t))
-
-
-    def _balance_tier(self, amount):
-        """按已用百分比（满额按 ¥20 折算）分 6 档。"""
-        try:
-            amount = float(amount)
-        except Exception:
-            return None
-        full = self.cfg.get("balance_full", BALANCE_FULL)
-        try:
-            full = float(full)
-        except Exception:
-            full = BALANCE_FULL
-        if full <= 0:
-            full = BALANCE_FULL
-        used_pct = max(0.0, min(100.0, (full - amount) / full * 100.0))
-        # 照 dsh-pet：正好 100%（一分不剩）单独归到最后一档
-        if used_pct >= 99.999:
-            return BALANCE_TIERS[-1]
-        idx = int(used_pct // 20)
-        idx = max(0, min(len(BALANCE_TIERS) - 2, idx))
-        return BALANCE_TIERS[idx]
-
-    def set_balance_auto(self, on):
-        cfg = self._balance_cfg()
-        self._save_balance_cfg({"auto": bool(on),
-                                "interval_min": cfg["interval_min"]})
-        if on:
-            self._balance_timer.start(max(60, cfg["interval_min"] * 60) * 1000)
-            self.say_main("已开启自动查询余额（每 %d 分钟）" % cfg["interval_min"])
-            self.query_balance(manual=False)
-        else:
-            self._balance_timer.stop()
-            self.say_main("已关闭自动查询余额")
-
-    def set_balance_interval(self, mins):
-        mins = max(BALANCE_MIN_INTERVAL_MIN, int(mins))
-        self._save_balance_cfg({"interval_min": mins})
-        if self._balance_timer.isActive():
-            self._balance_timer.start(mins * 60 * 1000)
-        self.say_main("余额查询间隔改成 %d 分钟" % mins)
-
-    def _custom_balance_interval(self):
-        cfg = self._balance_cfg()
-        v, ok = QInputDialog.getInt(self.main_pet, "自动查询余额",
-                                    "间隔分钟（最少 %d）:" % BALANCE_MIN_INTERVAL_MIN,
-                                    cfg["interval_min"], BALANCE_MIN_INTERVAL_MIN, 1440, 5)
-        if ok:
-            self.set_balance_interval(v)
-
-    def _balance_tick(self):
-        cfg = self._balance_cfg()
-        if not cfg["auto"] or not self.is_enabled("balance_auto"):
-            return
-        last = cfg.get("last_time") or 0
-        if time.time() - float(last) < cfg["interval_min"] * 60:
-            return
-        self.query_balance(manual=False)
+        self.say_main(" / ".join(parts))
 
     # ---------- 时节特效 ----------
     def _fx_cfg(self):
@@ -3458,15 +3496,15 @@ class PetApp(QObject):
         self._festival_say()
 
     def _set_birthday_dialog(self):
-        cur = self.cfg.get("birthday", "")
-        text, ok = QInputDialog.getText(
-            self.main_pet, "设置生日",
-            "输入生日（如 1995-03-12，或只写 03-12）:",
-            QLineEdit.EchoMode.Normal, cur)
-        if ok:
-            self.cfg["birthday"] = text.strip()
-            self.save_cfg()
-            self.say_main("生日记住啦！到那天我会准时说生日快乐")
+        """设置生日：打开设置窗口「通用」页的页内编辑区（不再弹窗）。"""
+        try:
+            self.open_settings("general")
+            sw = self.settings_window
+            if sw is not None and not sw._birthday_editor.isVisible():
+                sw._toggle_birthday_editor()
+        except Exception as ex:
+            log("[设置] 打开生日编辑失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     # ---------- 截屏自动隐藏 ----------
     def apply_capture_exclude(self, pet=None):
@@ -3717,18 +3755,25 @@ class PetApp(QObject):
         self.memory_dialog.activateWindow()
 
     def _set_key_dialog(self):
-        key, ok = QInputDialog.getText(
-            self.main_pet,
-            "设置 DeepSeek Key",
-            "输入你的 API Key（从 platform.deepseek.com 获取）:",
-            QLineEdit.EchoMode.Normal,
-            self.cfg.get("ds_api_key", "")
-        )
-        if ok and key.strip():
-            self.cfg["ds_api_key"] = key.strip()
-            self.say_main("Key 设置成功！")
-        elif ok and not key.strip():
-            self.say_main("Key 不能为空")
+        """设置 Key：跳转到「聊天」页并展开「聊天模型」分组。
+
+        通用页的 Key 按钮已删除（聊天页「聊天模型」组里有完整的
+        Key / 地址 / 模型输入），所有入口统一改为跳转过去。
+        """
+        try:
+            self.open_settings("chat")
+            sw = self.settings_window
+            if sw is not None:
+                sec = getattr(sw, "_chat_section", None)
+                if sec is not None:
+                    sec.set_expanded(True)
+                try:
+                    sw.chat_key.setFocus(Qt.FocusReason.OtherFocusReason)
+                except Exception:
+                    pass
+        except Exception as ex:
+            log("[设置] 跳转聊天页 Key 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     # ---------- 看看屏幕 ----------
     def _foreground_title(self):
@@ -4058,9 +4103,11 @@ class PetApp(QObject):
         """
         base, key, model = self._vision_cfg()
         if not key:
-            return False, "还没填视觉 Key 呢，笨蛋主人——去「设置 → 视觉」填一个吧。"
+            return False, ("还没填视觉 Key 呢，笨蛋主人——去"
+                           "「设置 → 聊天 → 看屏幕 / 视觉」填一个吧。")
         if not base or not model:
-            return False, ("只有 Key 还不行哦，得在「设置 → 视觉」里"
+            return False, ("只有 Key 还不行哦，得在"
+                           "「设置 → 聊天 → 看屏幕 / 视觉」里"
                            "点一下「测试」，让我认出服务商和模型。")
         return True, ""
 
