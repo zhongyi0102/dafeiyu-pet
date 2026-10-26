@@ -1478,6 +1478,7 @@ class TimeDivider(QWidget):
 class ChatWindow(QWidget):
     _voice_ready = Signal(str, float, str, object)   # 语音文件就绪: path, 秒, 原文, 消息
     _cover_ready = Signal(str, str, str, str)        # 翻唱完成: 路径, 歌名, 歌手, 错误
+    _vision_tool_done = Signal(bool, str, str)         # 视觉工具完成: 成功, 文字, 附图路径
     _cover_progress = Signal(str)                    # 翻唱进度文本
     """聊天窗口：多会话（sessions）+ 气泡列表 + 流式回复；请求/摘要/缓存逻辑沿用原实现。
 
@@ -1491,6 +1492,7 @@ class ChatWindow(QWidget):
         try:
             self._voice_ready.connect(self._on_voice_ready)
             self._cover_ready.connect(self._on_cover_ready)
+            self._vision_tool_done.connect(self._on_vision_tool_done)
             self._cover_progress.connect(self._on_cover_progress)
         except Exception:
             pass
@@ -2765,6 +2767,45 @@ class ChatWindow(QWidget):
         return super().eventFilter(obj, event)
 
     # ---------- 发送 / 停止 ----------
+    def _run_vision_tool_async(self, intent, target=""):
+        """后台执行视觉工具，结果写回当前会话。"""
+        import threading
+        self.busy = True
+        self._update_busy_ui()
+        self._add_notice("🔍 处理中…")
+
+        def work():
+            try:
+                okk, msg, path = self.pet.run_vision_tool(intent, target)
+            except Exception as ex:
+                okk, msg, path = False, "出错了：%s" % str(ex)[:60], ""
+            try:
+                self._vision_tool_done.emit(bool(okk), str(msg or ""),
+                                            str(path or ""))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_vision_tool_done(self, okk, msg, path):
+        """主线程：把视觉工具结果写进聊天。"""
+        try:
+            self._finish_busy()
+            if okk and msg:
+                self.append_external("assistant", msg,
+                                     image_path=(path or None))
+                # 桌宠也说一句
+                try:
+                    self.pet.say_main(self._first_sentence(msg))
+                except Exception:
+                    pass
+            else:
+                self.append_external("assistant", msg or "没做成……")
+        except Exception as ex:
+            log("[视觉工具] 结果写回失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            self._finish_busy()
+
     @staticmethod
     def _extract_memory(text):
         """识别「记住:xxx」「记住 xxx」这种指令，返回要记住的内容"""
@@ -2823,6 +2864,17 @@ class ChatWindow(QWidget):
         if mem_text:
             self.pet.memory.add(mem_text)
             self._add_notice("✅ 已记住：" + mem_text)
+
+        # 视觉工具意图（找元素/列元素/主色/对比/长图OCR/抠图）
+        # 本地关键词识别，命中才触发，不命中继续走普通聊天
+        try:
+            from petcore import vision_intent as _VI
+            _vi, _vt = _VI.detect_intent(text)
+        except Exception:
+            _vi, _vt = "", ""
+        if _vi:
+            self._run_vision_tool_async(_vi, _vt)
+            return
 
         self.busy = True
         self._stop_seen = False

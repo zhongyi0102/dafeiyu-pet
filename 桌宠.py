@@ -3500,6 +3500,179 @@ class PetApp(QObject):
         return self._chat_cfg()
 
 
+    # ---------- 视觉工具（对应 dsh-vision-toolkit）----------
+
+    def _vision_tool_shot(self, max_age=600):
+        """取最近一次截图；没有或太旧就现场截一张。"""
+        try:
+            pil = getattr(self, "_last_shot_pil", None)
+            ts = float(getattr(self, "_last_shot_ts", 0) or 0)
+            if pil is not None and (time.time() - ts) <= max_age:
+                return pil
+        except Exception:
+            pass
+        try:
+            from PySide6.QtWidgets import QApplication
+            scr = QApplication.primaryScreen()
+            if scr is None:
+                return None
+            from PIL import Image as _PILImage
+            img = scr.grabWindow(0).toImage()
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            img.save(buf, "PNG")
+            raw_png = bytes(buf.data())
+            buf.close()
+            pil = _PILImage.open(io.BytesIO(raw_png)).convert("RGB")
+            self._last_shot_pil = pil.copy()
+            self._last_shot_ts = time.time()
+            return pil
+        except Exception as ex:
+            log("[视觉工具] 截图失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return None
+
+    def _vision_tool_call(self):
+        """构造一个 vision_call（复用现有视觉配置）。返回 None 表示不可用。"""
+        try:
+            base, key, model = self._vision_cfg()
+            if not (base and key and model):
+                return None
+            _side, _quality, _timeout = self._vision_limits()
+            _suffix, vis_tokens = self._vision_style_cfg()
+
+            def call(messages):
+                payload = {"model": model, "messages": messages,
+                           "max_tokens": vis_tokens, "temperature": 0.1}
+                r = requests.post(
+                    vision_join(base, "chat/completions"),
+                    headers={"Authorization": "Bearer " + key,
+                             "Content-Type": "application/json"},
+                    json=payload, timeout=_timeout)
+                if r.status_code != 200:
+                    raise RuntimeError(
+                        _http_error_message(r.status_code, r.text,
+                                            kind="vision"))
+                d = r.json()
+                ch = (d.get("choices") or [{}])[0]
+                return ((ch.get("message") or {}).get("content") or "").strip()
+            return call
+        except Exception as ex:
+            log("[视觉工具] 构造 vision_call 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return None
+
+    def run_vision_tool(self, intent, target=""):
+        """执行一个视觉工具。返回 (成功, 文字, 附图路径或空)。
+
+        只做计算，UI 交给调用方（可在后台线程调用）。
+        """
+        try:
+            from petcore import vision_tools as VT
+            from petcore import vision_locate as VL
+        except Exception as ex:
+            return False, "视觉工具不可用：%s" % ex, ""
+
+        pil = self._vision_tool_shot()
+        if pil is None:
+            return False, "拿不到屏幕截图呢……", ""
+
+        out_dir = os.path.join(APP_DIR, "vision_out")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            out_dir = APP_DIR
+
+        try:
+            if intent == "colors":
+                cols = VT.dominant_colors(pil, top=8)
+                if not cols:
+                    return False, "没看出什么颜色。", ""
+                lines = ["这块区域的主色："]
+                for c in cols[:6]:
+                    lines.append("  %s  占 %.0f%%" % (c["hex"],
+                                                     c["ratio"] * 100))
+                return True, chr(10).join(lines), ""
+
+            if intent == "diff":
+                other = getattr(self, "_prev_shot_pil", None)
+                if other is None:
+                    self._prev_shot_pil = pil.copy()
+                    return False, "这是第一张，再截一张我才能对比。", ""
+                hp = os.path.join(out_dir, "diff_%d.png" % int(time.time()))
+                r = VT.pixel_diff(other, pil, heatmap_path=hp)
+                self._prev_shot_pil = pil.copy()
+                txt = "两张图有 %.1f%% 的像素不一样。" % (r["ratio"] * 100)
+                if r["regions"]:
+                    b = r["regions"][0]["box"]
+                    txt += (chr(10) + "最明显的区域在 (%d,%d)-(%d,%d)。"
+                            % (b[0], b[1], b[2], b[3]))
+                return True, txt, (r["heatmap"] or "")
+
+            if intent == "long_ocr":
+                r = VT.long_screenshot_ocr(pil, chunk_h=1200, overlap=100)
+                if not r["markdown"]:
+                    return False, "这张图里没读出文字。", ""
+                return True, ("读到了（%d 段）：" % r["count"]) + chr(10) \
+                    + r["markdown"][:1500], ""
+
+            if intent == "foreground":
+                p = os.path.join(out_dir, "cut_%d.png" % int(time.time()))
+                r = VT.extract_foreground(pil, tolerance=40, out_path=p)
+                if not r["path"]:
+                    return False, "抠图失败了……", ""
+                return True, "抠好了，去掉了 %.0f%% 的背景。" % (
+                    r["removed_ratio"] * 100), r["path"]
+
+            if intent in ("ground", "detect"):
+                vc = self._vision_tool_call()
+                if vc is None:
+                    return False, "视觉模型没配置好呢……", ""
+                if intent == "ground":
+                    if not target:
+                        return False, "要找什么呀？说清楚点。", ""
+                    r = VL.ground_element(pil, target, vc)
+                    if not r["found"]:
+                        msg = "没找到「%s」。" % target
+                        if r["err"]:
+                            msg += "（%s）" % r["err"]
+                        return False, msg, ""
+                    b = r["box"]
+                    p = os.path.join(out_dir, "box_%d.png" % int(time.time()))
+                    try:
+                        VL.draw_boxes(pil, [b]).save(p, "PNG")
+                    except Exception:
+                        p = ""
+                    txt = "找到了「%s」：(%d,%d)-(%d,%d)" % (
+                        target, b[0], b[1], b[2], b[3])
+                    if r["label"]:
+                        txt += chr(10) + "看起来是：%s" % r["label"]
+                    return True, txt, p
+                r = VL.detect_elements(pil, target or "按钮", vc)
+                els = r["elements"]
+                if not els:
+                    msg = "没找到%s。" % (target or "可点击的元素")
+                    if r["err"]:
+                        msg += "（%s）" % r["err"]
+                    return False, msg, ""
+                lines = ["找到 %d 个%s：" % (len(els), target or "元素")]
+                for e in els[:12]:
+                    b = e["box"]
+                    lines.append("  #%d %s (%d,%d)-(%d,%d)" % (
+                        e["id"], e["name"] or "未命名",
+                        b[0], b[1], b[2], b[3]))
+                p = os.path.join(out_dir, "det_%d.png" % int(time.time()))
+                try:
+                    VL.draw_boxes(pil, els).save(p, "PNG")
+                except Exception:
+                    p = ""
+                return True, chr(10).join(lines), p
+        except Exception as ex:
+            log("[视觉工具] %s 执行失败: %s: %s"
+                % (intent, type(ex).__name__, ex), logging.WARNING)
+            return False, "出错了：%s" % str(ex)[:60], ""
+        return False, "不认识的视觉任务。", ""
+
     def _vision_cfg(self):
         """视觉配置（独立于聊天 Key）：返回 (base_url, api_key, model_name)。
 
@@ -3812,6 +3985,12 @@ class PetApp(QObject):
             image = None
             from PIL import Image as _PILImage
             holder["pil"] = _PILImage.open(io.BytesIO(raw_png)).convert("RGB")
+            # 缓存最近一次截图，供视觉工具（定位/抠图/对比等）复用
+            try:
+                self._last_shot_pil = holder["pil"].copy()
+                self._last_shot_ts = time.time()
+            except Exception:
+                pass
             # 「把截图原图也存进聊天记录」开启时，落盘一份
             _ls_cfg = self.cfg.get("look_screen") or {}
             if _ls_cfg.get("save_shot"):
