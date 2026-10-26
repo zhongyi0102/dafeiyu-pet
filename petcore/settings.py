@@ -213,6 +213,9 @@ class SettingsWindow(QDialog):
         ("about", "关于"),
     ]
 
+    # 人设台词生成完成: 成功, 消息, 池数量
+    _persona_gen_done = Signal(bool, str, int)
+
     def __init__(self, app, page=None):
         super().__init__(app.main_pet)
         self.app = app
@@ -1569,6 +1572,14 @@ class SettingsWindow(QDialog):
         example_btn.setToolTip("填入示例人设文本，不自动保存")
         example_btn.clicked.connect(self._fill_example_persona)
         prow.addWidget(example_btn)
+        gen_btn = QPushButton("重新生成台词")
+        gen_btn.setToolTip("按当前人设重新生成固定台词池（耗 token）")
+        gen_btn.clicked.connect(self._regen_persona_lines)
+        prow.addWidget(gen_btn)
+        view_btn = QPushButton("查看/编辑台词")
+        view_btn.setToolTip("查看当前人设生成出的台词，可手动修改")
+        view_btn.clicked.connect(self._open_lines_dialog)
+        prow.addWidget(view_btn)
         prow.addStretch(1)
         self._persona_section.body_add_layout(prow)
 
@@ -3028,9 +3039,84 @@ class SettingsWindow(QDialog):
         else:
             self._persona_hint.setText("已清空人设：无风格，台词使用中性池。")
         self._refresh_persona_state()
+        try:
+            self._persona_gen_done.connect(self._on_persona_gen_done)
+        except Exception:
+            pass
         self.app.say_main("人设已保存")
         self._refresh_chat_hint()
         log("[聊天] 人设已更新（%d 字）" % len(text))
+        # 人设非空且已配 Key → 后台按人设生成台词池
+        if text:
+            self._generate_persona_lines(text)
+
+    def _generate_persona_lines(self, persona_text):
+        """后台按人设生成台词池，完成后写缓存并提示。"""
+        import threading
+        try:
+            from petcore import persona_lines as PL
+        except Exception as ex:
+            self._persona_hint.setText("生成失败：%s" % ex)
+            return
+        _b, _k, _m = self.app._chat_cfg()
+        if not (_b and _k and _m):
+            self._persona_hint.setText(
+                "已保存人设。未配置聊天 Key，台词暂用中性池。")
+            return
+
+        self._persona_hint.setText("正在按人设生成台词池…")
+        self.app.say_main("正在按人设生成台词…")
+
+        def progress(done, total, msg):
+            try:
+                self._persona_hint.setText("%s（%d/%d）" % (msg, done, total))
+            except Exception:
+                pass
+
+        def work():
+            okk, msg, n = PL.generate_all(
+                persona_text, (_b, _k, _m), APP_DIR, on_progress=progress)
+            try:
+                self._persona_gen_done.emit(bool(okk), str(msg), int(n))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_persona_gen_done(self, okk, msg, n):
+        """台词生成完成（主线程）。"""
+        try:
+            if okk:
+                self._persona_hint.setText(
+                    "已按人设生成 %d 个台词池。" % n)
+                self.app.say_main("台词已按人设生成")
+                log("[台词] 生成成功：%s" % msg)
+            else:
+                self._persona_hint.setText(
+                    "台词生成失败：%s（继续使用中性池）" % msg)
+                self.app.say_main("台词生成失败，先用中性池")
+                log("[台词] 生成失败：%s" % msg, logging.WARNING)
+        except Exception as ex:
+            log("[台词] 完成回调异常: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _regen_persona_lines(self):
+        """手动重新生成：用编辑框里的当前文本（不保存）。"""
+        text = (self.persona_edit.toPlainText() or "").strip()
+        if not text:
+            self._persona_hint.setText("人设为空，台词使用中性池，无需生成。")
+            return
+        self._generate_persona_lines(text)
+
+    def _open_lines_dialog(self):
+        """打开台词查看/编辑对话框。"""
+        try:
+            dlg = PersonaLinesDialog(self.app, self)
+            dlg.exec()
+        except Exception as ex:
+            log("[台词] 打开对话框失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            QMessageBox.warning(self, "台词", "打开失败：%s" % ex)
 
     def _fill_example_persona(self):
         """填入示例人设（不保存，用户自己决定是否保存）。"""
@@ -4138,3 +4224,126 @@ class SettingsWindow(QDialog):
             log("[设置] closeEvent 复位聊天识别失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
         super().closeEvent(e)
+
+class PersonaLinesDialog(QDialog):
+    """台词查看/编辑：按池列出当前人设生成出的台词，可手动修改。"""
+
+    def __init__(self, app, parent=None):
+        super().__init__(parent or app.main_pet)
+        self.app = app
+        self.setWindowTitle("台词查看 / 编辑")
+        self.resize(720, 560)
+        lay = QVBoxLayout(self)
+        tip = QLabel(
+            "这里显示当前人设已生成的台词池。人设为空或某池未生成时，"
+            "该池使用中性台词。修改后点「保存修改」写入缓存。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#777;font-size:11px;")
+        lay.addWidget(tip)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("台词池"))
+        self.pool_box = QComboBox()
+        self.pool_box.currentTextChanged.connect(self._load_pool)
+        row.addWidget(self.pool_box, 1)
+        lay.addLayout(row)
+
+        self.edit = QTextEdit()
+        self.edit.setStyleSheet(
+            "QTextEdit{background:#fff;border:1px solid #dfe3ec;"
+            "border-radius:8px;padding:8px;font-family:'Microsoft YaHei UI';"
+            "font-size:12px;}")
+        lay.addWidget(self.edit, 1)
+
+        btn_row = QHBoxLayout()
+        save = QPushButton("保存修改")
+        save.clicked.connect(self._save_pool)
+        btn_row.addWidget(save)
+        reset = QPushButton("该池恢复中性")
+        reset.clicked.connect(self._reset_pool)
+        btn_row.addWidget(reset)
+        btn_row.addStretch(1)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.accept)
+        btn_row.addWidget(close)
+        lay.addLayout(btn_row)
+
+        self._fill_pools()
+
+    def _persona(self):
+        try:
+            from petcore.consts import persona_from_cfg
+            return persona_from_cfg(self.app.cfg)
+        except Exception:
+            return ""
+
+    def _fill_pools(self):
+        try:
+            from petcore import persona_lines as PL
+            self.pool_box.clear()
+            names = sorted(PL.POOL_SPECS.keys())
+            self.pool_box.addItems(names)
+        except Exception as ex:
+            log("[台词] 载入池列表失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _load_pool(self, name):
+        if not name:
+            return
+        try:
+            from petcore import persona_lines as PL
+            p = self._persona()
+            pools = PL.get_persona_pools(APP_DIR, p) if p else {}
+            lines = pools.get(name)
+            if not isinstance(lines, list) or not lines:
+                from petcore.consts import neutral_pool
+                lines = neutral_pool(name)
+                self.edit.setPlaceholderText(
+                    "（该池尚未按人设生成，当前显示中性台词）")
+            else:
+                self.edit.setPlaceholderText("")
+            self.edit.setPlainText("\n".join(lines))
+        except Exception as ex:
+            log("[台词] 载入池失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _save_pool(self):
+        name = self.pool_box.currentText()
+        if not name:
+            return
+        p = self._persona()
+        if not p:
+            QMessageBox.information(
+                self, "台词", "人设为空，台词固定使用中性池，无需保存。")
+            return
+        try:
+            from petcore import persona_lines as PL
+            raw_lines = (self.edit.toPlainText() or "").split("\n")
+            okk, why, clean = PL.validate_pool(name, raw_lines, min_count=1)
+            if not clean:
+                QMessageBox.warning(self, "台词", "没有合格台词：%s" % why)
+                return
+            pools = PL.get_persona_pools(APP_DIR, p)
+            pools[name] = clean
+            PL.save_persona_pools(APP_DIR, p, pools)
+            QMessageBox.information(
+                self, "台词", "已保存 %d 句（原 %d 句，已过滤不合规的）。"
+                % (len(clean), len(raw_lines)))
+        except Exception as ex:
+            QMessageBox.warning(self, "台词", "保存失败：%s" % ex)
+
+    def _reset_pool(self):
+        name = self.pool_box.currentText()
+        p = self._persona()
+        if not name or not p:
+            return
+        try:
+            from petcore import persona_lines as PL
+            pools = PL.get_persona_pools(APP_DIR, p)
+            pools.pop(name, None)
+            PL.save_persona_pools(APP_DIR, p, pools)
+            self._load_pool(name)
+            QMessageBox.information(self, "台词", "已恢复该池为中性台词。")
+        except Exception as ex:
+            QMessageBox.warning(self, "台词", "恢复失败：%s" % ex)
+

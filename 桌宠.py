@@ -1692,7 +1692,11 @@ class PetApp(QObject):
                 self.memory.mark_revisited(m.get("id"))
                 log("[记忆] 记忆 #%s 抽不出事件名，跳过回访" % m.get("id"))
                 return
-            line = self._pick_line(pool, "revisit").replace("{what}", what)
+            line = self._pick_line(
+                pool, "revisit",
+                pool_name=("REVISIT_TODAY_LINES" if delta == 0
+                           else "REVISIT_YESTERDAY_LINES"),
+            ).replace("{what}", what)
             # 写进最近活跃的会话（不依赖当前显示）
             self._care_revisit_say(line, m)
         except Exception as ex:
@@ -1981,7 +1985,8 @@ class PetApp(QObject):
 
         if text is None:
             pool = REMIND_LINES.get(kind) or ["该休息一下了。"]
-            text = self._pick_line(pool, "remind_" + kind)
+            text = self._pick_line(pool, "remind_" + kind,
+                                   pool_name="%s_LINES" % kind.upper())
         icon = icon or REMIND_ICONS.get(kind, REMIND_ICON_CLOCK)
         log("[提醒] %s -> %s" % (REMINDERS.get(kind, kind), text))
 
@@ -2244,7 +2249,8 @@ class PetApp(QObject):
                 continue
             body = (t.get("text") or "待办时间到").strip()
             # 待办用固定模板 + 内容替换，保证语气统一
-            tmpl = self._pick_line(TODO_LINES, "remind_todo")
+            tmpl = self._pick_line(TODO_LINES, "remind_todo",
+                                   pool_name="TODO_LINES")
             self._fire_reminder("todo", text=tmpl.replace("{content}", body),
                                 icon=REMIND_ICONS["todo"], todo_id=t.get("id"))
             # 一次性待办：标记完成；重复类：顺延到下一次
@@ -2412,20 +2418,56 @@ class PetApp(QObject):
         return True
 
     def _aff_pick(self, kind):
-        """按当前好感度区间取台词池；引擎不可用时退回 normal。"""
+        """按好感度区间取台词池：人设缓存 → 中性池 → 内置傲娇池。"""
         try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
             v = self._care.affection if self._care is not None else 50
+            tier = ("cold" if v <= 30 else ("normal" if v <= 60 else "clingy"))
+            lines = PL.get_affection_pool(
+                kind, persona_from_cfg(self.cfg), tier, APP_DIR)
+            if lines:
+                return lines
             return affection_lines(kind, v)
         except Exception:
             return affection_lines(kind, 50)
 
-    def _pick_line(self, pool, key):
-        """随机取台词，避开上一句（气泡显示的上一句 + 同类上一次）"""
+    def _persona_pool(self, pool_name, fallback=None):
+        """按池名取当前该用的台词池：人设缓存 → 中性池 → fallback。
+
+        pool_name 为空时直接用 fallback（旧调用方式）。
+        """
+        if not pool_name:
+            return list(fallback or [])
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            lines = PL.get_pool(pool_name, persona_from_cfg(self.cfg), APP_DIR)
+            if lines:
+                return lines
+        except Exception as ex:
+            log("[台词] 取池 %s 失败: %s: %s"
+                % (pool_name, type(ex).__name__, ex), logging.DEBUG)
+        return list(fallback or [])
+
+    def _pick_line(self, pool, key, pool_name=""):
+        """随机取台词，避开上一句（气泡显示的上一句 + 同类上一次）。
+
+        pool_name 非空时优先用「人设缓存 → 中性池」的结果，
+        pool 作为最终兜底。
+        """
+        use = pool
+        if pool_name:
+            alt = self._persona_pool(pool_name, pool)
+            if alt:
+                use = alt
+        if not use:
+            return ""
         last = self._last_pick.get(key, "")
         last_line = self.main_pet.last_line if self.main_pet is not None else ""
-        cands = [x for x in pool if x != last_line and x != last]
+        cands = [x for x in use if x != last_line and x != last]
         if not cands:
-            cands = [x for x in pool if x != last_line] or list(pool)
+            cands = [x for x in use if x != last_line] or list(use)
         pick = random.choice(cands)
         self._last_pick[key] = pick
         return pick
@@ -2480,13 +2522,16 @@ class PetApp(QObject):
             g["rps_win"] = int(g.get("rps_win", 0)) + 1
         self.save_cfg()
         if player_win:
-            text = self._pick_line(RPS_LOSE_LINES, "rps_lose")
+            text = self._pick_line(RPS_LOSE_LINES, "rps_lose",
+                               pool_name="RPS_LOSE_LINES")
             result = "你赢了"
         elif pet_win:
-            text = self._pick_line(RPS_WIN_LINES, "rps_win")
+            text = self._pick_line(RPS_WIN_LINES, "rps_win",
+                               pool_name="RPS_WIN_LINES")
             result = "我赢了"
         else:
-            text = self._pick_line(RPS_TIE_LINES, "rps_tie")
+            text = self._pick_line(RPS_TIE_LINES, "rps_tie",
+                               pool_name="RPS_TIE_LINES")
             result = "平局"
         self.rps_panel.result.setText(
             f"你出 {RPS_EMOJI[choice]}{choice}，我出 {RPS_EMOJI[pet_pick]}{pet_pick} → {result}\n"
