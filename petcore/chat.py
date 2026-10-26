@@ -546,12 +546,11 @@ def _wav_duration(path):
 
 
 def _fmt_time(ts):
-    """时间戳 → 显示文本。
+    """时间戳 → 显示文本（三档）。
 
     今天 → 「14:32」
     昨天 → 「昨天 14:32」
-    今年 → 「10月20日 14:32」
-    更早 → 「2025年10月20日 14:32」
+    更早 → 「10月20日 14:32」
     """
     import datetime
     try:
@@ -566,13 +565,42 @@ def _fmt_time(ts):
         return hm
     if d == today - datetime.timedelta(days=1):
         return "昨天 " + hm
-    if d.year == today.year:
-        return "%d月%d日 %s" % (dt.month, dt.day, hm)
-    return "%d年%d月%d日 %s" % (dt.year, dt.month, dt.day, hm)
+    return "%d月%d日 %s" % (dt.month, dt.day, hm)
 
 
 # 相邻两条消息间隔超过这个秒数才插时间分隔线
 TIME_GAP_SEC = 300
+
+# 主动搭话占位符（历史里保留，界面不渲染为用户气泡）
+PROACTIVE_PLACEHOLDERS = ("[主动搭话]", "[主动打招呼]",
+                          "[宠物主动搭话]")
+
+
+def _is_proactive_placeholder(text):
+    """该用户消息是否是主动搭话占位符。"""
+    t = (text or "").strip()
+    return t in PROACTIVE_PLACEHOLDERS
+
+
+def _proactive_label_text(text):
+    """占位符 → 气泡上的小灰标签文字。"""
+    t = (text or "").strip()
+    if t == "[主动打招呼]":
+        return "主动打招呼"
+    return "主动搭话"
+
+
+def _fmt_size(n):
+    """字节数 → 人类可读。"""
+    try:
+        n = float(n or 0)
+    except Exception:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("%.0f %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+    return "%.1f GB" % n
 
 
 def _needs_time_divider(prev_ts, cur_ts):
@@ -595,9 +623,10 @@ class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
     def __init__(self, role, text="", image_path=None, voice_path=None,
-                 voice_sec=0.0, ts=None, voice_text=""):
+                 voice_sec=0.0, ts=None, voice_text="", attachments=None):
         super().__init__()
         self.role = role
+        self.attachments = list(attachments or [])
         self.setObjectName("Bubble")
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Minimum)
         self.label = QLabel()
@@ -613,6 +642,23 @@ class ChatBubble(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*CHAT_BUBBLE_PAD)
         lay.setSpacing(0)
+        # 顶部小灰标签（主动搭话等），默认隐藏
+        self.head_tag = QLabel("")
+        self.head_tag.setStyleSheet(
+            "color:#a8aebb;font-size:10px;background:#f2f4f8;"
+            "border-radius:4px;padding:1px 6px;")
+        self.head_tag.setSizePolicy(QSizePolicy.Policy.Maximum,
+                                    QSizePolicy.Policy.Fixed)
+        self.head_tag.hide()
+        lay.addWidget(self.head_tag)
+        # 附件缩略条（图片 2×2 / 文本文件名卡片），在文字上方
+        if self.attachments:
+            try:
+                lay.addWidget(self._build_attachments())
+                lay.addSpacing(6)
+            except Exception as ex:
+                log("[聊天] 附件渲染失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
         # 截图缩略图（可选）：放在文字上方，点击放大
         self.image_label = None
         if image_path:
@@ -869,6 +915,75 @@ class ChatBubble(QFrame):
         except Exception as ex:
             log("[聊天] 语音卡片主题刷新失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
+
+    def _build_attachments(self):
+        """附件区：图片 2×2 排布（最多 4 张）+ 文本文件名卡片。"""
+        from PySide6.QtWidgets import QGridLayout
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        imgs = [a for a in self.attachments if a.get("kind") == "image"]
+        files = [a for a in self.attachments if a.get("kind") == "text"]
+
+        if imgs:
+            grid = QGridLayout()
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(4)
+            for i, a in enumerate(imgs[:4]):
+                p = a.get("thumb") or a.get("path") or ""
+                cell = QLabel()
+                pm = QPixmap(p) if p else QPixmap()
+                if not pm.isNull():
+                    cell.setPixmap(pm.scaled(
+                        120, 120, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+                else:
+                    cell.setText("图片")
+                    cell.setStyleSheet("color:#a8aebb;font-size:11px;")
+                cell.setCursor(Qt.CursorShape.PointingHandCursor)
+                cell.setToolTip("点击查看大图")
+                cell.setStyleSheet(
+                    "border-radius:6px;border:1px solid #dfe3ec;padding:2px;")
+                full = a.get("path") or p
+                cell.mousePressEvent = (
+                    lambda e, fp=full: self._show_full_image(fp))
+                grid.addWidget(cell, i // 2, i % 2)
+            v.addLayout(grid)
+
+        for a in files:
+            name = a.get("name") or "文件"
+            size = int(a.get("size") or 0)
+            card = QLabel("📄 %s　%s" % (name, _fmt_size(size)))
+            card.setStyleSheet(
+                "color:#5a6070;font-size:11px;background:#f5f7fb;"
+                "border-radius:6px;padding:6px 8px;")
+            card.setToolTip(name)
+            v.addWidget(card)
+        return box
+
+    def _show_full_image(self, path):
+        """弹出大图预览（由 ChatWindow 实现；这里兜底）。"""
+        try:
+            w = self.window()
+            if hasattr(w, "_show_full_image"):
+                w._show_full_image(path)
+        except Exception:
+            pass
+
+    def set_head_tag(self, text):
+        """在气泡顶部显示一个小灰标签（如「主动搭话」）。"""
+        try:
+            t = (text or "").strip()
+            if t:
+                self.head_tag.setText(t)
+                self.head_tag.show()
+            else:
+                self.head_tag.setText("")
+                self.head_tag.hide()
+        except Exception:
+            pass
 
     def set_text(self, text):
         self._plain = text or ""
@@ -1504,6 +1619,104 @@ class WaveBar(QWidget):
         p.end()
 
 
+class ColorSwatchRow(QWidget):
+    """主色卡片的一行：色块 + 色号 + 占比横条 + 百分比。点击复制色号。"""
+
+    def __init__(self, hex_color, ratio, parent=None):
+        super().__init__(parent)
+        self._hex = hex_color or "#000000"
+        self._copied = False
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 2, 0, 2)
+        h.setSpacing(8)
+
+        sw = QLabel()
+        sw.setFixedSize(22, 22)
+        sw.setStyleSheet(
+            "background:%s;border-radius:4px;border:1px solid #dfe3ec;"
+            % self._hex)
+        h.addWidget(sw)
+
+        self.code = QLabel(self._hex.upper())
+        self.code.setFixedWidth(80)
+        self.code.setStyleSheet(
+            "color:#2f3542;font-size:11px;font-family:Consolas,monospace;")
+        h.addWidget(self.code)
+
+        bar = QWidget()
+        bar.setFixedHeight(8)
+        bar.setMinimumWidth(120)
+        pct = max(0.0, min(1.0, float(ratio or 0)))
+        bar.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 %s,stop:%.4f %s,stop:%.4f #eef0f5,stop:1 #eef0f5);"
+            "border-radius:4px;" % (self._hex, pct, self._hex, pct))
+        h.addWidget(bar, 1)
+
+        self.pct = QLabel("%.0f%%" % (pct * 100))
+        self.pct.setFixedWidth(44)
+        self.pct.setAlignment(Qt.AlignmentFlag.AlignRight
+                              | Qt.AlignmentFlag.AlignVCenter)
+        self.pct.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        h.addWidget(self.pct)
+
+        for w in (sw, self.code):
+            w.setCursor(Qt.CursorShape.PointingHandCursor)
+            w.setToolTip("点击复制色号")
+            w.mousePressEvent = lambda e: self._copy()
+
+    def _copy(self):
+        try:
+            QApplication.clipboard().setText(self._hex.upper())
+            self._show_copied()
+        except Exception:
+            pass
+
+    def _show_copied(self):
+        """复制后该行显示「已复制」1 秒。"""
+        try:
+            if self._copied:
+                return
+            self._copied = True
+            old = self.code.text()
+            self.code.setText("已复制")
+            self.code.setStyleSheet(
+                "color:#1a7f37;font-size:11px;")
+
+            def _restore():
+                try:
+                    self.code.setText(old)
+                    self.code.setStyleSheet(
+                        "color:#2f3542;font-size:11px;"
+                        "font-family:Consolas,monospace;")
+                    self._copied = False
+                except Exception:
+                    pass
+
+            QTimer.singleShot(1000, _restore)
+        except Exception:
+            pass
+
+
+class ColorCard(QWidget):
+    """主色提取结果卡片：标题 + 每行一个色块。"""
+
+    def __init__(self, colors, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        title = QLabel("页面主色")
+        title.setStyleSheet(
+            "color:#2f3542;font-size:12px;font-weight:bold;")
+        v.addWidget(title)
+        for c in (colors or [])[:8]:
+            try:
+                v.addWidget(ColorSwatchRow(c.get("hex"), c.get("ratio")))
+            except Exception:
+                continue
+
+
 class TimeDivider(QWidget):
     """时间分隔线：—— 今天 14:32 ——（居中灰字）。"""
 
@@ -1532,6 +1745,7 @@ class ChatWindow(QWidget):
     _cover_ready = Signal(str, str, str, str)        # 翻唱完成: 路径, 歌名, 歌手, 错误
     _vision_tool_done = Signal(bool, str, str)         # 视觉工具完成: 成功, 文字, 附图路径
     _cover_progress = Signal(str)                    # 翻唱进度文本
+    _vision_attach_done = Signal()                   # 附件图片视觉描述完成
     """聊天窗口：多会话（sessions）+ 气泡列表 + 流式回复；请求/摘要/缓存逻辑沿用原实现。
 
     self.pet 指向 PetApp（全局控制器），不是单只宠物。"""
@@ -1545,6 +1759,7 @@ class ChatWindow(QWidget):
             self._voice_ready.connect(self._on_voice_ready)
             self._cover_ready.connect(self._on_cover_ready)
             self._vision_tool_done.connect(self._on_vision_tool_done)
+            self._vision_attach_done.connect(self._on_vision_attach_done)
             self._cover_progress.connect(self._on_cover_progress)
         except Exception:
             pass
@@ -1713,7 +1928,7 @@ class ChatWindow(QWidget):
         self.input = QTextEdit(right)
         self.input.setObjectName("ChatInput")
         self.input.setPlaceholderText(
-            "输入消息… Enter 发送，Shift+Enter 换行（支持 Ctrl+C/V/X、右键菜单）")
+            "输入消息… Enter 发送 · Shift+Enter 换行 · 可粘贴或拖入图片")
         self.input.setAcceptRichText(False)
         # 复制粘贴等标准操作
         self.input.setUndoRedoEnabled(True)
@@ -1721,16 +1936,49 @@ class ChatWindow(QWidget):
         self.input.installEventFilter(self)
         self.input.textChanged.connect(self._autosize_input)
         self.input.setFixedHeight(CHAT_INPUT_MIN_H)
-        rlay.addWidget(self.input)
+        # 附件缩略条（有附件时才显示）
+        self._pending_atts = []
+        self.attach_bar = QWidget()
+        _ab = QHBoxLayout(self.attach_bar)
+        _ab.setContentsMargins(0, 0, 0, 0)
+        _ab.setSpacing(6)
+        _ab.addStretch(1)
+        self.attach_bar.hide()
+        rlay.addWidget(self.attach_bar)
+
+        # 输入行：附件按钮 + 输入框
+        _inrow = QHBoxLayout()
+        _inrow.setSpacing(6)
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setObjectName("SideSmallBtn")
+        self.attach_btn.setFixedSize(34, 34)
+        self.attach_btn.setToolTip("添加图片或文本文件")
+        self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.attach_btn.clicked.connect(self._pick_attachments)
+        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        _inrow.addWidget(self.input, 1)
+        rlay.addLayout(_inrow)
+
+        # 允许拖拽文件进窗口
+        self.setAcceptDrops(True)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
-        self.token_label = QLabel(self._usage_placeholder())
+        self.token_label = QLabel("")
         self.token_label.setObjectName("UsageLabel")
         self.token_label.setToolTip(self._usage_tooltip())
         self.token_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.token_label.setMinimumWidth(60)
+        self.token_label.setVisible(False)   # 没有用量数据时整行隐藏
         bottom.addWidget(self.token_label, 1)
+        # 删除当前对话（常驻，比藏在设置菜单里直观）
+        self.delete_chat_btn = QPushButton("删除对话")
+        self.delete_chat_btn.setObjectName("SideSmallBtn")
+        self.delete_chat_btn.setFixedWidth(76)
+        self.delete_chat_btn.setToolTip("删除当前对话（不可恢复）")
+        self.delete_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_chat_btn.clicked.connect(self._delete_current_session)
+        bottom.addWidget(self.delete_chat_btn, 0)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("SendBtn")
         self.send_btn.setDefault(True)
@@ -1888,6 +2136,12 @@ class ChatWindow(QWidget):
             0, min(self._mem_extracted_upto, len(self.messages)))
         self._mem_pending = 0
         self._render_limit = 50
+        # 切换/新建会话时清空待发送附件，避免串到别的对话里
+        try:
+            self._pending_atts = []
+            self._refresh_attach_bar()
+        except Exception:
+            pass
         return True
 
     def _after_load_cleanup(self):
@@ -2030,8 +2284,7 @@ class ChatWindow(QWidget):
         if not self._activate_session(sid):
             return
         self._render_current_session()
-        self.token_label.setText(self._usage_placeholder())
-        self.token_label.setToolTip(self._usage_tooltip())
+        self._set_usage_label("")
         # 切换时顺手清理多余空会话
         self._trim_empty_sessions()
         self._write_sessions()
@@ -2084,6 +2337,12 @@ class ChatWindow(QWidget):
         cur = self._current_session()
         # 当前会话没有任何消息 → 不新建，直接聚焦输入框
         if self._session_is_empty(cur):
+            # 待发送附件也不保留（用户点「新对话」就是要干净的开端）
+            try:
+                self._pending_atts = []
+                self._refresh_attach_bar()
+            except Exception:
+                pass
             self._render_current_session()
             self._refresh_combo()
             self._update_busy_ui()
@@ -2093,7 +2352,7 @@ class ChatWindow(QWidget):
         self.sessions.append(s)
         self._activate_session(s["id"])
         self._render_current_session()
-        self.token_label.setText(self._usage_placeholder())
+        self._set_usage_label("")
         self._write_sessions()
         self._refresh_combo()
         self._update_busy_ui()
@@ -2135,6 +2394,15 @@ class ChatWindow(QWidget):
         if ret != QMessageBox.StandardButton.Yes:
             return
         self.sessions = [x for x in self.sessions if x.get("id") != sid]
+        # 同时清理该会话的附件缩略图
+        try:
+            from petcore import chat_attach as CA
+            n = CA.delete_session_images(APP_DIR, sid)
+            if n:
+                log("[聊天] 已清理会话 %s 的 %d 个附件图片" % (sid, n))
+        except Exception as ex:
+            log("[聊天] 清理附件图片失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
         if not self.sessions:
             self.sessions = [self._make_session(self._next_default_title())]
             self._activate_session(self.sessions[0]["id"])
@@ -2142,7 +2410,7 @@ class ChatWindow(QWidget):
             recent = max(self.sessions, key=lambda x: x.get("updated") or "")
             self._activate_session(recent["id"])
         self._render_current_session()
-        self.token_label.setText(self._usage_placeholder())
+        self._set_usage_label("")
         self._write_sessions()
         self._refresh_combo()
         self._update_busy_ui()
@@ -2187,15 +2455,48 @@ class ChatWindow(QWidget):
             pass
 
     def _maybe_auto_title(self, text):
-        """新对话发第一条消息后，用第一句话前 15 字自动命名（默认名才生效）"""
+        """新对话发第一条消息后自动命名（默认名才生效）。
+
+        - 取第一条真实用户消息的前 12 个字（跳过主动搭话等占位符）
+        - 第一条是纯图片 → 「图片对话」
+        - 全是宠物主动消息 → 「主动搭话」
+        - 已有标题保持不变
+        """
         s = self._current_session()
         if s is None:
             return
-        if len(s.get("messages") or []) != 1:
-            return
         if not re.match(r"^新对话\s*\d*$", (s.get("title") or "").strip()):
             return
-        title = " ".join((text or "").split())[:15].strip()
+        msgs = s.get("messages") or []
+        # 找第一条真实用户消息（跳过占位符）
+        first_user = None
+        for m in msgs:
+            if m.get("role") != "user":
+                continue
+            if _is_proactive_placeholder(m.get("content")):
+                continue
+            first_user = m
+            break
+        if first_user is None:
+            # 没有真实用户消息：有宠物消息就是主动搭话
+            if any(m.get("role") == "assistant" for m in msgs):
+                s["title"] = "主动搭话"
+                s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                self._refresh_combo()
+            return
+        raw = " ".join((first_user.get("content") or "").split())
+        # 去掉附件标记，只看用户真正打的字
+        raw = re.sub(r"【附件[:：][^】]*】", "", raw).strip()
+        raw = re.sub(r"【用户发送了图片[:：][^】]*】", "", raw).strip()
+        has_img = bool(first_user.get("attachments")) or bool(
+            first_user.get("image"))
+        if not raw:
+            if has_img:
+                s["title"] = "图片对话"
+                s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                self._refresh_combo()
+            return
+        title = raw[:12].strip()
         if not title:
             return
         s["title"] = title
@@ -2240,6 +2541,14 @@ class ChatWindow(QWidget):
             self.clear_action.setEnabled(not busy)
             self.memory_btn.setEnabled(True)
             self._update_send_button()
+            # 删除对话：生成中禁用；空对话时禁用（没内容可删）
+            btn = getattr(self, "delete_chat_btn", None)
+            if btn is not None:
+                cur = self._current_session()
+                empty = self._session_is_empty(cur)
+                btn.setEnabled((not busy) and (not empty))
+                btn.setToolTip("当前对话是空的，无需删除" if empty
+                               else "删除当前对话（不可恢复）")
         except Exception:
             pass
 
@@ -2449,10 +2758,10 @@ class ChatWindow(QWidget):
         sb.setValue(sb.maximum())
 
     def _add_bubble(self, role, text, image_path=None, voice_path=None,
-                    voice_sec=0.0, ts=None, voice_text=""):
+                    voice_sec=0.0, ts=None, voice_text="", attachments=None):
         b = ChatBubble(role, text, image_path=image_path,
                        voice_path=voice_path, voice_sec=voice_sec, ts=ts,
-                       voice_text=voice_text)
+                       voice_text=voice_text, attachments=attachments)
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -2505,10 +2814,11 @@ class ChatWindow(QWidget):
                 logging.WARNING)
 
     def render_message(self, role, text, image_path=None, voice_path=None,
-                       voice_sec=0.0, ts=None, voice_text=""):
+                       voice_sec=0.0, ts=None, voice_text="", attachments=None):
         return self._add_bubble(role, text, image_path=image_path,
                                 voice_path=voice_path, voice_sec=voice_sec,
-                                ts=ts, voice_text=voice_text)
+                                ts=ts, voice_text=voice_text,
+                                attachments=attachments)
 
     def append_external_to_session(self, sid, role, text, notice=None,
                                    image_path=None, voice_path=None,
@@ -2645,18 +2955,37 @@ class ChatWindow(QWidget):
             self._relink_cover_songs()
         except Exception:
             pass
+        # 渲染时：跳过「[主动搭话]」占位用户消息（历史里保留，用于 API 角色交替），
+        # 紧随其后的宠物气泡顶部加一个小灰标签
+        _pro_label = ""
         for m in self.messages[self._render_from:]:
-            self.render_message(m.get("role", "assistant"),
-                                m.get("content", ""),
-                                image_path=m.get("image"),
-                                voice_path=m.get("voice"),
-                                voice_sec=m.get("voice_sec") or 0.0,
-                                voice_text=m.get("voice_text") or "",
-                                ts=m.get("ts"))
+            _role = m.get("role", "assistant")
+            _content = m.get("content", "")
+            if _role == "user" and _is_proactive_placeholder(_content):
+                _pro_label = _proactive_label_text(_content)
+                continue        # 不渲染占位气泡
+            _b = self.render_message(_role, _content,
+                                     image_path=m.get("image"),
+                                     voice_path=m.get("voice"),
+                                     voice_sec=m.get("voice_sec") or 0.0,
+                                     voice_text=m.get("voice_text") or "",
+                                     ts=m.get("ts"),
+                                     attachments=m.get("attachments"))
+            if _pro_label and _role == "assistant" and _b is not None:
+                try:
+                    _b.set_head_tag(_pro_label)
+                except Exception:
+                    pass
+                _pro_label = ""
         # 若翻唱任务仍在跑、且当前渲染的正是发起会话，补回状态气泡
         self._restore_cover_status()
         self._update_empty_state()
         self._scroll_bottom()
+        # 渲染新会话时同步刷新删除按钮可用性（空对话不可删）
+        try:
+            self._update_busy_ui()
+        except Exception:
+            pass
 
     def _relink_cover_songs(self):
         """把 cover_cache 里未被引用的翻唱成品挂回聊天历史。
@@ -2875,6 +3204,10 @@ class ChatWindow(QWidget):
                     return False  # Shift+Enter 换行，交给 QTextEdit
                 self._on_send_clicked()
                 return True
+            # Ctrl+V：剪贴板里有图片就先加附件，不把图片当文本粘贴
+            if key == Qt.Key.Key_V and (mods & Qt.KeyboardModifier.ControlModifier):
+                if self._paste_image_from_clipboard():
+                    return True
         return super().eventFilter(obj, event)
 
     # ---------- 发送 / 停止 ----------
@@ -2887,7 +3220,22 @@ class ChatWindow(QWidget):
 
         def work():
             try:
-                okk, msg, path = self.pet.run_vision_tool(intent, target)
+                self._vision_colors = None
+                if intent == "colors":
+                    # 主色：走卡片渲染，这里只取结构化数据
+                    try:
+                        from petcore import vision_tools as VT
+                        pil = self.pet._vision_tool_shot()
+                        cols = VT.dominant_colors(pil, top=8) if pil else []
+                        if cols:
+                            self._vision_colors = cols
+                            okk, msg, path = True, "", ""
+                        else:
+                            okk, msg, path = False, "没看出什么颜色。", ""
+                    except Exception as ex:
+                        okk, msg, path = False, "出错了：%s" % str(ex)[:60], ""
+                else:
+                    okk, msg, path = self.pet.run_vision_tool(intent, target)
             except Exception as ex:
                 okk, msg, path = False, "出错了：%s" % str(ex)[:60], ""
             try:
@@ -2903,6 +3251,12 @@ class ChatWindow(QWidget):
         try:
             self._finish_busy()
             if okk and msg:
+                # 主色提取：开场白 + 色块卡片
+                colors = getattr(self, "_vision_colors", None)
+                if colors:
+                    self._vision_colors = None
+                    self._append_color_card(colors)
+                    return
                 self.append_external("assistant", msg,
                                      image_path=(path or None))
                 # 桌宠也说一句
@@ -2917,6 +3271,61 @@ class ChatWindow(QWidget):
                 % (type(ex).__name__, ex), logging.WARNING)
             self._finish_busy()
 
+    def _tool_opener_line(self):
+        """工具结果卡片上方的开场白：人设缓存 → 中性池 → 内置。"""
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            lines = PL.get_pool("TOOL_RESULT_OPENERS",
+                                persona_from_cfg(self.pet.cfg), APP_DIR)
+            if lines:
+                return self.pet._pick_line(lines, "tool_opener",
+                                           pool_name="TOOL_RESULT_OPENERS")
+        except Exception:
+            pass
+        return "我看了一下，主要是这几种颜色。"
+
+    def _append_color_card(self, colors):
+        """写入「开场白 + 主色卡片」到当前会话。"""
+        sess = self._current_session()
+        if sess is None:
+            return
+        opener = self._tool_opener_line()
+        # 开场白作为 assistant 消息落盘（卡片本身不落盘，重开时用文字版）
+        text_lines = [opener, "", "页面主色："]
+        for c in (colors or [])[:8]:
+            text_lines.append("  %s  占 %.0f%%"
+                              % (c.get("hex", "").upper(),
+                                 float(c.get("ratio") or 0) * 100))
+        plain = chr(10).join(text_lines)
+
+        self.messages.append({"role": "assistant", "content": plain,
+                              "ts": time.time()})
+        sess["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.save_history()
+
+        # 界面：开场白气泡 + 卡片
+        self.render_message("assistant", opener, ts=time.time())
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addSpacing(CHAT_AVATAR_SIZE + 8)
+        card_box = QFrame()
+        card_box.setObjectName("Bubble")
+        cv = QVBoxLayout(card_box)
+        cv.setContentsMargins(*CHAT_BUBBLE_PAD)
+        cv.setSpacing(0)
+        cv.addWidget(ColorCard(colors))
+        h.addWidget(card_box)
+        h.addStretch(1)
+        self.msg_layout.insertWidget(self.msg_layout.count() - 1, wrap)
+        self._scroll_bottom()
+        try:
+            self.pet.say_main(opener)
+        except Exception:
+            pass
+
     @staticmethod
     def _extract_memory(text):
         """识别「记住:xxx」「记住 xxx」这种指令，返回要记住的内容"""
@@ -2930,6 +3339,296 @@ class ChatWindow(QWidget):
 
     def _add_notice(self, text):
         return self._add_bubble("note", text)
+
+    def _send_with_attachments(self, text, atts):
+        """带附件的发送流程（B2）。
+
+        1) 有图片且命中本地视觉工具 → 本地处理，不调模型
+        2) 有图片未命中 → 视觉模型描述 → 再交聊天模型
+        3) 文本文件 → 拼进用户消息，只调聊天模型
+        """
+        from petcore import chat_attach as CA
+        imgs = [a for a in atts if a.get("kind") == "image"]
+        texts = [a for a in atts if a.get("kind") == "text"]
+
+        # ---- 1) 图片 + 本地工具命中 ----
+        if imgs:
+            try:
+                from petcore import vision_intent as _VI
+                _vi, _vt = _VI.detect_intent(text)
+            except Exception:
+                _vi, _vt = "", ""
+            if _vi in ("colors", "diff", "long_ocr", "foreground"):
+                self._run_vision_tool_on_image(_vi, _vt, imgs[0]["src"], text)
+                return
+
+        # ---- 组装用户消息文本 ----
+        msg_text = text
+        for t in texts:
+            msg_text = (msg_text + "\n\n" if msg_text else "") + \
+                CA.format_text_attachment(t)
+
+        # ---- 3) 只有文本文件：直接走聊天模型 ----
+        if not imgs:
+            self.messages.append({"role": "user", "content": msg_text,
+                                  "ts": time.time()})
+            self._maybe_auto_title(msg_text)
+            self._turn_user_bubble = self.render_message(
+                "user", msg_text, attachments=texts)
+            self._turn_user_text = msg_text
+            self.save_history()
+            self._start_plain_chat(msg_text)
+            return
+
+        # ---- 2) 有图片：先视觉描述 ----
+        ok, base, vkey, vmodel = self._vision_ready()
+        if not ok:
+            self._add_notice("先在「聊天」页配置视觉模型")
+            self._finish_busy()
+            return
+
+        self.busy = True
+        self._update_busy_ui()
+        self.pet.chat_paused = True
+        self._set_usage_label("正在看图…")
+        self._show_typing()
+
+        import threading
+        sess = self._current_session()
+        sid = sess.get("id") if sess else "default"
+        ts = time.time()
+
+        def work():
+            descs = []
+            err = ""
+            try:
+                from petcore import chat_attach as CA2
+                from petcore.consts import LOOK_SCREEN_QUALITY_DEFAULT
+                _ls = self.pet.cfg.get("look_screen") or {}
+                side = int(_ls.get("max_side") or 1024)
+                qual = int(_ls.get("quality") or LOOK_SCREEN_QUALITY_DEFAULT)
+                stored = []
+                for i, a in enumerate(imgs[:CA2.MAX_IMAGES]):
+                    att = CA2.store_image(APP_DIR, sid, a["src"], ts, i,
+                                          max_side=side, quality=qual)
+                    stored.append(att)
+                    d, e = self._vision_describe(att["path"])
+                    if e:
+                        err = e
+                        break
+                    descs.append(d)
+                if not err:
+                    self._vision_attach_result = {
+                        "stored": stored, "descs": descs,
+                        "text": text, "texts": texts, "ts": ts}
+                else:
+                    self._vision_attach_result = {"error": err}
+            except Exception as ex:
+                self._vision_attach_result = {
+                    "error": "出错了：%s" % str(ex)[:60]}
+            try:
+                self._vision_attach_done.emit()
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _vision_ready(self):
+        """视觉模型是否可用。返回 (ok, base, key, model)。"""
+        try:
+            ls = self.pet.cfg.get("look_screen") or {}
+            base = (ls.get("vision_base") or "").strip()
+            key = (ls.get("vision_key") or "").strip()
+            model = (ls.get("vision_model") or "").strip()
+            return bool(base and key and model), base, key, model
+        except Exception:
+            return False, "", "", ""
+
+    def _vision_describe(self, img_path):
+        """调视觉模型描述一张图。返回 (描述, 错误码)。"""
+        ok, base, key, model = self._vision_ready()
+        if not ok:
+            return "", "nokey"
+        try:
+            import base64
+            import requests
+            from petcore.consts import (VISION_STYLE_DEFAULT,
+                                        vision_style_suffix,
+                                        LOOK_SCREEN_TIMEOUT_DEFAULT)
+            _ls = self.pet.cfg.get("look_screen") or {}
+            style = _ls.get("style") or VISION_STYLE_DEFAULT
+            suffix = vision_style_suffix(style)
+            sys_txt = (_ls.get("vision_system") or "").strip()
+            if not sys_txt:
+                from petcore.consts import VISION_SYSTEM_DEFAULT
+                sys_txt = VISION_SYSTEM_DEFAULT
+            if suffix:
+                sys_txt = sys_txt + "\n\n" + suffix
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": sys_txt},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "描述这张图片。"},
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/jpeg;base64," + b64}},
+                    ]},
+                ],
+                "max_tokens": int(_ls.get("max_tokens") or 800),
+                "temperature": 0.2,
+            }
+            timeout = int(_ls.get("timeout") or LOOK_SCREEN_TIMEOUT_DEFAULT)
+            r = requests.post(
+                (base or "").rstrip("/") + "/chat/completions",
+                headers={"Authorization": "Bearer " + key,
+                         "Content-Type": "application/json"},
+                json=payload, timeout=timeout)
+            if r.status_code in (401, 402, 403):
+                return "", "auth_rejected"
+            if r.status_code != 200:
+                return "", "failed"
+            txt = ((r.json().get("choices") or [{}])[0]
+                   .get("message", {}).get("content") or "").strip()
+            if not txt:
+                return "", "failed"
+            return txt, ""
+        except Exception as ex:
+            nm = type(ex).__name__.lower()
+            if "timeout" in nm:
+                return "", "timeout"
+            log("[附件] 视觉描述失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return "", "failed"
+
+    def _on_vision_attach_done(self):
+        """视觉描述完成（主线程）：拼进用户消息后走聊天模型。"""
+        from petcore import chat_attach as CA
+        res = getattr(self, "_vision_attach_result", None) or {}
+        self._vision_attach_result = None
+        self._hide_typing()
+
+        err = res.get("error")
+        if err:
+            self._finish_busy()
+            self._set_usage_label("")
+            if err == "nokey":
+                self._add_notice("先在「聊天」页配置视觉模型")
+            elif err == "timeout":
+                self._add_notice("看图超时了，稍后再试")
+            elif err == "auth_rejected":
+                self._add_notice("视觉模型服务拒绝请求，请检查 Key 或余额")
+            else:
+                self._add_notice("看图失败了，稍后再试")
+            return
+
+        stored = res.get("stored") or []
+        descs = res.get("descs") or []
+        text = res.get("text") or ""
+        texts = res.get("texts") or []
+        ts = res.get("ts") or time.time()
+
+        # 用户消息：原文 + 图片描述占位（历史里不重发图）
+        hist_parts = [text] if text else []
+        for d in descs:
+            hist_parts.append(CA.image_history_text(d))
+        for t in texts:
+            hist_parts.append(CA.format_text_attachment(t))
+        hist_text = "\n\n".join(hist_parts)
+
+        self.messages.append({
+            "role": "user", "content": hist_text, "ts": ts,
+            "attachments": [
+                {"kind": "image", "thumb": a.get("thumb"),
+                 "path": a.get("path"), "name": a.get("name"),
+                 "size": a.get("size"), "desc": d}
+                for a, d in zip(stored, descs)
+            ] + list(texts),
+        })
+        self._maybe_auto_title(text or hist_text)
+        # 气泡：显示缩略图 + 用户原文（描述不进气泡）
+        self._turn_user_bubble = self.render_message(
+            "user", text, attachments=[
+                {"kind": "image", "thumb": a.get("thumb"),
+                 "path": a.get("path"), "name": a.get("name")}
+                for a in stored] + list(texts))
+        self._turn_user_text = text
+        self.save_history()
+
+        # 交给聊天模型（历史里是描述文字，不重发图片）
+        self._start_plain_chat(hist_text, display_text=text)
+
+    def _start_plain_chat(self, send_text, display_text=None):
+        """走普通聊天流程（内部复用原有流式逻辑）。"""
+        self._mem_after_user_message(display_text or send_text)
+        try:
+            if getattr(self.pet, "_care", None) is not None:
+                self.pet._care.note_interaction()
+        except Exception:
+            pass
+        self.busy = True
+        self._stop_seen = False
+        self._update_busy_ui()
+        self.pet.chat_paused = True
+        self.current_text = ""
+        self.current_bubble = None
+        self._set_usage_label("本次　生成中…")
+        self._show_typing()
+        key = (self.pet.cfg.get("ds_api_key") or "").strip()
+        if not key:
+            self._on_failed(
+                "还没配置聊天 Key。去 设置 →「聊天」→「聊天模型」填一下就能对话了。")
+            return
+        if self._need_summary():
+            self._summarize_then_chat()
+        else:
+            self._start_chat_stream()
+
+    def _run_vision_tool_on_image(self, intent, target, img_path, text):
+        """对附件图片跑本地视觉工具（不调模型）。"""
+        import threading
+        self.busy = True
+        self._update_busy_ui()
+        self._add_notice("🔍 处理中…")
+        # 用户消息先落盘（带图）
+        self.messages.append({"role": "user", "content": text,
+                              "ts": time.time(),
+                              "attachments": [{"kind": "image",
+                                               "thumb": img_path,
+                                               "path": img_path,
+                                               "name": os.path.basename(img_path)}]})
+        self._maybe_auto_title(text)
+        self.render_message("user", text,
+                            attachments=[{"kind": "image",
+                                          "thumb": img_path,
+                                          "path": img_path}])
+        self.save_history()
+
+        def work():
+            try:
+                from petcore import vision_tools as VT
+                from PIL import Image
+                pil = Image.open(img_path).convert("RGB")
+                self._vision_colors = None
+                if intent == "colors":
+                    cols = VT.dominant_colors(pil, top=8)
+                    if cols:
+                        self._vision_colors = cols
+                        okk, msg, path = True, "", ""
+                    else:
+                        okk, msg, path = False, "没看出什么颜色。", ""
+                else:
+                    okk, msg, path = False, "这个工具暂不支持附件图片。", ""
+            except Exception as ex:
+                okk, msg, path = False, "出错了：%s" % str(ex)[:60], ""
+            try:
+                self._vision_tool_done.emit(bool(okk), str(msg or ""),
+                                            str(path or ""))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_send_clicked(self):
         if self.busy:
@@ -2948,11 +3647,223 @@ class ChatWindow(QWidget):
     def _usage_placeholder(self):
         return "输入 - · 输出 - · 缓存命中 -"
 
+    # ---------- 附件：添加 / 移除 / 渲染缩略条 ----------
+    def _pick_attachments(self):
+        """回形针按钮：选图片或文本文件。"""
+        from PySide6.QtWidgets import QFileDialog
+        try:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "添加附件", "",
+                "图片或文本 (*.png *.jpg *.jpeg *.webp *.bmp *.gif "
+                "*.txt *.md *.py *.json *.csv *.log);;所有文件 (*)")
+        except Exception as ex:
+            log("[附件] 打开文件对话框失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return
+        for p in (files or []):
+            self._add_attachment_path(p)
+
+    def _add_attachment_path(self, path):
+        """加一个附件（图片或文本）。返回是否加入。"""
+        from petcore import chat_attach as CA
+        try:
+            if not os.path.exists(path):
+                return False
+            if CA.is_image(path):
+                imgs = [a for a in self._pending_atts if a.get("kind") == "image"]
+                if len(imgs) >= CA.MAX_IMAGES:
+                    self._add_notice("一次最多 4 张图片")
+                    return False
+                self._pending_atts.append({
+                    "kind": "image", "src": path,
+                    "name": os.path.basename(path),
+                    "size": os.path.getsize(path),
+                    "thumb": path,       # 预览先用原图，发送时再生成缩略图
+                })
+                self._refresh_attach_bar()
+                return True
+            if CA.is_text_file(path):
+                att = CA.store_text(path)
+                if att.get("error"):
+                    self._add_notice("读不了这个文件：%s" % att["error"])
+                    return False
+                self._pending_atts.append(att)
+                self._refresh_attach_bar()
+                return True
+            self._add_notice("暂不支持该文件类型")
+            return False
+        except Exception as ex:
+            log("[附件] 添加失败: %s: %s" % (type(ex).__name__, ex),
+                logging.WARNING)
+            return False
+
+    def _remove_attachment(self, idx):
+        try:
+            if 0 <= idx < len(self._pending_atts):
+                self._pending_atts.pop(idx)
+            self._refresh_attach_bar()
+        except Exception:
+            pass
+
+    def _refresh_attach_bar(self):
+        """重绘附件缩略条。"""
+        try:
+            from petcore import chat_attach as CA
+            lay = self.attach_bar.layout()
+            while lay.count():
+                it = lay.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.deleteLater()
+            if not self._pending_atts:
+                self.attach_bar.hide()
+                return
+            for i, a in enumerate(self._pending_atts):
+                lay.addWidget(self._attach_chip(a, i), 0,
+                              Qt.AlignmentFlag.AlignVCenter)
+            lay.addStretch(1)
+            self.attach_bar.show()
+        except Exception as ex:
+            log("[附件] 刷新缩略条失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _attach_chip(self, att, idx):
+        """单个附件小卡片：缩略图/文件名 + 右上角 ×。"""
+        from petcore import chat_attach as CA
+        box = QFrame()
+        box.setStyleSheet(
+            "QFrame{background:#f5f7fb;border:1px solid #dfe3ec;"
+            "border-radius:6px;}")
+        h = QHBoxLayout(box)
+        h.setContentsMargins(6, 4, 4, 4)
+        h.setSpacing(6)
+        if att.get("kind") == "image":
+            lab = QLabel()
+            pm = QPixmap(att.get("thumb") or "")
+            if not pm.isNull():
+                lab.setPixmap(pm.scaled(
+                    40, 40, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            else:
+                lab.setText("🖼")
+            h.addWidget(lab)
+            txt = QLabel("图片")
+        else:
+            txt = QLabel("📄 %s" % (att.get("name") or "文件"))
+        txt.setStyleSheet("color:#5a6070;font-size:11px;")
+        txt.setMaximumWidth(180)
+        h.addWidget(txt)
+        x = QPushButton("×")
+        x.setFixedSize(18, 18)
+        x.setCursor(Qt.CursorShape.PointingHandCursor)
+        x.setStyleSheet(
+            "QPushButton{border:none;background:transparent;"
+            "color:#8a8f9c;font-size:13px;}")
+        x.clicked.connect(lambda _=False, i=idx: self._remove_attachment(i))
+        h.addWidget(x)
+        return box
+
+    def dragEnterEvent(self, e):
+        try:
+            if e.mimeData().hasUrls():
+                e.acceptProposedAction()
+                return
+        except Exception:
+            pass
+        super().dragEnterEvent(e)
+
+    def dropEvent(self, e):
+        """拖拽文件到聊天窗口。"""
+        try:
+            urls = e.mimeData().urls()
+            for u in (urls or []):
+                p = u.toLocalFile()
+                if p:
+                    self._add_attachment_path(p)
+            e.acceptProposedAction()
+        except Exception as ex:
+            log("[附件] 拖拽处理失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _paste_image_from_clipboard(self):
+        """Ctrl+V 时优先取剪贴板图片。返回是否取到。"""
+        try:
+            cb = QApplication.clipboard()
+            md = cb.mimeData()
+            if md is not None and md.hasImage():
+                img = cb.image()
+                if not img.isNull():
+                    import tempfile
+                    fd, tmp = tempfile.mkstemp(suffix=".png")
+                    os.close(fd)
+                    img.save(tmp, "PNG")
+                    self._add_attachment_path(tmp)
+                    return True
+        except Exception as ex:
+            log("[附件] 粘贴图片失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+        return False
+
+    def _ensure_image_privacy_ok(self):
+        """首次发图确认（只弹一次，勾选后记住）。"""
+        try:
+            if self.pet.cfg.get("chat_image_privacy_ok") is True:
+                return True
+        except Exception:
+            pass
+        try:
+            from PySide6.QtWidgets import QMessageBox, QCheckBox
+            box = QMessageBox(self)
+            box.setWindowTitle("发送图片")
+            box.setText("图片会发送给视觉模型服务商")
+            box.setIcon(QMessageBox.Icon.Information)
+            cb = QCheckBox("不再提示")
+            box.setCheckBox(cb)
+            box.setStandardButtons(QMessageBox.StandardButton.Ok
+                                   | QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(QMessageBox.StandardButton.Ok)
+            if box.exec() != QMessageBox.StandardButton.Ok:
+                return False
+            if cb.isChecked():
+                self.pet.cfg["chat_image_privacy_ok"] = True
+                self.pet.save_cfg()
+            return True
+        except Exception as ex:
+            log("[附件] 隐私确认失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return True
+
+    def _set_usage_label(self, line):
+        """用量行：没有数据时整行隐藏，有过带用量的回复后再显示。"""
+        try:
+            if not line:
+                self.token_label.setText("")
+                self.token_label.setVisible(False)
+                return
+            self.token_label.setText(line)
+            self.token_label.setToolTip(self._usage_tooltip())
+            self.token_label.setVisible(True)
+        except Exception:
+            pass
+
     def send_message(self):
         text = self.input.toPlainText().strip()
-        if not text or self.busy or self._current_session() is None:
+        atts = list(getattr(self, "_pending_atts", []) or [])
+        # 有附件时允许只发附件、不写字
+        if (not text and not atts) or self.busy or self._current_session() is None:
             return
+        # 有图片：首次确认一次
+        if any(a.get("kind") == "image" for a in atts):
+            if not self._ensure_image_privacy_ok():
+                return
         self.input.clear()
+        self._pending_atts = []
+        self._refresh_attach_bar()
+
+        if atts:
+            self._send_with_attachments(text, atts)
+            return
+
         self.messages.append({"role": "user", "content": text, "ts": time.time()})
         self._maybe_auto_title(text)
         self._turn_user_bubble = self.render_message("user", text)
@@ -2999,7 +3910,7 @@ class ChatWindow(QWidget):
         self.pet.chat_paused = True
         self.current_text = ""
         self.current_bubble = None
-        self.token_label.setText("本次　生成中…")
+        self._set_usage_label("本次　生成中…")
         self._show_typing()
 
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
@@ -3041,7 +3952,7 @@ class ChatWindow(QWidget):
             self._remove_bubble(self.current_bubble)
             self.current_bubble = None
         self.current_text = ""
-        self.token_label.setText(self._usage_placeholder())
+        self._set_usage_label("")
         self._finish_busy()
 
     # ---------- 生成中提示 ----------
@@ -3365,7 +4276,7 @@ class ChatWindow(QWidget):
         if cut <= self.summarized_upto:
             self._start_chat_stream()
             return
-        self.token_label.setText("正在整理前情摘要…")
+        self._set_usage_label("正在整理前情摘要…")
         _b2, _k3, _m2 = self.pet._chat_cfg()
         self.summary_worker = SummaryWorker(
             self.summary, old, key, base_url=_b2, model=_m2)
@@ -3400,7 +4311,7 @@ class ChatWindow(QWidget):
             except Exception:
                 self._on_done(_lyr, None)
             return
-        self.token_label.setText("本次　生成中…")
+        self._set_usage_label("本次　生成中…")
         _base, _key2, _model = self.pet._chat_cfg()
         self.worker = ChatWorker(
             messages, key,
@@ -3559,7 +4470,7 @@ class ChatWindow(QWidget):
     def _on_cover_progress(self, msg):
         """翻唱进度（主线程）：更新状态气泡 + 输入框上方提示。"""
         try:
-            self.token_label.setText(msg)
+            self._set_usage_label(msg)
         except Exception:
             pass
         self._update_cover_status(msg)
@@ -3695,7 +4606,7 @@ class ChatWindow(QWidget):
         self._pending_voice_text = ""
         self._pending_voice_usage = None
         try:
-            self.token_label.setText(self._usage_placeholder())
+            self._set_usage_label("")
         except Exception:
             pass
 
@@ -3880,7 +4791,7 @@ class ChatWindow(QWidget):
             self.current_bubble.set_text("⚠️ " + msg)
         self._rollback_user_turn()
         self._scroll_bottom()
-        self.token_label.setText(self._usage_placeholder())
+        self._set_usage_label("")
         self._finish_busy()
 
     def _finish_busy(self):
@@ -3924,11 +4835,10 @@ class ChatWindow(QWidget):
             if prompt or comp:
                 line = "输入 %d · 输出 %d · 缓存命中 %s" % (prompt, comp, rate)
             else:
-                line = self._usage_placeholder()
+                line = ""
         else:
-            line = self._usage_placeholder()
-        self.token_label.setText(line)
-        self.token_label.setToolTip(self._usage_tooltip())
+            line = ""
+        self._set_usage_label(line)
 
     @staticmethod
     def _first_sentence(text):
@@ -3964,8 +4874,7 @@ class ChatWindow(QWidget):
         self._hide_typing()
         self.save_history()
         self._render_current_session()
-        self.token_label.setText(self._usage_placeholder())
-        self.token_label.setToolTip(self._usage_tooltip())
+        self._set_usage_label("")
         self.input.clear()
 
 class MemoryDialog(QDialog):
