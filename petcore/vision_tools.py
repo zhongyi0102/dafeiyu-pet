@@ -181,3 +181,227 @@ def pixel_diff(img_a, img_b, threshold=16, grid=8, heatmap_path=None):
              % (type(ex).__name__, ex), logging.WARNING)
         return {"ratio": 0.0, "diff_pixels": 0, "total_pixels": 0,
                 "regions": [], "heatmap": None}
+
+
+# ===== 长截图 OCR =====
+
+def _find_cut_rows(img, start, end, band=60):
+    """在 [start, end) 里找「低内容」的横线位置（整行接近纯色）。
+
+    返回候选 y 列表，按「越接近纯色越靠前」排序。
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception:
+        return []
+    try:
+        w, h = img.size
+        y0 = max(0, int(start))
+        y1 = min(h, int(end))
+        if y1 - y0 < 4:
+            return []
+        strip = img.crop((0, y0, w, y1)).convert("L")
+        arr = np.asarray(strip, dtype=np.uint8)
+        # 每行的标准差：越小越「平」
+        std = arr.std(axis=1)
+        order = np.argsort(std)  # 从小到大
+        out = []
+        for idx in order[:max(1, (y1 - y0) // 20)]:
+            y = int(y0 + idx)
+            if y <= y0 or y >= y1:
+                continue
+            out.append((float(std[idx]), y))
+        out.sort()
+        return [y for _s, y in out[:8]]
+    except Exception:
+        return []
+
+
+def long_screenshot_ocr(img, chunk_h=1200, overlap=100, max_chars=4000,
+                        ocr_func=None):
+    """长截图分块 OCR。
+
+    img       PIL.Image
+    chunk_h   每块高度（像素）
+    overlap   相邻块重叠高度，避免切断文字
+    ocr_func  外部 OCR 函数，签名 func(img, max_chars=...) -> str
+              默认用 screen_vision.run_ocr
+
+    返回 {"markdown": 合并后的文本, "chunks": [{"box":[...], "chars":N}, ...],
+          "count": 块数}
+    """
+    try:
+        from PIL import Image
+    except Exception as ex:
+        _log("[视觉] PIL 不可用: %s" % ex, logging.WARNING)
+        return {"markdown": "", "chunks": [], "count": 0}
+
+    if ocr_func is None:
+        try:
+            from screen_vision import run_ocr as ocr_func  # noqa: F811
+        except Exception as ex:
+            _log("[视觉] OCR 不可用: %s" % ex, logging.WARNING)
+            return {"markdown": "", "chunks": [], "count": 0}
+
+    try:
+        im = img.convert("RGB")
+        w, h = im.size
+        if h <= chunk_h:
+            # 不够长，直接一次
+            txt = ""
+            try:
+                txt = ocr_func(im, max_chars=max_chars) or ""
+            except Exception as ex:
+                _log("[视觉] OCR 失败: %s" % ex, logging.DEBUG)
+            return {"markdown": txt.strip(),
+                    "chunks": [{"box": [0, 0, w, h], "chars": len(txt)}],
+                    "count": 1}
+
+        chunks = []
+        texts = []
+        y = 0
+        guard = 0
+        while y < h and guard < 200:
+            guard += 1
+            end = min(h, y + chunk_h)
+            # 尽量在低内容行切开
+            if end < h:
+                cands = _find_cut_rows(im, end - 80, min(h, end + 80))
+                if cands:
+                    end = cands[0]
+                    if end - y < chunk_h // 2:
+                        end = min(h, y + chunk_h)
+            box = (0, y, w, end)
+            piece = im.crop(box)
+            t = ""
+            try:
+                t = ocr_func(piece, max_chars=max_chars) or ""
+            except Exception as ex:
+                _log("[视觉] 分块 OCR 失败(y=%d): %s" % (y, ex), logging.DEBUG)
+            chunks.append({"box": [0, int(y), int(w), int(end)],
+                           "chars": len(t)})
+            texts.append(t.strip())
+            if end >= h:
+                break
+            # 下一块回退 overlap，避免切断
+            y = max(y + 1, end - overlap)
+
+        # 合并：去掉相邻块重复的尾部/头部行
+        merged = []
+        prev_lines = []
+        for t in texts:
+            lines = [ln for ln in t.split(chr(10)) if ln.strip()]
+            if not lines:
+                continue
+            # 去掉与上一块尾部重复的行
+            skip = 0
+            for k in range(min(len(prev_lines), len(lines)), 0, -1):
+                if prev_lines[-k:] == lines[:k]:
+                    skip = k
+                    break
+            merged.extend(lines[skip:])
+            prev_lines = lines
+
+        md = chr(10).join(merged)
+        if len(md) > max_chars:
+            md = md[:max_chars] + "…"
+        return {"markdown": md, "chunks": chunks, "count": len(chunks)}
+    except Exception as ex:
+        _log("[视觉] 长截图 OCR 失败: %s: %s"
+             % (type(ex).__name__, ex), logging.WARNING)
+        return {"markdown": "", "chunks": [], "count": 0}
+
+
+# ===== 前景抠图 =====
+
+def extract_foreground(img, tolerance=40, out_path=None, max_side=512):
+    """把主体从纯色背景里抠出来，输出透明 PNG。
+
+    做法：取四边中点颜色作为背景色，从图像四边做 BFS 泛洪，
+    色距 <= tolerance 的相邻像素标记为背景（alpha=0）。
+
+    返回 {"path": 输出路径或 None, "bg": (r,g,b), "removed_ratio": 0.0~1.0}
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception as ex:
+        _log("[视觉] 抠图依赖缺失: %s" % ex, logging.WARNING)
+        return {"path": None, "bg": None, "removed_ratio": 0.0}
+
+    try:
+        im = img.convert("RGB")
+        # 缩到 max_side 加速
+        scale = max(im.width, im.height) / float(max_side)
+        small = im
+        if scale > 1:
+            small = im.resize((max(1, int(im.width / scale)),
+                               max(1, int(im.height / scale))),
+                              Image.Resampling.LANCZOS)
+        arr = np.asarray(small, dtype=np.int16)
+        h, w = arr.shape[0], arr.shape[1]
+
+        # 四边中点取样，取出现次数最多的作为背景色
+        samples = [arr[0, w // 2], arr[h - 1, w // 2],
+                   arr[h // 2, 0], arr[h // 2, w - 1]]
+        bg = tuple(int(v) for v in samples[0])
+        for s in samples[1:]:
+            d0 = sum(abs(int(s[i]) - bg[i]) for i in range(3))
+            d1 = sum(abs(int(s[i]) - bg[i]) for i in range(3))
+            if d0 < d1:
+                bg = tuple(int(v) for v in s)
+
+        tol = max(1, int(tolerance))
+        # 与背景色的曼哈顿距离
+        dist = (np.abs(arr - np.array(bg, dtype=np.int16)).sum(axis=2))
+        close = dist <= tol
+
+        # 从四边 BFS 泛洪（只穿过 close 像素）
+        from collections import deque
+        visited = np.zeros((h, w), dtype=bool)
+        dq = deque()
+        for x in range(w):
+            for y in (0, h - 1):
+                if close[y, x] and not visited[y, x]:
+                    visited[y, x] = True
+                    dq.append((y, x))
+        for y in range(h):
+            for x in (0, w - 1):
+                if close[y, x] and not visited[y, x]:
+                    visited[y, x] = True
+                    dq.append((y, x))
+        while dq:
+            y, x = dq.popleft()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] \
+                        and close[ny, nx]:
+                    visited[ny, nx] = True
+                    dq.append((ny, nx))
+
+        removed = float(visited.sum()) / float(h * w or 1)
+        alpha = np.where(visited, 0, 255).astype(np.uint8)
+        rgba = np.dstack([np.asarray(small, dtype=np.uint8), alpha])
+        out = Image.fromarray(rgba, "RGBA")
+
+        # 恢复到原尺寸（保持透明）
+        if scale > 1:
+            out = out.resize((im.width, im.height), Image.Resampling.LANCZOS)
+
+        if out_path:
+            try:
+                d = os.path.dirname(os.path.abspath(out_path))
+                if d and not os.path.isdir(d):
+                    os.makedirs(d, exist_ok=True)
+                out.save(out_path, "PNG")
+            except Exception as ex:
+                _log("[视觉] 保存抠图失败: %s: %s"
+                     % (type(ex).__name__, ex), logging.WARNING)
+                out_path = None
+        return {"path": out_path, "bg": bg, "removed_ratio": removed}
+    except Exception as ex:
+        _log("[视觉] 抠图失败: %s: %s"
+             % (type(ex).__name__, ex), logging.WARNING)
+        return {"path": None, "bg": None, "removed_ratio": 0.0}
+
