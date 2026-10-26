@@ -1875,6 +1875,7 @@ class PetApp(QObject):
             self._care_last_kind = None
             if self._care is not None:
                 self._care.note_ignored(kind)
+                self._care.note_ignored_aff()
         except Exception as ex:
             log("[关心] 忽略检测失败: %s: %s"
                 % (type(ex).__name__, ex), logging.DEBUG)
@@ -1894,6 +1895,11 @@ class PetApp(QObject):
             self._care_check_ignored(cur)
             # 记忆回访（阶段④）：每天最多 2 次
             self._care_revisit_tick(cur)
+            # 好感度：连续多天未互动则衰减（最低到 30）
+            try:
+                self._care.check_idle_decay(cur)
+            except Exception:
+                pass
             # 时间窗口（sleep/meal）按真实本地时间判断
             now_dt = datetime.datetime.fromtimestamp(cur)
             cands = self._care_candidates(now_dt)
@@ -2156,10 +2162,11 @@ class PetApp(QObject):
     def acknowledge_reminder(self, kind, todo_id=None, schedule_id=None):
         """点「知道了」：计入今日完成数 + 清零忽略计数 + 冒一句短回话。"""
         self._care_last_acked = True     # 已处理，不算忽略
-        # 关心类：清零连续忽略计数（待办/日程不参与降频）
+        # 关心类：清零连续忽略计数 + 好感 +2（待办/日程不参与）
         try:
             if self._care is not None and kind in CARE_KINDS:
                 self._care.note_acknowledged(kind)
+                self._care.note_acknowledged_aff()
         except Exception as ex:
             log("[关心] 记录确认失败: %s: %s"
                 % (type(ex).__name__, ex), logging.DEBUG)
@@ -2400,6 +2407,14 @@ class PetApp(QObject):
         mins = secs // 60
         self.say_main("记下了：%d 分钟后提醒你「%s」" % (mins, body))
         return True
+
+    def _aff_pick(self, kind):
+        """按当前好感度区间取台词池；引擎不可用时退回 normal。"""
+        try:
+            v = self._care.affection if self._care is not None else 50
+            return affection_lines(kind, v)
+        except Exception:
+            return affection_lines(kind, 50)
 
     def _pick_line(self, pool, key):
         """随机取台词，避开上一句（气泡显示的上一句 + 同类上一次）"""

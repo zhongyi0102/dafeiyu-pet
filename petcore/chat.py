@@ -2943,6 +2943,12 @@ class ChatWindow(QWidget):
         self.save_history()
         # 自动记忆：重置空闲计时 + 累计条数检查（点歌类内部会跳过）
         self._mem_after_user_message(text)
+        # 好感度：记一次互动（+1，每天最多 +10）
+        try:
+            if getattr(self.pet, "_care", None) is not None:
+                self.pet._care.note_interaction()
+        except Exception:
+            pass
 
         # 「提醒我 X 分钟后 xxx」→ 本地解析成待办（不调用模型）
         try:

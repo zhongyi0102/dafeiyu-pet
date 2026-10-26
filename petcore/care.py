@@ -72,6 +72,12 @@ class CareState:
         self.muted_until = 0.0    # 「别吵我」全局静默截止时间戳
         self.muted_days = {}      # kind -> 连续多少天被「别提这个」
         self.stats = {}           # kind -> {"fired":n,"acked":n,"ignored":n}
+        # 好感度（阶段⑥）：只影响台词，不影响功能
+        self.affection = 50
+        self.aff_day = ""         # 当天日期（跨天重置每日上限）
+        self.aff_gain_today = 0   # 当天靠聊天加了多少
+        self.aff_lose_today = 0   # 当天掉了多少
+        self.aff_last_active = "" # 最后一次互动的日期（判断久未互动）
         self.load()
 
     # ---------- 持久化 ----------
@@ -114,6 +120,20 @@ class CareState:
             except Exception:
                 self.muted_until = 0.0
             self.muted_days = self._clean_map(data.get("muted_days"), int)
+            try:
+                self.affection = int(data.get("affection") or 50)
+            except Exception:
+                self.affection = 50
+            self.aff_day = str(data.get("aff_day") or "")
+            try:
+                self.aff_gain_today = int(data.get("aff_gain_today") or 0)
+            except Exception:
+                self.aff_gain_today = 0
+            try:
+                self.aff_lose_today = int(data.get("aff_lose_today") or 0)
+            except Exception:
+                self.aff_lose_today = 0
+            self.aff_last_active = str(data.get("aff_last_active") or "")
             st = data.get("stats")
             self.stats = {}
             if isinstance(st, dict):
@@ -163,6 +183,11 @@ class CareState:
         self.muted_until = 0.0
         self.muted_days = {}
         self.stats = {}
+        self.affection = 50
+        self.aff_day = ""
+        self.aff_gain_today = 0
+        self.aff_lose_today = 0
+        self.aff_last_active = ""
 
     def save(self):
         """原子写：写 .tmp 再 os.replace。"""
@@ -183,6 +208,11 @@ class CareState:
                 "muted_until": self.muted_until,
                 "muted_days": dict(self.muted_days),
                 "stats": {k: dict(v) for k, v in self.stats.items()},
+                "affection": int(self.affection),
+                "aff_day": self.aff_day,
+                "aff_gain_today": int(self.aff_gain_today),
+                "aff_lose_today": int(self.aff_lose_today),
+                "aff_last_active": self.aff_last_active,
                 "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             tmp = self.path + ".tmp"
@@ -378,6 +408,130 @@ class CareState:
         self.deferred_until[kind] = cur + base * max(1, int(factor))
         self.save()
         _log("[关心] %s 延后（%d 倍冷却）" % (kind, factor))
+
+    # ---------- 好感度（阶段⑥）----------
+
+    AFF_INIT = 50
+    AFF_MIN = 30
+    AFF_MAX = 100
+    AFF_GAIN_CHAT = 1
+    AFF_GAIN_CHAT_DAILY_MAX = 10
+    AFF_GAIN_ACK = 2
+    AFF_LOSE_IGNORE = 1
+    AFF_LOSE_IDLE_DAY = 3
+    AFF_IDLE_DAYS = 3
+    AFF_DAILY_DOWN_MAX = 3
+
+    def _aff_roll_day(self, now=None):
+        """好感度的跨天重置（独立于关心计数的 day）。"""
+        today = self._today(now)
+        if self.aff_day != today:
+            self.aff_day = today
+            self.aff_gain_today = 0
+            self.aff_lose_today = 0
+            return True
+        return False
+
+    def _aff_clamp(self, v):
+        try:
+            v = int(v)
+        except Exception:
+            v = self.AFF_INIT
+        return max(self.AFF_MIN, min(self.AFF_MAX, v))
+
+    def _aff_up(self, delta, now=None):
+        """加好感（受每日聊天加成上限约束）。"""
+        self._aff_roll_day(now)
+        d = max(0, int(delta))
+        if d <= 0:
+            return self.affection
+        self.affection = self._aff_clamp(self.affection + d)
+        self.save()
+        return self.affection
+
+    def _aff_down(self, delta, now=None):
+        """掉好感（受每日掉点上限约束）。"""
+        self._aff_roll_day(now)
+        d = max(0, int(delta))
+        if d <= 0:
+            return self.affection
+        left = max(0, self.AFF_DAILY_DOWN_MAX - int(self.aff_lose_today))
+        d = min(d, left)
+        if d <= 0:
+            return self.affection
+        self.aff_lose_today = int(self.aff_lose_today) + d
+        self.affection = self._aff_clamp(self.affection - d)
+        self.save()
+        return self.affection
+
+    def note_interaction(self, now=None):
+        """用户发消息：+1（每天最多 +10），并刷新最后活跃日期。"""
+        try:
+            self._aff_roll_day(now)
+            self.aff_last_active = self._today(now)
+            if self.aff_gain_today < self.AFF_GAIN_CHAT_DAILY_MAX:
+                self.aff_gain_today = int(self.aff_gain_today) + self.AFF_GAIN_CHAT
+                self.affection = self._aff_clamp(
+                    self.affection + self.AFF_GAIN_CHAT)
+                self.save()
+            return self.affection
+        except Exception as ex:
+            _log("[好感] 记录互动失败: %s: %s"
+                 % (type(ex).__name__, ex), logging.DEBUG)
+            return self.affection
+
+    def note_acknowledged_aff(self, now=None):
+        """回应关心（点知道了）：+2。"""
+        return self._aff_up(self.AFF_GAIN_ACK, now)
+
+    def note_ignored_aff(self, now=None):
+        """忽略关心：-1（受每日上限）。"""
+        return self._aff_down(self.AFF_LOSE_IGNORE, now)
+
+    def check_idle_decay(self, now=None):
+        """连续多天未互动 → 每天掉 3 点（最低到 30，不做愧疚绑架）。
+
+        返回本次掉了几点。
+        """
+        try:
+            import datetime as _dt
+            today = self._today(now)
+            if not self.aff_last_active:
+                # 从未互动过：以今天为基准，不掉
+                self.aff_last_active = today
+                self.save()
+                return 0
+            try:
+                d0 = _dt.date.fromisoformat(today)
+                d1 = _dt.date.fromisoformat(self.aff_last_active)
+            except Exception:
+                return 0
+            idle_days = (d0 - d1).days
+            if idle_days < self.AFF_IDLE_DAYS:
+                return 0
+            before = self.affection
+            self._aff_down(self.AFF_LOSE_IDLE_DAY, now)
+            got = before - self.affection
+            if got > 0:
+                _log("[好感] 已 %d 天未互动，好感 -%d（当前 %d）"
+                     % (idle_days, got, self.affection))
+            return got
+        except Exception as ex:
+            _log("[好感] 久未互动检查失败: %s: %s"
+                 % (type(ex).__name__, ex), logging.DEBUG)
+            return 0
+
+    def affection_tier(self):
+        """当前好感度区间名（cold / normal / clingy）。"""
+        try:
+            v = int(self.affection)
+        except Exception:
+            v = self.AFF_INIT
+        if v <= 30:
+            return "cold"
+        if v <= 60:
+            return "normal"
+        return "clingy"
 
     def reset_timer(self, kind, now=None):
         """用户改了间隔/重新打开开关：把该类的计时清零重来。"""

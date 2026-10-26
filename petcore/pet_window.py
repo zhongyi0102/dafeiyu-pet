@@ -2240,7 +2240,8 @@ class PetWindow(QWidget):
         self._play_temp("poke", total=1.2)
         self.jump_t = 0.0
         self.app.chat_paused = False
-        self.say(self.app._pick_line(POKE_LINES, "poke"))
+        _pool = self.app._aff_pick("poke") or POKE_LINES
+        self.say(self.app._pick_line(_pool, "poke"))
 
     def _start_stroke(self):
         log("[触摸] 抚摸")
@@ -2250,7 +2251,8 @@ class PetWindow(QWidget):
         now = time.time()
         if now - self._touch_cd >= 1.8:
             self._touch_cd = now
-            self.say(self.app._pick_line(STROKE_LINES, "stroke"))
+            _pool = self.app._aff_pick("stroke") or STROKE_LINES
+        self.say(self.app._pick_line(_pool, "stroke"))
 
     def _update_stroke(self, e):
         """在鱼身上按住轻微来回移动 = 抚摸（不拖动窗口）。返回 True 表示正在抚摸。"""

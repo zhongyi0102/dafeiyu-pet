@@ -917,6 +917,122 @@ REVISIT_YESTERDAY_LINES = [
     "昨天{what}的事，怎么样了？",
 ]
 
+# ===== 好感度（阶段⑥）=====
+# 只影响台词选择，不影响任何功能是否触发。
+AFFECTION_INIT = 50              # 初始值
+AFFECTION_MIN = 30               # 下限（不做愧疚绑架，不会更低）
+AFFECTION_MAX = 100              # 上限
+AFFECTION_DAILY_DOWN_MAX = 3     # 每天最多掉多少点
+
+# 增减规则（每项都是「每次事件的增量」）
+AFFECTION_GAIN_CHAT = 1          # 发一条消息
+AFFECTION_GAIN_CHAT_DAILY_MAX = 10   # 每天靠聊天最多加多少
+AFFECTION_GAIN_ACK = 2           # 回应一次关心（点「知道了」）
+AFFECTION_LOSE_IGNORE = 1        # 忽略一次关心
+AFFECTION_LOSE_IDLE_DAY = 3      # 连续 N 天未互动时每天掉多少
+AFFECTION_IDLE_DAYS = 3          # 连续多少天算「久未互动」
+
+# 区间（只影响台词池选择）
+AFFECTION_TIERS = (
+    (0, 30, "cold"),      # 冷淡：短句、少用「主人」
+    (31, 60, "normal"),   # 正常
+    (61, 100, "clingy"),  # 黏人：多用「主人」、偶尔撒娇
+)
+
+
+def affection_tier(value):
+    """好感度 → 区间名（cold / normal / clingy）。"""
+    try:
+        v = int(value)
+    except Exception:
+        v = AFFECTION_INIT
+    for lo, hi, name in AFFECTION_TIERS:
+        if lo <= v <= hi:
+            return name
+    return "normal"
+
+
+# 各区间专属台词（点击 / 戳 / 摸头 / 待机时用）
+# cold：嘴硬别扭，短句，几乎不叫主人
+AFFECTION_COLD_LINES = {
+    "react": [
+        "干嘛。",
+        "……有事？",
+        "别碰我。",
+        "哼。",
+        "说。",
+        "别烦。",
+        "嗯。",
+        "走开啦。",
+    ],
+    "poke": [
+        "别戳了。",
+        "烦。",
+        "……又来了。",
+        "哼，无聊。",
+    ],
+    "stroke": [
+        "……别乱摸。",
+        "哼，谁准你摸的。",
+        "……一下就好。",
+    ],
+}
+
+# normal：现在的默认语气
+AFFECTION_NORMAL_LINES = {
+    "react": [
+        "干嘛呀，笨蛋主人。",
+        "哼，叫我做什么。",
+        "在呢在呢，别催。",
+        "……有事快说。",
+        "嗯？想我了？",
+    ],
+    "poke": [
+        "喂，别戳我啦。",
+        "哼，再戳就生气了。",
+        "笨蛋，痒。",
+    ],
+    "stroke": [
+        "……摸头也不是不行。",
+        "哼，就一下哦。",
+        "别以为这样我就会高兴。",
+    ],
+}
+
+# clingy：黏人，多用「主人」，偶尔撒娇
+AFFECTION_CLINGY_LINES = {
+    "react": [
+        "主人主人，我在这儿呢！",
+        "嗯嗯，我一直在等主人叫我。",
+        "主人~ 要抱抱吗？",
+        "哼，主人终于想起我了。",
+        "主人叫我做什么都可以哦。",
+    ],
+    "poke": [
+        "主人别戳啦，痒痒的~",
+        "嘿嘿，主人想跟我玩吗？",
+        "主人再戳我就要抱你了哦。",
+    ],
+    "stroke": [
+        "主人摸头……好舒服。",
+        "再摸一会儿嘛，主人。",
+        "嘿嘿，最喜欢主人了。",
+    ],
+}
+
+
+def affection_lines(kind, value):
+    """按好感度区间取某类台词池；取不到就退回 normal。"""
+    tier = affection_tier(value)
+    table = {"cold": AFFECTION_COLD_LINES,
+             "normal": AFFECTION_NORMAL_LINES,
+             "clingy": AFFECTION_CLINGY_LINES}
+    pool = (table.get(tier) or {}).get(kind)
+    if not pool:
+        pool = AFFECTION_NORMAL_LINES.get(kind) or []
+    return pool
+
+
 REMIND_LINES = {
     "water": WATER_LINES,
     "stand": STAND_LINES,
