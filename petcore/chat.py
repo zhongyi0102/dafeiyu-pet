@@ -106,6 +106,10 @@ class MemoryStore:
             mc = int(m.get("mention_count") or 0)
         except Exception:
             mc = 0
+        # event_date：有明确日期的事件（YYYY-MM-DD），记忆回访用
+        ed = str(m.get("event_date") or "").strip()
+        if len(ed) != 10 or ed[4] != "-" or ed[7] != "-":
+            ed = ""
         return {
             "id": int(m.get("id") or 0),
             "text": text,
@@ -116,6 +120,8 @@ class MemoryStore:
             "mention_count": max(0, mc),
             "origin_session": m.get("origin_session") or None,
             "origin_time": m.get("origin_time") or None,
+            "event_date": ed,
+            "revisit_done": bool(m.get("revisit_done", False)),
         }
 
     def load(self):
@@ -167,13 +173,16 @@ class MemoryStore:
     # ---------- 增删改 ----------
 
     def add(self, text, source="manual", origin_session=None,
-            origin_time=None):
+            origin_time=None, event_date=None):
         """新增一条记忆。source: manual（默认）/ auto（自动提取）。"""
         text = (text or "").strip()
         if not text:
             return None
         now = self.now_str()
         src = "auto" if source == "auto" else "manual"
+        ed = str(event_date or "").strip()
+        if len(ed) != 10 or ed[4] != "-" or ed[7] != "-":
+            ed = ""
         item = {
             "id": self.next_id,
             "text": text,
@@ -184,6 +193,8 @@ class MemoryStore:
             "mention_count": 0,
             "origin_session": origin_session,
             "origin_time": (origin_time or now) if src == "auto" else None,
+            "event_date": ed,
+            "revisit_done": False,
         }
         self.next_id += 1
         self.items.append(item)
@@ -202,6 +213,46 @@ class MemoryStore:
                 self.save()
                 return True
         return False
+
+    def pending_revisits(self, today_str=None):
+        """返回今天该回访的记忆（每条最多回访一次）。
+
+        规则：
+          - 只取 source=auto 且 event_date 非空、revisit_done=False
+          - 事件当天 或 事件第二天（问「昨天怎么样」）
+        """
+        import datetime as _dt
+        try:
+            today = today_str or _dt.date.today().isoformat()
+            d0 = _dt.date.fromisoformat(today)
+        except Exception:
+            return []
+        out = []
+        for m in self.sorted_items():
+            if m.get("source") != "auto":
+                continue
+            if m.get("revisit_done"):
+                continue
+            ed = (m.get("event_date") or "").strip()
+            if not ed:
+                continue
+            try:
+                d = _dt.date.fromisoformat(ed)
+            except Exception:
+                continue
+            delta = (d0 - d).days
+            if delta in (0, 1):
+                out.append(m)
+        return out
+
+    def mark_revisited(self, mem_id):
+        """标记已回访（每条最多一次）。"""
+        m = self.get(mem_id)
+        if m is None:
+            return False
+        m["revisit_done"] = True
+        self.save()
+        return True
 
     def reinforce(self, mem_id, text=None):
         """自动记忆被再次提到：mention_count +1、last_access 刷新。
@@ -2455,6 +2506,49 @@ class ChatWindow(QWidget):
         return self._add_bubble(role, text, image_path=image_path,
                                 voice_path=voice_path, voice_sec=voice_sec,
                                 ts=ts, voice_text=voice_text)
+
+    def append_external_to_session(self, sid, role, text, notice=None,
+                                   image_path=None, voice_path=None,
+                                   voice_sec=0.0, voice_text="", ts=None):
+        """把消息写进指定会话（不依赖当前显示），用于记忆回访。
+
+        若该会话正在显示，同时渲染气泡；否则只落盘。
+        """
+        try:
+            s = self._find_session(sid)
+            if s is None:
+                log("[记忆] 目标会话不存在: %s" % sid)
+                return None
+            msg = {"role": role, "content": text,
+                   "ts": float(ts or time.time())}
+            if image_path:
+                msg["image"] = image_path
+            if voice_path:
+                msg["voice"] = voice_path
+                msg["voice_sec"] = float(voice_sec or 0.0)
+                msg["voice_text"] = voice_text or ""
+            s.setdefault("messages", []).append(msg)
+            s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            # 正在显示该会话 → 同步渲染
+            if sid == self.current_id:
+                self.messages = s["messages"]
+                try:
+                    self.render_message(role, text,
+                                        image_path=image_path,
+                                        voice_path=voice_path,
+                                        voice_sec=voice_sec,
+                                        voice_text=voice_text,
+                                        ts=msg["ts"])
+                    self._scroll_bottom()
+                except Exception as ex:
+                    log("[记忆] 渲染回访消息失败: %s: %s"
+                        % (type(ex).__name__, ex), logging.DEBUG)
+            self.save_history()
+            return msg
+        except Exception as ex:
+            log("[记忆] 写入指定会话失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return None
 
     def append_external(self, role, text, notice=None, image_path=None,
                         voice_path=None, voice_sec=0.0, ts=None,

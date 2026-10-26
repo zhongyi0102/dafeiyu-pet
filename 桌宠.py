@@ -1644,6 +1644,166 @@ class PetApp(QObject):
             out.append((kind, cd, int(spec.get("daily_max") or 0)))
         return out
 
+    # ---------- 记忆回访（阶段④）----------
+
+    def _care_revisit_tick(self, now=None):
+        """检查今天有没有该回访的记忆（事件当天/第二天）。
+
+        模板拼接，不调模型。每条记忆最多回访一次。
+        回访消息写进「最近活跃的会话」，不依赖当前显示。
+        """
+        try:
+            if self._care is None or self.memory is None:
+                return
+            cur = float(now if now is not None else time.time())
+            # 每天最多回访 2 次（与 CARE_KINDS 里 memory 的上限一致）
+            if self._care.used_today("memory") >= 2:
+                return
+            # 全局静默 / 冷却 / 互斥
+            if self._care.global_muted_left(cur) > 0:
+                return
+            if self._care.global_left(cur) > 0:
+                return
+            if self._care.startup_grace_left(cur) > 0:
+                return
+            if self._care.cooldown_left("memory", cur, 240 * 60) > 0:
+                return
+            pend = self.memory.pending_revisits()
+            if not pend:
+                return
+            m = pend[0]
+            # 判断是当天还是第二天
+            import datetime as _dt
+            today = _dt.date.today()
+            try:
+                d = _dt.date.fromisoformat(m.get("event_date") or "")
+            except Exception:
+                self.memory.mark_revisited(m.get("id"))
+                return
+            delta = (today - d).days
+            pool = (REVISIT_TODAY_LINES if delta == 0
+                    else REVISIT_YESTERDAY_LINES)
+            what = self._revisit_what(m.get("text") or "")
+            line = self._pick_line(pool, "revisit").replace("{what}", what)
+            # 写进最近活跃的会话（不依赖当前显示）
+            self._care_revisit_say(line, m)
+        except Exception as ex:
+            log("[记忆] 回访检查失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    @staticmethod
+    def _revisit_what(text):
+        """从记忆文本里抽出「事件名」，给模板填 {what}。"""
+        t = (text or "").strip()
+        # 去掉开头的「用户」
+        for p in ("用户", "主人"):
+            if t.startswith(p):
+                t = t[len(p):].strip()
+        # 去掉日期片段（2026-11-03 / 11 月 3 日）
+        import re as _re
+        t = _re.sub(r"\d{4}-\d{2}-\d{2}", "", t)
+        t = _re.sub(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]", "", t)
+        t = t.strip(" ，,。.、")
+        # 太长就截断
+        if len(t) > 24:
+            t = t[:24]
+        return t or "那件事"
+
+    def _care_revisit_say(self, line, mem_item):
+        """把回访消息写进最近活跃的会话。"""
+        try:
+            sid = self._most_recent_session_id()
+            if not sid:
+                return
+            # 标记已回访（先标记，避免失败后重复）
+            self.memory.mark_revisited(mem_item.get("id"))
+            cw = self.chat_window
+            if cw is not None:
+                cw.append_external_to_session(sid, "assistant", line)
+            else:
+                # 聊天窗口没开：直接写文件
+                self._append_to_session_file(sid, line)
+            try:
+                self._care.mark_fired("memory")
+            except Exception:
+                pass
+            log("[记忆] 已回访记忆 #%s（会话 %s）"
+                % (mem_item.get("id"), sid))
+            try:
+                self.say_main(self._first_sentence(line))
+            except Exception:
+                pass
+        except Exception as ex:
+            log("[记忆] 回访写入失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    @staticmethod
+    def _pick_recent_session(sessions):
+        """从会话列表挑最近活跃的一个。
+
+        排序键：(updated 时间, 最后一条消息的 ts, 消息数)。
+        updated 精度只到秒，同秒创建的两个会话要靠后两个键区分。
+        """
+        def key(s):
+            upd = s.get("updated") or ""
+            msgs = s.get("messages") or []
+            last_ts = 0.0
+            for x in reversed(msgs):
+                try:
+                    last_ts = float(x.get("ts") or 0)
+                    if last_ts > 0:
+                        break
+                except Exception:
+                    continue
+            return (upd, last_ts, len(msgs))
+        try:
+            return max(sessions, key=key) if sessions else None
+        except Exception:
+            return None
+
+    def _most_recent_session_id(self):
+        """找最近活跃的会话 id。"""
+        try:
+            cw = self.chat_window
+            if cw is not None:
+                best = self._pick_recent_session(cw.sessions or [])
+                if best is not None:
+                    return best.get("id")
+        except Exception:
+            pass
+        # 退化为读 chats.json
+        try:
+            import json as _json
+            with open(CHAT_PATH, "r", encoding="utf-8") as f:
+                d = _json.load(f)
+            best = self._pick_recent_session(d.get("sessions") or [])
+            if best is not None:
+                return best.get("id")
+        except Exception:
+            pass
+        return None
+
+    def _append_to_session_file(self, sid, line):
+        """聊天窗口没开时直接写 chats.json。"""
+        try:
+            import json as _json
+            with open(CHAT_PATH, "r", encoding="utf-8") as f:
+                d = _json.load(f)
+            for s in (d.get("sessions") or []):
+                if s.get("id") == sid:
+                    s.setdefault("messages", []).append(
+                        {"role": "assistant", "content": line,
+                         "ts": time.time()})
+                    s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    break
+            tmp = CHAT_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CHAT_PATH)
+        except Exception as ex:
+            log("[记忆] 直接写会话失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _care_check_ignored(self, now=None):
         """检查上一条关心气泡是否超时未被处理（= 忽略）。
 
@@ -1684,6 +1844,8 @@ class PetApp(QObject):
             self._care.roll_day(cur)
             # 上一次提醒气泡已超时且未处理 → 记为「忽略」
             self._care_check_ignored(cur)
+            # 记忆回访（阶段④）：每天最多 2 次
+            self._care_revisit_tick(cur)
             # 时间窗口（sleep/meal）按真实本地时间判断
             now_dt = datetime.datetime.fromtimestamp(cur)
             cands = self._care_candidates(now_dt)

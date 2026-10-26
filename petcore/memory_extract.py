@@ -59,8 +59,18 @@ SYSTEM_PROMPT = """你是信息提取器。从「用户消息片段」中提取�
 - 单条不超过 40 字
 - 宁可少记也不要猜；不确定就 SKIP
 
+【event_date 字段】
+如果这条记忆描述的是「有明确日期的事件」（面试、考试、生日、纪念日、
+出差、旅行、约定见面等），额外输出 event_date，格式严格 YYYY-MM-DD。
+没有明确日期就省略这个字段（不要填 null，不要填空串）。
+例子：
+  {"op":"ADD","text":"用户 11 月 3 日面试","event_date":"2026-11-03"}
+  {"op":"ADD","text":"用户喜欢喝美式"}          ← 无日期，不填 event_date
+
 【输出格式】严格 JSON，不要 markdown 代码块，不要多余解释：
-{"ops":[{"op":"ADD","text":"..."},{"op":"UPDATE","id":3,"text":"..."},{"op":"SKIP","reason":"..."}]}
+{"ops":[{"op":"ADD","text":"...","event_date":"YYYY-MM-DD"},
+        {"op":"UPDATE","id":3,"text":"..."},
+        {"op":"SKIP","reason":"..."}]}
 
 【规则】
 - 已有记忆列表会给你；重复或矛盾的内容用 UPDATE（指向已有 id）
@@ -88,6 +98,29 @@ def build_prompt(user_lines, existing, now_str):
 
 
 # ===== 解析 =====
+
+def _clean_event_date(v):
+    """校验 event_date：必须是 YYYY-MM-DD 且日期合法。无效返回空串。"""
+    import datetime as _dt
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    if len(s) != 10 or s[4] != "-" or s[7] != "-":
+        return ""
+    try:
+        d = _dt.date(int(s[:4]), int(s[5:7]), int(s[8:10]))
+    except Exception:
+        return ""
+    try:
+        today = _dt.date.today()
+        if d < today.replace(year=today.year - 1):
+            return ""
+        if d > today.replace(year=today.year + 10):
+            return ""
+    except Exception:
+        pass
+    return s
+
 
 def parse_ops(raw_text, existing_ids_auto, existing_ids_manual):
     """解析模型输出，返回 (ops, err)。
@@ -127,6 +160,7 @@ def parse_ops(raw_text, existing_ids_auto, existing_ids_manual):
             continue
         if not text:
             continue
+        ed = _clean_event_date(op.get("event_date"))
         if kind == "UPDATE":
             try:
                 mid = int(op.get("id") or 0)
@@ -140,9 +174,15 @@ def parse_ops(raw_text, existing_ids_auto, existing_ids_manual):
                     _log("[记忆] UPDATE 指向不存在的 id #%s，改为 SKIP" % mid)
                 out.append({"op": "SKIP"})
                 continue
-            out.append({"op": "UPDATE", "id": mid, "text": text})
+            item = {"op": "UPDATE", "id": mid, "text": text}
+            if ed:
+                item["event_date"] = ed
+            out.append(item)
         else:
-            out.append({"op": "ADD", "text": text})
+            item = {"op": "ADD", "text": text}
+            if ed:
+                item["event_date"] = ed
+            out.append(item)
     return out[:MAX_OPS], ""
 
 
