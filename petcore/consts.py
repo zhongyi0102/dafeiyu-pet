@@ -97,7 +97,7 @@ DS_BASE_URL = "https://api.deepseek.com/v1"
 
 DS_MODEL = "deepseek-chat"
 
-MAX_TOKENS_DEFAULT = 400
+MAX_TOKENS_DEFAULT = 600
 
 MAX_TOKENS_MAX = 2000
 
@@ -371,18 +371,21 @@ LOOK_SCREEN_COOLDOWN = 4.0          # 冷却秒数（防连点）
 LOOK_SCREEN_MIN_SELECTION = 20     # 框选最小边长（像素），小于视为取消
 LOOK_SCREEN_REGION_MAX_SIDE = 1024  # 框选截图长边上限（超过则等比缩小）
 # ===== 视觉请求限制（可在设置页调整，写入配置）=====
+# 默认值按「开箱即用」调过：清晰度够、推理型视觉模型不会超时。
 LOOK_SCREEN_SIDE_MIN = 512
 LOOK_SCREEN_SIDE_MAX = 2048
 LOOK_SCREEN_SIDE_STEP = 64
-LOOK_SCREEN_SIDE_DEFAULT = 1024
+LOOK_SCREEN_SIDE_DEFAULT = 1280     # 1024 时小字容易糊，1280 更稳
 
 LOOK_SCREEN_QUALITY_MIN = 60
 LOOK_SCREEN_QUALITY_MAX = 95
-LOOK_SCREEN_QUALITY_DEFAULT = 85
+LOOK_SCREEN_QUALITY_DEFAULT = 88    # 85 略保守，88 清晰度和体积的折中
 
 LOOK_SCREEN_TIMEOUT_MIN = 10
 LOOK_SCREEN_TIMEOUT_MAX = 120
-LOOK_SCREEN_TIMEOUT_DEFAULT = 30
+# 推理型视觉模型（glm-4.5v / glm-5.x 等）单次实测 40~50 秒，
+# 30 秒会直接超时失败，默认给到 60 秒留一倍余量。
+LOOK_SCREEN_TIMEOUT_DEFAULT = 60
 # 视觉模型多为推理模型，思考过程也消耗 token；太小会导致 content 为空
 # ===== 描述风格与单次上限（与聊天页完全独立，各自保存）=====
 VISION_STYLE_CHOICES = (
@@ -399,7 +402,16 @@ VISION_STYLE_SUFFIXES = {
 }
 VISION_TOKENS_MIN = 100
 VISION_TOKENS_MAX = 2000
-VISION_TOKENS_DEFAULT = 800
+# 800 时结构化格式（场景/画面类型/主要内容/关键信息/理解/状态/证据）
+# 加推理 token 常被 finish_reason=length 截断，默认提到 1200。
+VISION_TOKENS_DEFAULT = 1200
+
+# ===== 旧默认值（仅用于迁移：值恰好等于旧默认时升级到新默认）=====
+_OLD_VISION_TOKENS_DEFAULT = 800
+_OLD_LOOK_SCREEN_SIDE_DEFAULT = 1024
+_OLD_LOOK_SCREEN_QUALITY_DEFAULT = 85
+_OLD_LOOK_SCREEN_TIMEOUT_DEFAULT = 30
+_OLD_MAX_TOKENS_DEFAULT = 400
 
 
 def vision_style_suffix(style):
@@ -726,12 +738,6 @@ PROACTIVE_LINES = {
         "哼，我一个人也能待得住。",
         "有点冷清呢……你忙完了吗？",
     ],
-    # 午饭/晚饭时间
-    "meal": [
-        "这个点了，你吃了吗？别又忘了。",
-        "喂，该吃饭了吧，笨蛋。",
-        "哼，饿着肚子干活，效率只会更差。",
-    ],
 }
 
 # ===== 宠物显示状态（唯一事实来源，不允许另存字符串/布尔值） =====
@@ -755,19 +761,15 @@ PET_MODE_TEXT = {
 # ===== 定时提醒 =====
 DEFAULT_REMINDS_MIN = 45
 # 每类独立默认间隔（分钟）：喝水 45 / 起身 60 / 护眼 20
-DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 20,
-                            "sleep": 120, "meal": 180}
+DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 20}
 REMINDERS = {
     "water": "喝水提醒",
     "stand": "起身活动提醒",
     "eyes":  "护眼提醒",
-    "sleep": "深夜催睡",
-    "meal":  "饭点提醒",
 }
 # 每类图标（emoji 本体）
 REMIND_ICONS = {"water": "💧", "stand": "🚶", "eyes": "👀",
-                "todo": "✅", "schedule": "⏰",
-                "sleep": "🌙", "meal": "🍚"}
+                "todo": "✅", "schedule": "⏰"}
 # 提醒气泡备用图标（clock 用于定时/待办兜底）
 REMIND_ICON_CLOCK = "⏰"
 # 圆形图标底色（按类型）
@@ -777,15 +779,11 @@ REMIND_ICON_COLORS = {
     "eyes":     QColor(0x8E, 0x6F, 0xD4),   # 紫底
     "todo":     QColor(0xF0, 0x93, 0x2F),   # 橙底
     "schedule": QColor(0x9E, 0xA4, 0xAE),   # 灰底
-    "sleep":    QColor(0x5C, 0x6B, 0xC0),   # 靛蓝底
-    "meal":     QColor(0xE0, 0x7A, 0x5F),   # 砖红底
 }
 REMIND_ICON_DIAMETER = 32.0             # 圆形图标直径（逻辑像素，随缩放等比）
 # 每类标题（加粗、字号比正文小一号）
 REMIND_TITLES = {
     "water":    "喝水时间",
-    "sleep":    "该睡觉了",
-    "meal":     "吃饭时间",
     "stand":    "起来动一动",
     "eyes":     "让眼睛休息一下",
     "todo":     "待办提醒",
@@ -799,9 +797,7 @@ DEFAULT_REMINDERS = {
 
 # ---- 提醒气泡 ----
 REMIND_BUBBLE_HOLD = 12.0          # 提醒气泡停留 12 秒
-REMIND_WALK_MAX_MS = 2000          # 走到屏幕中间最长耗时 2 秒
-REMIND_WALK_SPEED = 620.0          # 提醒走动基础速度（像素/秒）
-REMIND_WALK_SPEED_MAX = 2600.0     # 距离很远时的速度上限
+# 走动时长与跨屏阈值在 PetWindow 里（REMIND_WALK_FIXED_SEC / REMIND_WALK_TELEPORT_PX）
 REMIND_VERTICAL_BIAS = 0.58        # 垂直居中偏下（0.5=正中，越大越靠下）
 REMIND_BUBBLE_SCALE = 1.3          # 字号/宽度放大 1.3 倍
 REMIND_SNOOZE_MIN = 10             # 「10 分钟后再提醒」默认分钟
@@ -841,7 +837,7 @@ STAND_LINES = [
 ]
 EYES_LINES = [
     "看看远处的东西，闭眼 20 秒，听见没？",
-    "眼睛都红了吧？去看窗外，闭眼 20 秒就好。",
+    "眼睛都红了吧？闭眼 20 秒就好。",
     "屏幕要被你盯穿了，看远处休息 20 秒。",
     "哼，闭眼 20 秒，我才不是心疼你。",
     "喂，看远处 20 秒，眼睛要休息。",
@@ -868,12 +864,6 @@ CARE_KINDS = {
     "water": {"name": "喝水",   "priority": 30, "daily_max": 8},
     "stand": {"name": "起身",   "priority": 40, "daily_max": 6},
     "eyes":  {"name": "护眼",   "priority": 30, "daily_max": 8},
-    # 深夜催睡：只在 23:30 之后检查，优先级最高
-    "sleep": {"name": "催睡",   "priority": 90, "daily_max": 2,
-              "window": ("23:30", "03:00")},
-    # 饭点：11:30-13:00 / 17:30-19:00 两个窗口
-    "meal":  {"name": "饭点",   "priority": 70, "daily_max": 3,
-              "windows": [("11:30", "13:00"), ("17:30", "19:00")]},
     # 主动搭话：调模型，优先级最低（不挤占健康类）
     "chat":  {"name": "主动搭话", "priority": 20, "daily_max": 8,
               "model": True},
@@ -892,30 +882,6 @@ LIVE_GEN_DAILY_MAX = 30      # 每天最多实时生成几次
 LIVE_GEN_TIMEOUT_SEC = 3.0   # 超时秒数，超时回落固定台词
 LIVE_GEN_MAX_LEN = 30        # 生成句子的最大字数
 LIVE_GEN_MIN_LEN = 4         # 最小字数
-
-# 深夜催睡（傲娇风格，不带括号动作）
-SLEEP_LINES = [
-    "都几点了，还不睡？眼睛不要了是吧。",
-    "喂，该睡了。明天起不来我可不叫你。",
-    "哼，熬夜伤身体，去睡。",
-    "笨蛋，再刷下去天就亮了。",
-    "该睡了……我才不是在等你。",
-    "这么晚还不睡，是想让我担心吗？",
-    "喂，关灯睡觉，别磨蹭。",
-    "哼，快去睡，明天还要见人呢。",
-]
-
-# 饭点提醒（傲娇风格，不带括号动作）
-MEAL_LINES = [
-    "该吃饭了，别又拖到胃疼。",
-    "喂，饭点了，先吃再说。",
-    "笨蛋，不吃饭哪有力气干活。",
-    "到饭点了……我才不是催你。",
-    "哼，快去吃饭，别让我说第二遍。",
-    "该吃了，饿着肚子算什么本事。",
-    "喂，放下手里的事，先吃饭。",
-    "笨蛋，饭点到了，去吃点东西。",
-]
 
 # ===== 记忆回访话术（模板拼接，不调模型）=====
 # {what} 会被替换成记忆内容里的「事件名」（已清洗掉将来时词）
@@ -1082,18 +1048,6 @@ NEUTRAL_POOLS = {
         "让眼睛歇一会儿。",
         "看看窗外，缓解疲劳。",
     ],
-    "SLEEP_LINES": [
-        "时间不早了，早点休息。",
-        "该睡了。",
-        "夜深了，去睡觉吧。",
-        "休息吧，明天还有事。",
-    ],
-    "MEAL_LINES": [
-        "到饭点了，去吃饭吧。",
-        "该吃点东西了。",
-        "别忘了吃饭。",
-        "先吃点东西再继续。",
-    ],
     "TODO_LINES": [
         "该做这个了：{content}",
         "提醒一下：{content}",
@@ -1218,6 +1172,33 @@ NEUTRAL_POOLS = {
         "说吧，我在听。",
         "今天有什么新鲜事？",
     ],
+    # 兜底池：主动搭话的模型请求失败/超时时用
+    "PROACTIVE_FALLBACK_LINES": [
+        "在忙吗。",
+        "歇一会儿吧。",
+        "看你坐了好久了。",
+        "要不要停一下。",
+        "我在这儿呢。",
+        "喝口水吧。",
+    ],
+    # 兜底池：回来打招呼的模型请求失败/超时时用
+    "WELCOME_FALLBACK_LINES": [
+        "回来了。",
+        "你回来啦。",
+        "刚才去哪了。",
+        "等你好一会儿了。",
+        "继续吧。",
+        "坐吧。",
+    ],
+    # 视觉工具结果卡片上方的开场白（6~8 句）
+    "TOOL_RESULT_OPENERS": [
+        "我看了一下，主要是这几种颜色。",
+        "喏，颜色都在这儿了。",
+        "这块区域的配色是这样。",
+        "颜色我数出来了。",
+        "给你列出来了。",
+        "大概就这几个色。",
+    ],
 }
 
 # 中性好感度池：人设为空时只用这一档（不区分冷淡/亲近）
@@ -1246,13 +1227,15 @@ def neutral_pool(name):
     return list(NEUTRAL_POOLS.get(name) or [])
 
 
+# 视觉工具结果卡片上方的开场白（对外别名，便于直接引用）
+TOOL_RESULT_OPENERS = list(NEUTRAL_POOLS.get("TOOL_RESULT_OPENERS") or [])
+
+
 REMIND_LINES = {
     "water": WATER_LINES,
     "stand": STAND_LINES,
     "eyes":  EYES_LINES,
     "todo":  TODO_LINES,
-    "sleep": SLEEP_LINES,
-    "meal":  MEAL_LINES,
 }
 
 # 点击反馈：点「知道了」/「稍后再提醒」后的短回话（1.5 秒小气泡）
@@ -2506,43 +2489,8 @@ ACTION_CATEGORY_LABELS = {
     "move": "移动",
     "event": "节日",
 }
-# 余额分档：按已用百分比（满额按 ¥20 折算）分 6 档
-BALANCE_FULL = 20.0
-# 余额档位：照 dsh-pet 的分档法 index = (p == 100 ? 5 : floor(p / 20))
-# 用专门画的余额素材，比通用动作贴题得多
-BALANCE_TIERS = [
-    # (已用百分比上限, 档位名, 动作, 台词)
-    (20,  "满血", "bal_full", ["钱包满满的，放心聊啦~",
-                             "余额充足……才不是因为安心才开心的。",
-                             "哼，有钱就是硬气，随便使唤我。",
-                             "这么多余额，够你烦我很久了。",
-                             "别得意，钱是会花完的，笨蛋。"]),
-    (40,  "健康", "bal_good", ["余额还挺健康，稳的……嗯。",
-                             "叮当响，钱包没毛病。",
-                             "还能再聊很久呢，慢慢来。",
-                             "现在这个数，我看着还算安心。",
-                             "别乱花就行……我才没有叮嘱你。"]),
-    (60,  "正常", "bal_ok", ["余额有点少了哦，省着点用……才不是心疼。",
-                           "用掉一半了，我、我得数数。",
-                           "账目还清楚，别乱花就行。",
-                           "记得别一次问太长的问题，笨蛋。",
-                           "现在开始要精打细算了……大概。"]),
-    (80,  "省钱", "bal_low", ["六成以上没了！喂，钱包在变瘦了。",
-                            "省着点用……我可不想饿肚子。",
-                            "笨蛋，再这样下去真要见底了。",
-                            "我要开始记账了，别乱花。",
-                            "现在每句话都要花钱，说重点！"]),
-    (100, "告急", "bal_empty", ["快、快没钱了！笨蛋，快去充值！",
-                               "只剩一点点了……我有点慌。",
-                               "袋子空了，钱包在发抖。",
-                               "再聊下去我就要饿肚子了啦！",
-                               "喂，现在充值还来得及，快点。"]),
-    (101, "见底", "bal_zero", ["见、见底了……主人，我要饿肚子了……",
-                              "分文不剩了，我有点心虚。",
-                              "已经没钱了吗？那我缩成一团。",
-                              "去充值吧……我等你回来。",
-                              "笨蛋，别再问了，我真的会哭的。"]),
-]
+# 余额分档逻辑与档位专属动作已移除（只保留查询与显示）。
+# 档位素材文件仍在 sprites/anim/bal_*，但不再被引用。
 
 # ===== 时节特效（纯代码绘制；预留图片素材接口） =====
 # trigger: (月份, 起日, 止日) 或 lunar 名称；effect 对应下面绘制函数
@@ -2592,7 +2540,6 @@ BALANCE_PROVIDERS = (
     ("deepseek", "DeepSeek"),
     ("zhipu", "智谱 GLM"),
 )
-BALANCE_MIN_INTERVAL_MIN = 30      # 自动查询最短间隔（分钟）
 
 # ===== 功能开关注册表（新增功能只需在这里登记一行，设置页会自动出现） =====
 # key: 配置里 features 的键名
@@ -2625,10 +2572,6 @@ FEATURES = {
     "capture_hide": {
         "name": "截屏时隐藏", "group": "宠物", "default": True, "needs_restart": False,
         "desc": "从系统截图 / 录屏里排除，并在截图工具出现时自动隐藏（关闭后就能被拍到）",
-    },
-    "balance_auto": {
-        "name": "余额自动查询", "group": "余额", "default": False, "needs_restart": False,
-        "desc": "按间隔自动查询 DeepSeek 余额（手动「查看余额」始终可用）",
     },
     "care_live_generate": {
         "name": "提醒也实时生成", "group": "互动", "default": False,
@@ -2670,7 +2613,7 @@ FEATURE_GROUP_ORDER = ["互动", "提醒", "物理"]
 # 这些开关只在各自的专属设置页显示，不在「功能开关」页重复列出
 FEATURE_HIDDEN_IN_LIST = {"capture_hide", "reminders", "remind_todo",
                           "remind_schedule", "remind_dnd", "remind_walk",
-                          "balance_auto"}
+                          "physics"}
 
 
 def _default_features():
@@ -2697,7 +2640,6 @@ def _migrate_legacy_features(cfg, raw):
         if k not in feats:
             feats[k] = bool(spec["default"])
     return feats
-BALANCE_TIER_LINES = {t[1]: t[3] for t in BALANCE_TIERS}
 
 # 系统「显示动画」开关（SPI_GETCLIENTAREAANIMATION / SPI_GETANIMATION）
 SPI_GETCLIENTAREAANIMATION = 0x1042
@@ -2735,6 +2677,44 @@ def load_json(path, default):
             log("配置解析失败，备份也失败: %s" % ex2, logging.ERROR)
         return default
 
+
+# ===== 应用版本（检查更新用）=====
+# 与 GitHub Release 的 tag 对齐（tag 形如 v1.1.4）。发版时同步改这里。
+APP_VERSION = "v1.2.0"
+
+# 更新源：GitHub Releases latest 接口（项目确实托管在 GitHub 且有 Releases）
+GITHUB_REPO = "zhongyi0102/dafeiyu-pet"
+UPDATE_LATEST_API = "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPO
+UPDATE_RELEASES_PAGE = "https://github.com/%s/releases" % GITHUB_REPO
+UPDATE_TIMEOUT_SEC = 5
+
+
+# ===== 开发模式（调试控件显隐的唯一判断入口）=====
+def is_dev_mode():
+    """是否处于开发模式（显示调试控件）。
+
+    - 源码运行（sys.frozen 为 False）→ True
+    - 打包版 → False，除非：
+        · config.json 里 "dev_mode": true
+        · 启动参数带 --dev
+    """
+    if not getattr(sys, "frozen", False):
+        return True
+    try:
+        if "--dev" in (sys.argv or []):
+            return True
+    except Exception:
+        pass
+    try:
+        p = globals().get("CONFIG_PATH")
+        if p and os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict) and d.get("dev_mode") is True:
+                return True
+    except Exception:
+        pass
+    return False
 
 # ===== 配置版本与默认值 =====
 CONFIG_VERSION = 2
@@ -2800,8 +2780,7 @@ def default_config():
         "animation_mode": "auto",
         "animation_weights": dict(ACTION_CATEGORY_WEIGHTS),
         "physics": dict(DEFAULT_PHYSICS),
-        "balance": {"auto": False, "provider": "auto", "interval_min": BALANCE_MIN_INTERVAL_MIN,
-                    "last_value": None, "last_time": None},
+        "balance": {"provider": "auto", "last_value": None, "last_time": None},
         # 设置页可收缩区块的展开状态（只影响显示，不影响配置读写）
         "ui_sections": {"persona": True, "vision_rule": False,
                         "vision_advanced": False, "chat_model": True},
@@ -2812,8 +2791,6 @@ def default_config():
         "anim_rate": ANIM_RATE_DEFAULT,
         # 气泡文字缩放：1.0 = 100%
         "bubble_scale": BUBBLE_SCALE_DEFAULT,
-        # 隐藏时暂停动画解码（省 CPU）
-        "pause_when_hidden": True,
         # 撞飞彩蛋（甩飞撞边缘时头部旋转）
         "smash_spin": True,
         # 旧「主动陪伴」（固定台词池）——保留字段兼容，不再使用
@@ -2857,7 +2834,6 @@ def default_config():
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
         "turn_strength": TURN_STRENGTH_DEFAULT,
         "action_strength": ACTION_STRENGTH_DEFAULT,
-        "balance_full": BALANCE_FULL,
         "usage": _default_usage(),
         "games": _default_games(),
         "reminders": _default_reminders(),
@@ -3125,19 +3101,14 @@ def migrate_and_validate(raw):
     if not isinstance(raw.get("physics"), dict):
         changed = True
 
-    # balance：自动查询开关 / 间隔 / 上次结果
+    # balance：只保留查询范围 / 上次结果（auto、interval_min 已废弃，读取时忽略）
     bl = raw.get("balance")
     if isinstance(bl, dict):
-        v = bl.get("auto")
-        if isinstance(v, bool):
-            cfg["balance"]["auto"] = v
-        elif v is not None:
-            issues.append("balance.auto")
-        v = bl.get("interval_min")
-        if isinstance(v, int) and not isinstance(v, bool) and v >= BALANCE_MIN_INTERVAL_MIN:
-            cfg["balance"]["interval_min"] = v
-        elif v is not None:
-            issues.append("balance.interval_min")
+        _pv = bl.get("provider")
+        if isinstance(_pv, str) and _pv.lower() in ("auto", "deepseek", "zhipu"):
+            cfg["balance"]["provider"] = _pv.lower()
+        elif _pv is not None:
+            issues.append("balance.provider")
         v = bl.get("last_value")
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             cfg["balance"]["last_value"] = float(v)
@@ -3275,8 +3246,9 @@ def migrate_and_validate(raw):
         else:
             issues.append("proactive_ai")
 
-    # pause_when_hidden / smash_spin / proactive
-    for key in ("pause_when_hidden", "smash_spin", "proactive"):
+    # smash_spin / proactive
+    # 注：pause_when_hidden 已废弃（隐藏时永远暂停动画），旧字段读取时忽略。
+    for key in ("smash_spin", "proactive"):
         v = raw.get(key)
         if isinstance(v, bool):
             cfg[key] = v
@@ -3339,6 +3311,21 @@ def migrate_and_validate(raw):
         issues.append("look_screen.max_tokens")
 
 
+    # ===== 默认值升级：旧默认 → 新默认（视觉四项）=====
+    # 只搬「值恰好等于旧默认」的字段（= 用户从没手动调过），
+    # 用户自己改过的值一律保留。
+    for _k, _old, _new in (
+            ("max_tokens", _OLD_VISION_TOKENS_DEFAULT, VISION_TOKENS_DEFAULT),
+            ("max_side", _OLD_LOOK_SCREEN_SIDE_DEFAULT, LOOK_SCREEN_SIDE_DEFAULT),
+            ("quality", _OLD_LOOK_SCREEN_QUALITY_DEFAULT, LOOK_SCREEN_QUALITY_DEFAULT),
+            ("timeout", _OLD_LOOK_SCREEN_TIMEOUT_DEFAULT, LOOK_SCREEN_TIMEOUT_DEFAULT)):
+        if cfg["look_screen"].get(_k) == _old and _old != _new:
+            cfg["look_screen"][_k] = _new
+            changed = True
+            log("默认值升级：look_screen.%s %s → %s（用户未手动修改过）"
+                % (_k, _old, _new))
+
+
     # reply_style：回复长度风格
     rs = raw.get("reply_style")
     if rs in REPLY_STYLES:
@@ -3356,6 +3343,14 @@ def migrate_and_validate(raw):
         if mt is not None:
             issues.append("max_tokens")
         changed = True
+
+    # ===== 默认值升级：旧默认 → 新默认（聊天 max_tokens）=====
+    if cfg.get("max_tokens") == _OLD_MAX_TOKENS_DEFAULT \
+            and _OLD_MAX_TOKENS_DEFAULT != MAX_TOKENS_DEFAULT:
+        cfg["max_tokens"] = MAX_TOKENS_DEFAULT
+        changed = True
+        log("默认值升级：max_tokens %s → %s（用户未手动修改过）"
+            % (_OLD_MAX_TOKENS_DEFAULT, MAX_TOKENS_DEFAULT))
 
     # animation_tiers：small/medium/large 三层概率
     at = raw.get("animation_tiers")
@@ -3420,14 +3415,7 @@ def migrate_and_validate(raw):
             issues.append("balance.provider")
 
 
-    # balance_full：满额基准（元）
-    bf = raw.get("balance_full")
-    if isinstance(bf, (int, float)) and not isinstance(bf, bool) and 1.0 <= float(bf) <= 10000.0:
-        cfg["balance_full"] = float(bf)
-    elif bf is not None:
-        issues.append("balance_full")
-    if bf is None:
-        changed = True
+    # balance_full：满额基准已废弃（档位判断移除），旧字段读取时忽略
 
     # 3) 字典类字段
     u = raw.get("usage")

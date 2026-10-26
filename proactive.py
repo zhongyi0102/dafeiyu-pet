@@ -69,8 +69,31 @@ OBSERVE_PROMPT = (
     "聊天软件画面不要转述任何内容，只写“在看聊天”。"
 )
 
-# 搭话提示词默认值（可编辑、可恢复默认）
+# 搭话提示词默认值（只含场景规则，风格由「聊天」页人设决定）
 DEFAULT_PROMPT = (
+    "你是主人电脑桌面上的宠物，现在要主动跟主人搭一句话。\n"
+    "主人正坐在电脑前，已经有一会儿没动了。\n"
+    "要求：\n"
+    "- 1到2句话\n"
+    "- 结合下面【前台窗口】里的具体内容，不要套话、不要说教\n"
+    "- 不要说“注意休息”“适当运动”这类放哪都成立的话\n"
+    "- 不要描述“我看到你在……”这种句式，像真的在旁边看着一样自然开口\n"
+    "- 没有值得说的就只输出 [SKIP]，不要硬编\n"
+)
+
+# 回来打招呼默认提示词（只含场景规则）
+DEFAULT_WELCOME_PROMPT = (
+    "你是主人电脑桌面上的宠物。主人刚回到电脑前。\n"
+    "要求：\n"
+    "- 1句话\n"
+    "- 不要套话，不要说教\n"
+    "- 只输出这一句话，不要解释\n"
+)
+
+# 旧版默认提示词：仅用于「值恰好等于旧默认 → 自动升级为新默认」的判断。
+# 用户自己改过的提示词不在此列，永不覆盖。
+LEGACY_DEFAULT_PROMPTS = (
+    # 搭话（旧）
     "你要主动跟用户搭一句话。\n"
     "用户正坐在电脑前，已经有一会儿没动了。\n"
     "【重要】你只能依据下面提供的【前台窗口】和【屏幕观察】来说话：\n"
@@ -83,17 +106,22 @@ DEFAULT_PROMPT = (
     "- 结合上面提供的具体内容说，不要套话、不要说教。\n"
     "- 不要说“注意休息”“适当运动”这类放哪都成立的话。\n"
     "- 不要用“我看到你在……”这种句式，像真的在旁边看着一样自然开口。\n"
-    "- 信息不够、没值得说的，就只输出 [SKIP]，绝对不要硬编。\n"
-)
-
-# 回来打招呼默认提示词
-DEFAULT_WELCOME_PROMPT = (
+    "- 信息不够、没值得说的，就只输出 [SKIP]，绝对不要硬编。\n",
+    # 回来打招呼（旧）
     "用户刚回到电脑前。\n"
     "要求：\n"
     "- 1句话。语气遵循 system 里的人设描述；人设没写就正常说话。\n"
     "- 不要套话，不要说教。\n"
-    "- 只输出这一句话，不要解释。\n"
+    "- 只输出这一句话，不要解释。\n",
 )
+
+
+def is_legacy_default_prompt(text):
+    """该文本是否是旧版默认提示词（用于自动升级）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(t == (x or "").strip() for x in LEGACY_DEFAULT_PROMPTS)
 
 
 # ───────────────────────── 配置读写 ─────────────────────────
@@ -168,7 +196,14 @@ def normalize_cfg(raw):
 
     for key in ("prompt", "welcome_prompt"):
         v = raw.get(key)
-        out[key] = str(v) if isinstance(v, str) and v.strip() else d[key]
+        if isinstance(v, str) and v.strip():
+            # 旧版默认值自动升级为新默认；用户自定义的保持不覆盖
+            if is_legacy_default_prompt(v):
+                out[key] = d[key]
+            else:
+                out[key] = v
+        else:
+            out[key] = d[key]
 
     out["welcome_enabled"] = bool(raw.get("welcome_enabled", False))
     return out
