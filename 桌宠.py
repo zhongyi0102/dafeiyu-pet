@@ -60,6 +60,7 @@ from weather_cn import weather_cn, weather_tip  # noqa: E402
 import pet_voice as VOICE  # noqa: E402
 VOICE.log = log          # 让 pet_voice 的日志写进本程序的 error.log
 import proactive as PRO      # noqa: E402  主动搭话
+from petcore.care import CareState      # noqa: E402  主动关心引擎
 
 from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa: F401
                             CONFIG_PATH, CHAT_PATH, MEMORY_PATH, LOG_PATH,
@@ -823,6 +824,15 @@ class PetApp(QObject):
             log("[主动] 初始化状态失败: %s: %s" % (type(ex).__name__, ex),
                 logging.WARNING)
             self._pro_state = PRO.RuntimeState(os.path.join(APP_DIR, "_pro_tmp.json"))
+        # 主动关心引擎（阶段①：冷却/上限/优先级/互斥）
+        try:
+            self._care = CareState(
+                os.path.join(APP_DIR, CARE_STATE_NAME), CARE_KINDS)
+            self._care.mark_started()
+        except Exception as ex:
+            log("[关心] 初始化引擎失败: %s: %s"
+                % (type(ex).__name__, ex), logging.ERROR)
+            self._care = None
         self._proc_last_name = ""
         self._proc_since = time.time()
         self._last_festival_hour = None
@@ -1413,17 +1423,143 @@ class PetApp(QObject):
             pass
         return False
 
-    def _remind_blocked(self):
-        """返回 (是否阻塞, 原因)。"""
-        if not self.is_enabled("reminders"):
-            return True, "功能关闭"
+    def _care_busy(self):
+        """统一静默判断：返回 (是否忙碌, 原因)。只写类型，不写内容。
+
+        顺序：锁屏 → 空闲/离开 → 全屏/游戏/演示 → 勿扰时段
+              → 翻唱中 → 语音播放中 → 聊天窗口输入中
+        """
+        # 1) 锁屏
+        try:
+            if PRO.screen_locked():
+                return True, "锁屏"
+        except Exception:
+            pass
+        # 2) 空闲/离开（用户不活跃时不打扰）
+        try:
+            idle = PRO.input_idle_seconds()
+            cfg = self.proactive_cfg()
+            idle_min = max(1, int(cfg.get("idle_min") or 10))
+            if idle >= idle_min * 60:
+                return True, "空闲/离开"
+        except Exception:
+            pass
+        # 3) 全屏 / 游戏 / 演示模式
         if self.game_active:
             return True, "小游戏中"
-        if self._notification_paused():
-            return True, "全屏/演示模式"
-        if self._in_dnd():
-            return True, "免打扰时段"
+        try:
+            if self._notification_paused():
+                return True, "全屏/演示模式"
+        except Exception:
+            pass
+        # 4) 勿扰时段
+        try:
+            if self._in_dnd():
+                return True, "免打扰时段"
+        except Exception:
+            pass
+        # 5) 正在翻唱
+        try:
+            cw = self.chat_window
+            if cw is not None and getattr(cw, "_cover_session_id", None):
+                return True, "翻唱中"
+        except Exception:
+            pass
+        # 6) 正在播放语音（_voice_player 是属性，不是方法）
+        try:
+            pl = getattr(self, "_voice_player", None)
+            if pl is not None and hasattr(pl, "is_playing"):
+                if pl.is_playing():
+                    return True, "语音播放中"
+        except Exception:
+            pass
+        # 7) 聊天窗口正在输入
+        try:
+            cw = self.chat_window
+            if cw is not None and cw.isVisible():
+                inp = getattr(cw, "input", None)
+                if inp is not None and inp.hasFocus():
+                    if (inp.toPlainText() or "").strip():
+                        return True, "聊天输入中"
+        except Exception:
+            pass
         return False, ""
+
+    def _remind_blocked(self):
+        """返回 (是否阻塞, 原因)。保留签名，内部走统一静默判断。"""
+        if not self.is_enabled("reminders"):
+            return True, "功能关闭"
+        return self._care_busy()
+
+    def _care_candidates(self):
+        """构造引擎候选列表：[(kind, cooldown_sec, daily_max)]。
+
+        water/stand/eyes 的冷却沿用用户在设置里配的间隔
+        （cfg["reminders"][kind]["min"]），不用新默认值。
+        """
+        out = []
+        for kind in REMINDERS:
+            try:
+                if not self._rem_on(kind):
+                    continue
+            except Exception:
+                continue
+            try:
+                cd = max(60, int(self._rem_minutes(kind)) * 60)
+            except Exception:
+                cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
+            spec = CARE_KINDS.get(kind) or {}
+            out.append((kind, cd, int(spec.get("daily_max") or 0)))
+        return out
+
+    def _care_tick(self, now=None, blocked=False):
+        """每个检查周期调用一次：最多挑一条触发。
+
+        计数规则：只有 _fire_reminder 真的返回 True 才 mark_fired；
+        被拦住时 mark_deferred（不消耗次数、不进入正式冷却）。
+        """
+        try:
+            if getattr(self, "_care", None) is None:
+                return
+            cur = float(now if now is not None else time.time())
+            self._care.roll_day(cur)
+            cands = self._care_candidates()
+            if not cands:
+                return
+            kind, why = self._care.pick_next(cur, cands)
+            if kind is None:
+                return
+            # 统一静默判断（引擎外再确认一次，双闸门）
+            busy, reason = self._care_busy()
+            if busy:
+                log("[关心] %s 顺延（%s）" % (kind, reason))
+                self._care.mark_deferred(kind, cur)
+                return
+            if blocked:
+                log("[关心] %s 顺延（提醒总开关阻塞）" % kind)
+                self._care.mark_deferred(kind, cur)
+                return
+            # 真正触发；_fire_reminder 内部还有 game_active/_in_dnd 二次判断
+            fired = False
+            try:
+                fired = bool(self._fire_reminder(kind))
+            except Exception as ex:
+                log("[关心] %s 触发异常: %s: %s"
+                    % (kind, type(ex).__name__, ex), logging.WARNING)
+            if fired:
+                self._care.mark_fired(kind, cur)
+                # 同步旧的 _rem_next，保持设置界面显示一致
+                try:
+                    self._rem_next[kind] = cur + self._rem_minutes(kind) * 60
+                except Exception:
+                    pass
+            else:
+                # 被 _fire_reminder 二次判断拦住：不消耗次数
+                log("[关心] %s 被二次判断拦住，顺延" % kind)
+                self._care.mark_deferred(kind, cur)
+        except Exception as ex:
+            log("[关心] 调度异常: %s: %s"
+                % (type(ex).__name__, ex), logging.ERROR)
 
     # ---- 今日计数 ----
     def _done_today(self):
@@ -1679,18 +1815,9 @@ class PetApp(QObject):
         now = time.time()
         blocked, _why = self._remind_blocked()
 
-        # ---- 常规三类 ----
-        for kind in REMINDERS:
-            if not self._rem_on(kind):
-                continue
-            if now < self._rem_next.get(kind, now):
-                continue
-            if blocked:
-                # 阻塞期间：顺延到下一个周期，不堆叠
-                self._rem_next[kind] = now + self._rem_minutes(kind) * 60
-                continue
-            self._fire_reminder(kind)
-            self._rem_next[kind] = now + self._rem_minutes(kind) * 60
+        # ---- 常规三类：改由关心引擎统一调度 ----
+        # （旧 QTimer 直触逻辑已移除，避免与引擎双触发）
+        self._care_tick(now, blocked)
 
         # ---- 待办 ----
         if self.is_enabled("remind_todo"):

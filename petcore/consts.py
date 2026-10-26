@@ -832,6 +832,22 @@ TODO_LINES = [
     "{content}……去做吧，我等你。",
     "哼，{content}，别拖到明天。",
 ]
+# ===== 主动关心引擎（阶段①：只含框架参数，不含台词/开关）=====
+# priority 越大越优先；cooldown/daily_max 的实际值：
+#   water/stand/eyes 沿用 cfg["reminders"][kind]["min"]，不用这里的默认值。
+#   这里只给「上限」和「优先级」。
+CARE_KINDS = {
+    "water": {"name": "喝水",   "priority": 30, "daily_max": 8},
+    "stand": {"name": "起身",   "priority": 40, "daily_max": 6},
+    "eyes":  {"name": "护眼",   "priority": 30, "daily_max": 8},
+}
+
+# 待办 / 日程：不受每日上限、降频影响；忙时只延后不丢弃
+CARE_EXEMPT_KINDS = ("todo", "schedule")
+
+# 关心状态文件名
+CARE_STATE_NAME = "care_state.json"
+
 REMIND_LINES = {
     "water": WATER_LINES,
     "stand": STAND_LINES,
