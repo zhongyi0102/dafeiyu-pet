@@ -7,6 +7,12 @@ memory.json
 screen_memory.json
 screen_memory.json.bak
 proactive_state.json
+care_state.json
+persona_lines_cache.json
+persona_lines.json
+chat_images/
+vision_out/
+cover_cache/
 error.log
 error.log.*
 *.log
