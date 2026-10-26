@@ -2214,6 +2214,10 @@ FEATURES = {
         "name": "余额自动查询", "group": "余额", "default": False, "needs_restart": False,
         "desc": "按间隔自动查询 DeepSeek 余额（手动「查看余额」始终可用）",
     },
+    "auto_memory": {
+        "name": "自动记忆", "group": "互动", "default": False, "needs_restart": False,
+        "desc": "从对话中自动提取值得记住的个人信息；关闭后完全停止提取",
+    },
     "idle_talk": {
         "name": "待机碎碎念", "group": "互动", "default": True, "needs_restart": False,
         "desc": "空闲时小概率冒出台词 / 思维链心声",

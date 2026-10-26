@@ -3561,7 +3561,11 @@ class MemoryDialog(QDialog):
         self.setWindowTitle("记忆管理")
         self.resize(480, 440)
         lay = QVBoxLayout(self)
-        tip = QLabel("这些记忆会拼在系统提示词末尾；只有新增或修改记忆时，前缀缓存才会失效一次。")
+        tip = QLabel(
+            "这些记忆会拼在系统提示词末尾；只有新增或修改记忆时，"
+            "前缀缓存才会失效一次。\n"
+            "标记 [自动] 的记忆由模型从对话中提取，会随时间淡化；"
+            "[手动] 记忆永不淡化。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#777;font-size:11px;")
         lay.addWidget(tip)
@@ -3581,9 +3585,28 @@ class MemoryDialog(QDialog):
         self.reload()
 
     def reload(self):
+        """刷新列表：显示 [手动]/[自动] 标记与「淡化中」状态。"""
         self.list.clear()
-        for m in self.app.memory.sorted_items():
-            self.list.addItem(f"#{m['id']}  {m['text']}")
+        mem = self.app.memory
+        now = time.localtime()
+        for m in mem.sorted_items():
+            src = "[手动]" if m.get("source") != "auto" else "[自动]"
+            text = m.get("text") or ""
+            tag = ""
+            if m.get("source") == "auto":
+                try:
+                    r = mem.retention(m, now)
+                    if r < mem.DECAY_THRESHOLD:
+                        tag = "    (淡化中 %d%%)" % int(round(r * 100))
+                except Exception:
+                    pass
+            item = QListWidgetItem("#%s  %s  %s%s"
+                                   % (m["id"], src, text, tag))
+            if m.get("source") == "auto" and tag:
+                item.setForeground(QColor("#999999"))
+            elif m.get("source") == "auto":
+                item.setForeground(QColor("#2f6fb0"))
+            self.list.addItem(item)
 
     def _current(self):
         row = self.list.currentRow()
