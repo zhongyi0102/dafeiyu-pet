@@ -1684,6 +1684,11 @@ class PetApp(QObject):
             pool = (REVISIT_TODAY_LINES if delta == 0
                     else REVISIT_YESTERDAY_LINES)
             what = self._revisit_what(m.get("text") or "")
+            if not what:
+                # 抽不出像样的事件名：标记跳过，别用占位词硬凑
+                self.memory.mark_revisited(m.get("id"))
+                log("[记忆] 记忆 #%s 抽不出事件名，跳过回访" % m.get("id"))
+                return
             line = self._pick_line(pool, "revisit").replace("{what}", what)
             # 写进最近活跃的会话（不依赖当前显示）
             self._care_revisit_say(line, m)
@@ -1691,23 +1696,66 @@ class PetApp(QObject):
             log("[记忆] 回访检查失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
-    @staticmethod
-    def _revisit_what(text):
-        """从记忆文本里抽出「事件名」，给模板填 {what}。"""
+    # 将来时 / 计划类词：抽事件名时要清掉，否则「今天是不是要去出差」不通
+    # 注意顺序：长的必须先删（sorted by len desc），否则「将要」会被「将」
+    # 先删成「要」，剩下「要去」再删成「去」，最后残留一个「去」字。
+    _FUTURE_WORDS = (
+        "准备去", "打算去", "计划去", "将要", "即将",
+        "要去往", "要去", "会去", "将去",
+        "打算", "计划", "准备",
+        "要", "将", "会",
+    )
+    # 单独残留的「去」（如「将要去北京」清完剩「去北京」）
+    _LEAD_VERBS = ("去",)
+    # 时间状语：模板已经带「今天/昨天」，重复会变「今天今天…」
+    _TIME_WORDS = (
+        "今天", "明天", "昨天", "后天", "前天", "当天",
+        "上午", "下午", "晚上", "中午", "早上", "凌晨",
+    )
+
+    @classmethod
+    def _revisit_what(cls, text):
+        """从记忆文本里抽出「事件名」，给模板填 {what}。
+
+        清洗顺序：
+          1. 去「用户/主人」前缀
+          2. 去具体日期片段
+          3. 去时间状语（今天/明天/晚上…）——模板已有
+          4. 去将来时词（要/将/会/打算/计划/准备/要去…）
+          5. 去标点、截断
+        清洗后为空则返回 ""，调用方跳过该条（不要用占位词硬凑）。
+        """
         t = (text or "").strip()
-        # 去掉开头的「用户」
+        # 1. 前缀
         for p in ("用户", "主人"):
             if t.startswith(p):
                 t = t[len(p):].strip()
-        # 去掉日期片段（2026-11-03 / 11 月 3 日）
         import re as _re
+        # 2. 具体日期
         t = _re.sub(r"\d{4}-\d{2}-\d{2}", "", t)
         t = _re.sub(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]", "", t)
-        t = t.strip(" ，,。.、")
-        # 太长就截断
+        t = _re.sub(r"\d{1,2}\s*[日号]", "", t)
+        # 3. 时间状语（长的先删，避免「下午」被「午」截断）
+        for w in sorted(cls._TIME_WORDS, key=len, reverse=True):
+            t = t.replace(w, "")
+        # 4. 将来时词（长的先删；删完可能又露出新的短词，循环两轮）
+        for _round in range(2):
+            for w in sorted(cls._FUTURE_WORDS, key=len, reverse=True):
+                t = t.replace(w, "")
+        # 4b. 开头的单独「去」也去掉（「去北京」→「北京」）
+        for v in cls._LEAD_VERBS:
+            if t.startswith(v) and len(t) > len(v) + 1:
+                t = t[len(v):]
+                break
+        # 5. 清理标点与空白
+        t = t.strip(" ，,。.、：:；;！!？?~～…")
+        t = _re.sub(r"\s+", "", t)
         if len(t) > 24:
             t = t[:24]
-        return t or "那件事"
+        # 清洗后太短（1 个字）也没意义
+        if len(t) < 2:
+            return ""
+        return t
 
     def _care_revisit_say(self, line, mem_item):
         """把回访消息写进最近活跃的会话。"""
