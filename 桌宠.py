@@ -2136,6 +2136,23 @@ class PetApp(QObject):
         self.cfg["features"] = f
         self.save_cfg()
         self._apply_feature_side_effects(key, bool(on))
+        # 自动记忆：开启时在聊天窗口提示一次（不入会话历史）
+        if key == "auto_memory" and on:
+            try:
+                if self.chat_window is not None:
+                    self.chat_window.notify_auto_memory_enabled()
+            except Exception as ex:
+                log("[记忆] 开启提示失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.DEBUG)
+        # 关闭时停掉空闲计时器
+        if key == "auto_memory" and not on:
+            try:
+                if self.chat_window is not None:
+                    self.chat_window._mem_stop_idle_timer()
+                    self.chat_window._mem_pending = 0
+            except Exception as ex:
+                log("[记忆] 停止计时器失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.DEBUG)
         spec = FEATURES[key]
         msg = "%s：%s" % (spec["name"], "开" if on else "关")
         if spec.get("needs_restart"):
@@ -2146,6 +2163,12 @@ class PetApp(QObject):
     def _apply_feature_side_effects(self, key, on):
         """开关变化后立刻做的联动：停/起定时器、恢复显示等。"""
         try:
+            if key == "auto_memory":
+                # 关闭时立刻停计时器；开启不补历史，只处理新消息
+                if not on and self.chat_window is not None:
+                    self.chat_window._mem_stop_idle_timer()
+                    self.chat_window._mem_pending = 0
+                return
             if key == "capture_hide":
                 self.apply_capture_exclude()
                 if not on and self._capture_hidden:
@@ -3047,6 +3070,15 @@ class PetApp(QObject):
         # 打开聊天窗口 = 在等用户说话
         if self._work_state in ("idle", "success", "error"):
             self.set_work_state("waiting")
+
+    def refresh_memory_dialog(self):
+        """记忆内容变化后刷新对话框（若已打开）。"""
+        try:
+            if self.memory_dialog is not None:
+                self.memory_dialog.reload()
+        except Exception as ex:
+            log("[记忆] 刷新对话框失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
 
     def _open_memory(self):
         if self.memory_dialog is None:

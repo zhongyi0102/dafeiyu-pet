@@ -1499,6 +1499,13 @@ class ChatWindow(QWidget):
         self.setMinimumSize(CHAT_MIN_WIDTH, 460)
         self.worker = None
         self.summary_worker = None
+
+        # 自动记忆：已提取位置 / 待处理计数 / 提取线程
+        self._mem_extracted_upto = 0
+        self._mem_pending = 0
+        self._mem_worker = None
+        self._mem_worker_sid = None
+        self._mem_worker_upto = 0
         self.busy = False
         self.sessions = []
         self.current_id = None
@@ -1710,8 +1717,10 @@ class ChatWindow(QWidget):
 
     def _make_session(self, title):
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        return {"id": self._new_id(), "title": title, "messages": [], "summary": "",
-                "summarized_upto": 0, "created": now, "updated": now}
+        return {"id": self._new_id(), "title": title, "messages": [],
+                "summary": "", "summarized_upto": 0,
+                "mem_extracted_upto": 0, "created": now,
+                "updated": now}
 
     def _next_default_title(self):
         used = set()
@@ -1763,9 +1772,15 @@ class ChatWindow(QWidget):
         except Exception:
             su = 0
         su = max(0, min(su, len(clean)))
+        try:
+            me = int(raw.get("mem_extracted_upto") or 0)
+        except Exception:
+            me = 0
+        me = max(0, min(me, len(clean)))
         return {"id": sid, "title": title, "messages": clean,
                 "summary": str(raw.get("summary") or ""),
-                "summarized_upto": su, "created": created, "updated": updated}
+                "summarized_upto": su, "mem_extracted_upto": me,
+                "created": created, "updated": updated}
 
     def _sync_session(self, touch=True):
         s = self._current_session()
@@ -1774,6 +1789,8 @@ class ChatWindow(QWidget):
         s["messages"] = self.messages
         s["summary"] = self.summary
         s["summarized_upto"] = int(self.summarized_upto or 0)
+        s["mem_extracted_upto"] = int(
+            getattr(self, "_mem_extracted_upto", 0) or 0)
         if touch:
             s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1808,6 +1825,14 @@ class ChatWindow(QWidget):
         except Exception:
             self.summarized_upto = 0
         self.summarized_upto = max(0, min(self.summarized_upto, len(self.messages)))
+        try:
+            self._mem_extracted_upto = int(
+                s.get("mem_extracted_upto") or 0)
+        except Exception:
+            self._mem_extracted_upto = 0
+        self._mem_extracted_upto = max(
+            0, min(self._mem_extracted_upto, len(self.messages)))
+        self._mem_pending = 0
         self._render_limit = 50
         return True
 
@@ -2781,6 +2806,8 @@ class ChatWindow(QWidget):
         self._turn_user_bubble = self.render_message("user", text)
         self._turn_user_text = text
         self.save_history()
+        # 自动记忆：重置空闲计时 + 累计条数检查（点歌类内部会跳过）
+        self._mem_after_user_message(text)
 
         # 「提醒我 X 分钟后 xxx」→ 本地解析成待办（不调用模型）
         try:
@@ -2946,6 +2973,221 @@ class ChatWindow(QWidget):
         for m in self.messages[self.summarized_upto:]:
             msgs.append({"role": m["role"], "content": m["content"]})
         return msgs
+
+    # ---------- 自动记忆（遗忘曲线 + 提取） ----------
+
+    def notify_auto_memory_enabled(self):
+        """开关打开时提示一次（只显示，不入会话历史）。"""
+        try:
+            self._add_bubble(
+                "note",
+                "自动记忆已开启，我会记住你说过的偏好，"
+                "可在记忆里查看和删除。")
+            log("[记忆] 自动记忆已开启（仅处理之后的新消息）")
+        except Exception as ex:
+            log("[记忆] 开启提示失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
+
+    MEM_TRIGGER_COUNT = 8        # 累计多少条用户消息触发
+    MEM_IDLE_MS = 10 * 60 * 1000  # 空闲多久触发（10 分钟）
+
+    def _mem_enabled(self):
+        """自动记忆总开关（features.auto_memory，默认关）。"""
+        try:
+            feats = self.pet.cfg.get("features") or {}
+            return bool(feats.get("auto_memory"))
+        except Exception:
+            return False
+
+    def _mem_is_reasoning_model(self):
+        """推理型模型（带思考）跳过提取：输出里有推理内容，JSON 不可靠。"""
+        try:
+            _b, _k, model = self.pet._chat_cfg()
+            m = (model or "").lower()
+            for kw in ("reasoner", "-r1", "o1", "o3", "thinking",
+                       "reasoning", "deepseek-r"):
+                if kw in m:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _mem_reset_idle_timer(self):
+        """每来一条用户消息就重置空闲计时器（单次触发）。"""
+        try:
+            from PySide6.QtCore import QTimer as _QT
+            t = getattr(self, "_mem_idle_timer", None)
+            if t is None:
+                t = _QT(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._mem_on_idle)
+                self._mem_idle_timer = t
+            t.stop()
+            t.start(self.MEM_IDLE_MS)
+        except Exception as ex:
+            log("[记忆] 启动空闲计时器失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
+
+    def _mem_stop_idle_timer(self):
+        try:
+            t = getattr(self, "_mem_idle_timer", None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
+
+    def _mem_on_idle(self):
+        """空闲到点：有未处理的用户消息就提取一次。"""
+        if not self._mem_enabled():
+            return
+        self._mem_maybe_extract(force=True)
+
+    @staticmethod
+    def _mem_is_sing_text(text):
+        """点歌 / 翻唱类消息不计数、不送提取。"""
+        try:
+            import pet_voice as _V
+            return bool(_V.is_sing_request(text or ""))
+        except Exception:
+            return False
+
+    def _mem_pending_user_messages(self):
+        """返回 (待处理片段, 新 upto)。
+
+        只取 role=user、排除点歌/翻唱，且索引夹在合法范围内。
+        """
+        try:
+            total = len(self.messages)
+            upto = int(getattr(self, "_mem_extracted_upto", 0) or 0)
+            upto = max(0, min(upto, total))
+            out = []
+            for m in self.messages[upto:]:
+                if m.get("role") != "user":
+                    continue
+                c = (m.get("content") or "").strip()
+                if not c:
+                    continue
+                if self._mem_is_sing_text(c):
+                    continue
+                out.append("user: " + c[:200])
+            return out, total
+        except Exception as ex:
+            log("[记忆] 收集待处理消息失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return [], len(self.messages)
+
+    def _mem_maybe_extract(self, force=False):
+        """检查是否需要提取。force=True 时忽略条数阈值（空闲触发）。"""
+        if not self._mem_enabled():
+            return
+        if getattr(self, "_mem_worker", None) is not None:
+            return                      # 上一轮还在跑
+        if self._mem_is_reasoning_model():
+            log("[记忆] 当前模型疑似推理型，跳过自动记忆提取")
+            return
+        lines, new_upto = self._mem_pending_user_messages()
+        if not lines:
+            return
+        # 条数阈值（空闲触发时 force=True 直接通过）
+        if not force and len(lines) < self.MEM_TRIGGER_COUNT:
+            return
+        try:
+            _b, _k, _m = self.pet._chat_cfg()
+            if not (_b and _k and _m):
+                return
+            existing = [dict(x) for x in self.pet.memory.sorted_items()]
+            from petcore.memory_extract import MemoryExtractWorker
+            sid = self.current_id
+            w = MemoryExtractWorker(sid, new_upto, lines, existing,
+                                    (_b, _k, _m))
+            w.done.connect(self._mem_on_done)
+            w.failed.connect(self._mem_on_failed)
+            self._mem_worker = w
+            self._mem_worker_sid = sid
+            self._mem_worker_upto = new_upto
+            log("[记忆] 开始提取：会话 %s，消息区间 [%s, %s)，待处理 %d 条"
+                % (sid, getattr(self, "_mem_extracted_upto", 0), new_upto,
+                   len(lines)))
+            w.start()
+        except Exception as ex:
+            log("[记忆] 启动提取线程失败（会话 %s）: %s: %s"
+                % (self.current_id, type(ex).__name__, ex), logging.ERROR)
+            self._mem_worker = None
+
+    def _mem_apply_ops(self, ops):
+        """把提取结果写进全局记忆。返回 (新增数, 强化数)。"""
+        added = 0
+        updated = 0
+        mem = self.pet.memory
+        for op in ops or []:
+            kind = op.get("op")
+            text = (op.get("text") or "").strip()
+            if kind == "ADD":
+                if mem.add(text, source="auto",
+                           origin_session=getattr(self, "_mem_worker_sid", None)):
+                    added += 1
+            elif kind == "UPDATE":
+                try:
+                    mid = int(op.get("id") or 0)
+                except Exception:
+                    continue
+                if mem.reinforce(mid, text):
+                    updated += 1
+        return added, updated
+
+    def _mem_on_done(self, session_id, upto, ops):
+        """提取完成（主线程）：写记忆 + 推进索引。"""
+        try:
+            added, updated = self._mem_apply_ops(ops)
+            # 只有真正处理成功才推进索引（写盘失败时保持原值，下轮重试）
+            total = len(self.messages) if session_id == self.current_id else None
+            if session_id == self.current_id:
+                self._mem_extracted_upto = max(
+                    0, min(int(upto), len(self.messages)))
+                self.save_history()
+            else:
+                s = self._find_session(session_id)
+                if s is not None:
+                    s["mem_extracted_upto"] = max(
+                        0, min(int(upto), len(s.get("messages") or [])))
+                    self._write_sessions()
+            log("[记忆] 提取完成：会话 %s，区间至 %s，新增 %d 条、强化 %d 条"
+                % (session_id, upto, added, updated))
+            try:
+                self.pet.refresh_memory_dialog()
+            except Exception:
+                pass
+        except Exception as ex:
+            log("[记忆] 应用提取结果失败（会话 %s）: %s: %s"
+                % (session_id, type(ex).__name__, ex), logging.ERROR)
+        finally:
+            self._mem_worker = None
+            self._mem_worker_sid = None
+            self._mem_worker_upto = 0
+
+    def _mem_on_failed(self, session_id, upto, msg):
+        """提取失败：只记日志，不推进索引，不影响聊天。"""
+        log("[记忆] 提取失败：会话 %s，区间至 %s，原因 %s"
+            % (session_id, upto, msg), logging.WARNING)
+        self._mem_worker = None
+        self._mem_worker_sid = None
+        self._mem_worker_upto = 0
+
+    def _mem_after_user_message(self, text):
+        """每条用户消息后调用：重置空闲计时 + 累计条数检查。"""
+        try:
+            if not self._mem_enabled():
+                return
+            if self._mem_is_sing_text(text or ""):
+                return                  # 点歌/翻唱不计数
+            self._mem_reset_idle_timer()
+            self._mem_pending = int(getattr(self, "_mem_pending", 0) or 0) + 1
+            if self._mem_pending >= self.MEM_TRIGGER_COUNT:
+                self._mem_pending = 0
+                self._mem_maybe_extract(force=True)
+        except Exception as ex:
+            log("[记忆] 触发检查失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _summarize_then_chat(self):
         key = (self.pet.cfg.get("ds_api_key") or "").strip()
@@ -3542,6 +3784,11 @@ class ChatWindow(QWidget):
         self.messages = []
         self.summary = ""
         self.summarized_upto = 0
+        # 清空后消息重新从 0 开始，自动记忆的已提取位置也要归零，
+        # 否则索引会指向不存在的消息、或漏掉重新发的消息。
+        self._mem_extracted_upto = 0
+        s["mem_extracted_upto"] = 0
+        self._mem_pending = 0
         self.current_bubble = None
         self._turn_user_bubble = None
         self._turn_user_text = ""
