@@ -51,6 +51,8 @@ POOL_SPECS = {
     "RPS_LOSE_LINES": (),
     "RPS_TIE_LINES": (),
     "CATCH_SCORE_LINES": ("{n}",),
+    "LINES": (),
+    "CHAT_EMPTY_GREETINGS": (),
     # 好感度三档 × 三类 = 9 池
     "AFFECTION_COLD_REACT": (),
     "AFFECTION_COLD_POKE": (),
@@ -87,6 +89,8 @@ POOL_HINTS = {
     "RPS_LOSE_LINES": "猜拳输了",
     "RPS_TIE_LINES": "猜拳平局",
     "CATCH_SCORE_LINES": "接食物小游戏得分",
+    "LINES": "待机/开场白",
+    "CHAT_EMPTY_GREETINGS": "空聊天窗口的问候语",
     "AFFECTION_COLD_REACT": "好感度低-单击回应（冷淡）",
     "AFFECTION_COLD_POKE": "好感度低-被戳（冷淡）",
     "AFFECTION_COLD_STROKE": "好感度低-被摸头（冷淡）",

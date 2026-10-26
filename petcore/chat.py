@@ -2308,7 +2308,8 @@ class ChatWindow(QWidget):
                 int(CHAT_EMPTY_AVATAR * 0.8),     # 约 120px 高
                 Qt.TransformationMode.SmoothTransformation))
         lay.addWidget(self.empty_avatar)
-        self.empty_text = QLabel(random.choice(CHAT_EMPTY_GREETINGS))
+        self.empty_text = QLabel(random.choice(
+            self._empty_greetings()))
         self.empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         f = QFont(CHAT_FONT_FAMILY)
         f.setPixelSize(CHAT_FONT_SIZE + 1)
@@ -2365,7 +2366,8 @@ class ChatWindow(QWidget):
             # 每次进入空白状态都重新抽一条欢迎语（避免老是同一句）
             if show:
                 try:
-                    self.empty_text.setText(random.choice(CHAT_EMPTY_GREETINGS))
+                    self.empty_text.setText(random.choice(
+            self._empty_greetings()))
                 except Exception as ex:
                     log("[%s] %s 失败: %s: %s"
                         % (__name__, "_update_empty_state", type(ex).__name__, ex),
@@ -2611,6 +2613,20 @@ class ChatWindow(QWidget):
             else:
                 w.deleteLater()
         self._update_empty_state()
+
+    def _empty_greetings(self):
+        """空聊天问候语：按人设缓存 → 中性池 → 内置。"""
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            lines = PL.get_pool(
+                "CHAT_EMPTY_GREETINGS",
+                persona_from_cfg(self.pet.cfg), APP_DIR)
+            if lines:
+                return lines
+        except Exception:
+            pass
+        return list(CHAT_EMPTY_GREETINGS)
 
     def _render_current_session(self):
         """只渲染当前会话；消息多时先渲染最近 50 条，上方给「加载更早消息」"""

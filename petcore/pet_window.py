@@ -1516,7 +1516,8 @@ class PetWindow(QWidget):
                 if random.random() < 0.6:
                     self.say(random.choice(INNER_LINES), inner=True)
                 else:
-                    self.say(random.choice(LINES))
+                    self.say(random.choice(
+            self.app._persona_pool("LINES", LINES) or LINES))
         # 记录调度历史（用于冷却与调试面板）
         self._record_action(name)
         # 转向类动作（若旧配置里还有）仍会改朝向
