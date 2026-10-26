@@ -1491,11 +1491,52 @@ class PetApp(QObject):
             return True, "功能关闭"
         return self._care_busy()
 
-    def _care_candidates(self):
+    @staticmethod
+    def _in_time_window(now_dt, start_hm, end_hm):
+        """判断当前时间是否落在 [start, end) 窗口内，支持跨午夜。"""
+        try:
+            sh, sm = [int(x) for x in str(start_hm).split(":")]
+            eh, em = [int(x) for x in str(end_hm).split(":")]
+            cur = now_dt.hour * 60 + now_dt.minute
+            s, e = sh * 60 + sm, eh * 60 + em
+            if s <= e:
+                return s <= cur < e
+            # 跨午夜（如 23:30 → 03:00）
+            return cur >= s or cur < e
+        except Exception:
+            return False
+
+    def _care_in_window(self, kind, now_dt=None):
+        """该关心类型此刻是否在其允许的时间窗口内。
+
+        没有 window/windows 配置的类型恒为 True。
+        """
+        spec = CARE_KINDS.get(kind) or {}
+        try:
+            cur = now_dt or datetime.datetime.now()
+        except Exception:
+            return True
+        w = spec.get("window")
+        if w:
+            try:
+                return self._in_time_window(cur, w[0], w[1])
+            except Exception:
+                return True
+        ws = spec.get("windows")
+        if ws:
+            try:
+                return any(self._in_time_window(cur, a, b) for a, b in ws)
+            except Exception:
+                return True
+        return True
+
+    def _care_candidates(self, now_dt=None):
         """构造引擎候选列表：[(kind, cooldown_sec, daily_max)]。
 
         water/stand/eyes 的冷却沿用用户在设置里配的间隔
         （cfg["reminders"][kind]["min"]），不用新默认值。
+        sleep/meal 用固定冷却（由 CARE_KINDS 的窗口天然限制频率）。
+        不在时间窗口内的类型不进入候选。
         """
         out = []
         for kind in REMINDERS:
@@ -1504,11 +1545,18 @@ class PetApp(QObject):
                     continue
             except Exception:
                 continue
-            try:
-                cd = max(60, int(self._rem_minutes(kind)) * 60)
-            except Exception:
-                cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
+            # 时间窗口（sleep / meal）
+            if not self._care_in_window(kind, now_dt):
+                continue
             spec = CARE_KINDS.get(kind) or {}
+            if "window" in spec or "windows" in spec:
+                # 窗口型：冷却按窗口间隔给个合理值
+                cd = 90 * 60
+            else:
+                try:
+                    cd = max(60, int(self._rem_minutes(kind)) * 60)
+                except Exception:
+                    cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
             out.append((kind, cd, int(spec.get("daily_max") or 0)))
         return out
 
@@ -1523,7 +1571,9 @@ class PetApp(QObject):
                 return
             cur = float(now if now is not None else time.time())
             self._care.roll_day(cur)
-            cands = self._care_candidates()
+            # 时间窗口（sleep/meal）按真实本地时间判断
+            now_dt = datetime.datetime.fromtimestamp(cur)
+            cands = self._care_candidates(now_dt)
             if not cands:
                 return
             kind, why = self._care.pick_next(cur, cands)

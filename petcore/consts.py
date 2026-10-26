@@ -735,15 +735,19 @@ PET_MODE_TEXT = {
 # ===== 定时提醒 =====
 DEFAULT_REMINDS_MIN = 45
 # 每类独立默认间隔（分钟）：喝水 45 / 起身 60 / 护眼 20
-DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 20}
+DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 20,
+                            "sleep": 120, "meal": 180}
 REMINDERS = {
     "water": "喝水提醒",
     "stand": "起身活动提醒",
     "eyes":  "护眼提醒",
+    "sleep": "深夜催睡",
+    "meal":  "饭点提醒",
 }
 # 每类图标（emoji 本体）
 REMIND_ICONS = {"water": "💧", "stand": "🚶", "eyes": "👀",
-                "todo": "✅", "schedule": "⏰"}
+                "todo": "✅", "schedule": "⏰",
+                "sleep": "🌙", "meal": "🍚"}
 # 提醒气泡备用图标（clock 用于定时/待办兜底）
 REMIND_ICON_CLOCK = "⏰"
 # 圆形图标底色（按类型）
@@ -753,11 +757,15 @@ REMIND_ICON_COLORS = {
     "eyes":     QColor(0x8E, 0x6F, 0xD4),   # 紫底
     "todo":     QColor(0xF0, 0x93, 0x2F),   # 橙底
     "schedule": QColor(0x9E, 0xA4, 0xAE),   # 灰底
+    "sleep":    QColor(0x5C, 0x6B, 0xC0),   # 靛蓝底
+    "meal":     QColor(0xE0, 0x7A, 0x5F),   # 砖红底
 }
 REMIND_ICON_DIAMETER = 32.0             # 圆形图标直径（逻辑像素，随缩放等比）
 # 每类标题（加粗、字号比正文小一号）
 REMIND_TITLES = {
     "water":    "喝水时间",
+    "sleep":    "该睡觉了",
+    "meal":     "吃饭时间",
     "stand":    "起来动一动",
     "eyes":     "让眼睛休息一下",
     "todo":     "待办提醒",
@@ -840,6 +848,12 @@ CARE_KINDS = {
     "water": {"name": "喝水",   "priority": 30, "daily_max": 8},
     "stand": {"name": "起身",   "priority": 40, "daily_max": 6},
     "eyes":  {"name": "护眼",   "priority": 30, "daily_max": 8},
+    # 深夜催睡：只在 23:30 之后检查，优先级最高
+    "sleep": {"name": "催睡",   "priority": 90, "daily_max": 2,
+              "window": ("23:30", "03:00")},
+    # 饭点：11:30-13:00 / 17:30-19:00 两个窗口
+    "meal":  {"name": "饭点",   "priority": 70, "daily_max": 3,
+              "windows": [("11:30", "13:00"), ("17:30", "19:00")]},
 }
 
 # 待办 / 日程：不受每日上限、降频影响；忙时只延后不丢弃
@@ -848,11 +862,37 @@ CARE_EXEMPT_KINDS = ("todo", "schedule")
 # 关心状态文件名
 CARE_STATE_NAME = "care_state.json"
 
+# 深夜催睡（傲娇风格，不带括号动作）
+SLEEP_LINES = [
+    "都几点了，还不睡？眼睛不要了是吧。",
+    "喂，该睡了。明天起不来我可不叫你。",
+    "哼，熬夜伤身体，去睡。",
+    "笨蛋，再刷下去天就亮了。",
+    "该睡了……我才不是在等你。",
+    "这么晚还不睡，是想让我担心吗？",
+    "喂，关灯睡觉，别磨蹭。",
+    "哼，快去睡，明天还要见人呢。",
+]
+
+# 饭点提醒（傲娇风格，不带括号动作）
+MEAL_LINES = [
+    "该吃饭了，别又拖到胃疼。",
+    "喂，饭点了，先吃再说。",
+    "笨蛋，不吃饭哪有力气干活。",
+    "到饭点了……我才不是催你。",
+    "哼，快去吃饭，别让我说第二遍。",
+    "该吃了，饿着肚子算什么本事。",
+    "喂，放下手里的事，先吃饭。",
+    "笨蛋，饭点到了，去吃点东西。",
+]
+
 REMIND_LINES = {
     "water": WATER_LINES,
     "stand": STAND_LINES,
     "eyes":  EYES_LINES,
     "todo":  TODO_LINES,
+    "sleep": SLEEP_LINES,
+    "meal":  MEAL_LINES,
 }
 
 # 点击反馈：点「知道了」/「稍后再提醒」后的短回话（1.5 秒小气泡）
