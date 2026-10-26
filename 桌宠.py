@@ -1061,15 +1061,26 @@ class PetApp(QObject):
         return ok, base, key, model
 
     def _proactive_cooldown_left(self, cfg):
-        """冷却剩余秒数（含「无视翻倍」的倍率）。"""
-        st = getattr(self, "_pro_state", None)
-        if st is None:
+        """冷却剩余秒数。计数以关心引擎为准（不再用 proactive 自己的）。
+
+        引擎未初始化时退化为 0（不阻塞）。
+        """
+        try:
+            if self._care is None:
+                return 0.0
+            base = max(60, int(float(cfg.get("cooldown_min") or 20) * 60))
+            return self._care.cooldown_left("chat", time.time(), base)
+        except Exception:
             return 0.0
-        base = float(cfg.get("cooldown_min") or 0) * 60.0
-        mult = float(getattr(st, "interval_mult", 1.0) or 1.0)
-        need = base * mult
-        elapsed = time.time() - float(getattr(st, "last_fire_ts", 0.0) or 0.0)
-        return max(0.0, need - elapsed)
+
+    def _proactive_used_today(self):
+        """今日已搭话次数（引擎为准）。"""
+        try:
+            if self._care is None:
+                return 0
+            return self._care.used_today("chat")
+        except Exception:
+            return 0
 
     def _proactive_tick(self):
         """定时轮询（只在工作时间段内真正工作，段外直接返回）。"""
@@ -1095,9 +1106,16 @@ class PetApp(QObject):
                 self._pro_tracker.reset()
             log("[主动] 进入工作时间段，计时清零")
 
-        # ② 其他暂停条件
-        if self.game_active or self.chat_paused or self._in_dnd():
-            return
+        # ② 其他暂停条件：统一走 _care_busy（阶段⑤）
+        # 但「空闲/离开」不适用——主动搭话正是要捕捉发呆状态，
+        # 所以这里只取 busy 的非空闲类原因。
+        try:
+            _busy, _why = self._care_busy()
+            if _busy and _why != "空闲/离开":
+                return
+        except Exception:
+            if self.game_active or self.chat_paused or self._in_dnd():
+                return
         pet = self.main_pet
         if pet is None or not pet.isVisible():
             return
@@ -1126,20 +1144,28 @@ class PetApp(QObject):
         ready, base, key, model = self._proactive_chat_ready()
         st = self._pro_state
         st.roll_day()
+        # 计数以引擎为准：把引擎的今日次数传给 local_filter
         reason = PRO.local_filter(
             info, cfg, self._proactive_cooldown_left(cfg),
-            st.used, ready)
+            self._proactive_used_today(), ready)
         if reason:
             log("[主动] 跳过：%s" % reason)
             return
 
         # ⑥ 调模型（先在主线程截全屏，发给视觉模型观察）
         tracker.mark_fired()
+        # 计数记入关心引擎（唯一事实来源）
+        try:
+            if self._care is not None:
+                self._care.mark_fired("chat")
+        except Exception as ex:
+            log("[主动] 引擎计数失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
         _, pil = self._pro_grab_fullscreen_jpg()
         self._pro_fire(cfg, info, idle_sec, welcome=False, shot_img=pil)
 
     def _pro_can_welcome(self, cfg):
-        """回来打招呼是否允许（每日上限/冷却同样适用）。"""
+        """回来打招呼是否允许（每日上限/冷却同样适用，以引擎为准）。"""
         ready, _b, _k, _m = self._proactive_chat_ready()
         if not ready:
             return False
@@ -1587,6 +1613,16 @@ class PetApp(QObject):
         不在时间窗口内的类型不进入候选。
         """
         out = []
+        # 主动搭话（阶段⑤）：由 proactive 自己判断时段/状态，
+        # 这里只提供候选以便引擎统一冷却与上限。
+        try:
+            if self.proactive_cfg().get("enabled"):
+                spec_c = CARE_KINDS.get("chat") or {}
+                cd_c = max(60, int(float(self.proactive_cfg().get(
+                    "cooldown_min") or 20) * 60))
+                out.append(("chat", cd_c, int(spec_c.get("daily_max") or 8)))
+        except Exception:
+            pass
         for kind in REMINDERS:
             try:
                 if not self._rem_on(kind):
