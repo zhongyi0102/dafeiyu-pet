@@ -280,13 +280,62 @@ class MemoryStore:
         self._block_cache_day = None
         self._block_cache = ""
 
-    def block(self):
-        """拼到 system 消息尾部；顺序固定（按 id），内容不变则前缀完全一致"""
+    def inject_items(self, now=None):
+        """挑出本轮要注入的记忆，按保留率降序。
+
+        - 手动记忆永不衰减，恒为 1.0，排在最前（按 id）
+        - 自动记忆低于 DECAY_THRESHOLD 不注入（但不删除）
+        - 最多 MAX_INJECT 条
+        """
+        try:
+            now = now or time.localtime()
+            scored = []
+            for m in self.sorted_items():
+                r = self.retention(m, now)
+                if r < self.DECAY_THRESHOLD:
+                    continue
+                scored.append((r, m))
+            # 保留率降序；同率时手动优先、再按 id 稳定排序
+            scored.sort(key=lambda x: (-x[0],
+                                      0 if x[1].get("source") == "manual" else 1,
+                                      x[1].get("id", 0)))
+            return [m for _r, m in scored[:self.MAX_INJECT]]
+        except Exception as ex:
+            log("[记忆] 计算注入列表失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return self.sorted_items()
+
+    def block(self, now=None):
+        """拼到 system 消息尾部。
+
+        顺序按保留率排序，同一天内结果恒定（按自然日取整），
+        因此同一天内前缀缓存不会因记忆而失效。
+        """
         if not self.items:
             return ""
-        lines = "\n".join("- " + (m.get("text") or "").strip()
-                          for m in self.sorted_items())
-        return "\n\n【请长期记住的事】\n" + lines
+        try:
+            cur = now or time.localtime()
+            day = self.day_index(cur)
+            # 同日缓存：同一天内重复调用直接复用
+            if self._block_cache_day == day and self._block_cache:
+                return self._block_cache
+            picks = self.inject_items(cur)
+            if not picks:
+                self._block_cache_day = day
+                self._block_cache = ""
+                return ""
+            lines = "\n".join("- " + (m.get("text") or "").strip()
+                              for m in picks)
+            out = "\n\n【请长期记住的事】\n" + lines
+            self._block_cache_day = day
+            self._block_cache = out
+            return out
+        except Exception as ex:
+            log("[记忆] 生成 block 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            lines = "\n".join("- " + (m.get("text") or "").strip()
+                              for m in self.sorted_items())
+            return "\n\n【请长期记住的事】\n" + lines
 
     def system_content(self, base):
         return base + self.block()
