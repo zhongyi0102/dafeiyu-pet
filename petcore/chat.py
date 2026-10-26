@@ -46,13 +46,77 @@ from petcore.consts import (log, LOG, APP_DIR, BUNDLE_DIR, SPRITE_DIR,   # noqa:
                             _setup_logging, _thread_excepthook, _valid_hhmm)
 
 class MemoryStore:
-    """长期记忆：memory.json，按 id 顺序稳定拼接进 system 消息（改了才会让前缀缓存失效）"""
+    """长期记忆：memory.json，按 id 顺序稳定拼接进 system 消息（改了才会让前缀缓存失效）
+
+    每条记忆字段：
+      id / text / time             —— 原有字段
+      source                       —— manual（用户手动）/ auto（模型自动提取）
+      strength                     —— 固定 1.0（保留字段，衰减不再依赖它）
+      last_access                  —— 衰减基准（写入时间或最后一次被提到的时间）
+      mention_count                —— 被再次提到的次数，用来延长半衰期
+      origin_session / origin_time —— 自动记忆的来源会话与时间
+    """
+
+    MAX_AUTO = 200              # 自动记忆条数上限
+    BASE_HALFLIFE_DAYS = 7.0    # 基础半衰期（天）
+    MAX_HALFLIFE_DAYS = 28.0    # 半衰期上限（天）
+    DECAY_THRESHOLD = 0.15      # 保留率低于此值不再注入（但不删除）
+    MAX_INJECT = 15             # 每次最多注入多少条
 
     def __init__(self, path):
         self.path = path
         self.items = []
         self.next_id = 1
+        self._block_cache_day = None
+        self._block_cache = ""
         self.load()
+
+    # ---------- 时间工具 ----------
+
+    @staticmethod
+    def now_str():
+        return time.strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def parse_ts(s):
+        """把 'YYYY-MM-DD HH:MM:SS' 解析成 time.struct_time；失败返回 None。"""
+        try:
+            return time.strptime(str(s or "").strip(), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+    @classmethod
+    def day_index(cls, ts):
+        """把 struct_time 折成「自然日序号」，用于按天取整。"""
+        return int(time.mktime((ts.tm_year, ts.tm_mon, ts.tm_mday,
+                                0, 0, 0, 0, 0, -1)) // 86400)
+
+    # ---------- 读写 ----------
+
+    @classmethod
+    def normalize(cls, m):
+        """补齐缺失字段（兼容老数据），返回规范化 dict。"""
+        text = str(m.get("text") or "").strip()
+        src = str(m.get("source") or "manual").strip().lower()
+        if src not in ("manual", "auto"):
+            src = "manual"
+        t0 = str(m.get("time") or "").strip() or cls.now_str()
+        last = str(m.get("last_access") or "").strip() or t0
+        try:
+            mc = int(m.get("mention_count") or 0)
+        except Exception:
+            mc = 0
+        return {
+            "id": int(m.get("id") or 0),
+            "text": text,
+            "time": t0,
+            "source": src,
+            "strength": 1.0,
+            "last_access": last,
+            "mention_count": max(0, mc),
+            "origin_session": m.get("origin_session") or None,
+            "origin_time": m.get("origin_time") or None,
+        }
 
     def load(self):
         try:
@@ -60,7 +124,9 @@ class MemoryStore:
                 with open(self.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 items = data.get("memories") or []
-                self.items = [m for m in items if isinstance(m, dict) and (m.get("text") or "").strip()]
+                self.items = [self.normalize(m) for m in items
+                              if isinstance(m, dict)
+                              and (m.get("text") or "").strip()]
                 for m in self.items:
                     m["id"] = int(m.get("id") or 0)
                 max_id = max([m["id"] for m in self.items] or [0])
@@ -68,6 +134,7 @@ class MemoryStore:
         except Exception as ex:
             log("读取 memory.json 失败: %s" % ex, logging.WARNING)
             self.items, self.next_id = [], 1
+        self.invalidate_block()
 
     def save(self):
         try:
@@ -75,25 +142,53 @@ class MemoryStore:
             data = {
                 "memories": self.sorted_items(),
                 "next_id": self.next_id,
-                "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "version": 2,
+                "updated": self.now_str(),
             }
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
         except Exception as ex:
             log("保存 memory.json 失败: %s" % ex, logging.ERROR)
+        self.invalidate_block()
 
     def sorted_items(self):
         return sorted(self.items, key=lambda m: m.get("id", 0))
 
-    def add(self, text):
+    def get(self, mem_id):
+        for m in self.items:
+            if m.get("id") == mem_id:
+                return m
+        return None
+
+    def auto_items(self):
+        return [m for m in self.items if m.get("source") == "auto"]
+
+    # ---------- 增删改 ----------
+
+    def add(self, text, source="manual", origin_session=None,
+            origin_time=None):
+        """新增一条记忆。source: manual（默认）/ auto（自动提取）。"""
         text = (text or "").strip()
         if not text:
             return None
-        item = {"id": self.next_id, "text": text,
-                "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        now = self.now_str()
+        src = "auto" if source == "auto" else "manual"
+        item = {
+            "id": self.next_id,
+            "text": text,
+            "time": now,
+            "source": src,
+            "strength": 1.0,
+            "last_access": now,
+            "mention_count": 0,
+            "origin_session": origin_session,
+            "origin_time": (origin_time or now) if src == "auto" else None,
+        }
         self.next_id += 1
         self.items.append(item)
+        if src == "auto":
+            self.trim_auto()
         self.save()
         return item
 
@@ -108,6 +203,22 @@ class MemoryStore:
                 return True
         return False
 
+    def reinforce(self, mem_id, text=None):
+        """自动记忆被再次提到：mention_count +1、last_access 刷新。
+
+        只对 source == "auto" 的条目生效；手动记忆不参与强化。
+        """
+        m = self.get(mem_id)
+        if m is None or m.get("source") != "auto":
+            return False
+        t = (text or "").strip()
+        if t:
+            m["text"] = t
+        m["mention_count"] = int(m.get("mention_count") or 0) + 1
+        m["last_access"] = self.now_str()
+        self.save()
+        return True
+
     def remove(self, mem_id):
         before = len(self.items)
         self.items = [m for m in self.items if m.get("id") != mem_id]
@@ -116,11 +227,65 @@ class MemoryStore:
             return True
         return False
 
+    # ---------- 自动记忆容量 ----------
+
+    def trim_auto(self):
+        """自动记忆超过上限时，先清理最淡（保留率最低）的条目。"""
+        autos = self.auto_items()
+        over = len(autos) - self.MAX_AUTO
+        if over <= 0:
+            return 0
+        autos.sort(key=lambda m: self.retention(m))
+        drop = {m.get("id") for m in autos[:over]}
+        self.items = [m for m in self.items if m.get("id") not in drop]
+        log("[记忆] 自动记忆超过 %d 条，清理最淡的 %d 条（id=%s）"
+            % (self.MAX_AUTO, len(drop), sorted(drop)))
+        return len(drop)
+
+    # ---------- 遗忘曲线 ----------
+
+    def halflife_days(self, m):
+        """半衰期：7 × (1 + 0.5 × mention_count)，上限 28 天。"""
+        if m.get("source") != "auto":
+            return float("inf")
+        try:
+            mc = int(m.get("mention_count") or 0)
+        except Exception:
+            mc = 0
+        return min(self.MAX_HALFLIFE_DAYS,
+                   self.BASE_HALFLIFE_DAYS * (1.0 + 0.5 * mc))
+
+    def retention(self, m, now=None):
+        """保留率 R ∈ (0, 1]。手动记忆恒为 1.0（永不衰减）。
+
+        now 可注入（测试用），默认取当前本地时间。
+        按自然日取整，因此同一天内结果恒定。
+        """
+        if m.get("source") != "auto":
+            return 1.0
+        ts = self.parse_ts(m.get("last_access")) or self.parse_ts(m.get("time"))
+        if ts is None:
+            return 1.0
+        try:
+            cur = now or time.localtime()
+            days = max(0, self.day_index(cur) - self.day_index(ts))
+            hl = self.halflife_days(m)
+            if hl <= 0 or hl == float("inf"):
+                return 1.0
+            return 0.5 ** (days / hl)
+        except Exception:
+            return 1.0
+
+    def invalidate_block(self):
+        self._block_cache_day = None
+        self._block_cache = ""
+
     def block(self):
         """拼到 system 消息尾部；顺序固定（按 id），内容不变则前缀完全一致"""
         if not self.items:
             return ""
-        lines = "\n".join("- " + (m.get("text") or "").strip() for m in self.sorted_items())
+        lines = "\n".join("- " + (m.get("text") or "").strip()
+                          for m in self.sorted_items())
         return "\n\n【请长期记住的事】\n" + lines
 
     def system_content(self, base):
