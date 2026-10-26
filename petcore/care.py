@@ -41,6 +41,10 @@ STARTUP_GRACE_SEC = 300
 # 一条关心弹出后，全局互斥窗口（秒）
 ACTIVE_HOLD_SEC = 8
 
+# 实时生成每日上限（与 consts.LIVE_GEN_DAILY_MAX 保持一致）
+# 这里单独定义一份，避免 care.py 对 consts 产生导入依赖
+LIVE_GEN_DAILY_MAX = 30
+
 # 同类连续忽略多少次后当天降频停提
 IGNORE_STREAK_LIMIT = 3
 
@@ -78,6 +82,9 @@ class CareState:
         self.aff_gain_today = 0   # 当天靠聊天加了多少
         self.aff_lose_today = 0   # 当天掉了多少
         self.aff_last_active = "" # 最后一次互动的日期（判断久未互动）
+        # 实时生成计数（阶段③）
+        self.live_gen_day = ""
+        self.live_gen_used = 0
         self.load()
 
     # ---------- 持久化 ----------
@@ -134,6 +141,11 @@ class CareState:
             except Exception:
                 self.aff_lose_today = 0
             self.aff_last_active = str(data.get("aff_last_active") or "")
+            self.live_gen_day = str(data.get("live_gen_day") or "")
+            try:
+                self.live_gen_used = int(data.get("live_gen_used") or 0)
+            except Exception:
+                self.live_gen_used = 0
             st = data.get("stats")
             self.stats = {}
             if isinstance(st, dict):
@@ -188,6 +200,8 @@ class CareState:
         self.aff_gain_today = 0
         self.aff_lose_today = 0
         self.aff_last_active = ""
+        self.live_gen_day = ""
+        self.live_gen_used = 0
 
     def save(self):
         """原子写：写 .tmp 再 os.replace。"""
@@ -213,6 +227,8 @@ class CareState:
                 "aff_gain_today": int(self.aff_gain_today),
                 "aff_lose_today": int(self.aff_lose_today),
                 "aff_last_active": self.aff_last_active,
+                "live_gen_day": self.live_gen_day,
+                "live_gen_used": int(self.live_gen_used),
                 "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             tmp = self.path + ".tmp"
@@ -532,6 +548,35 @@ class CareState:
         if v <= 60:
             return "normal"
         return "clingy"
+
+    # ---------- 实时生成计数（阶段③）----------
+
+    def _live_roll_day(self, now=None):
+        today = self._today(now)
+        if self.live_gen_day != today:
+            self.live_gen_day = today
+            self.live_gen_used = 0
+            return True
+        return False
+
+    def live_gen_left(self, now=None, daily_max=None):
+        """今天还能实时生成几次。"""
+        self._live_roll_day(now)
+        cap = LIVE_GEN_DAILY_MAX if daily_max is None else int(daily_max)
+        return max(0, cap - int(self.live_gen_used))
+
+    def note_live_generate(self, now=None):
+        """记一次实时生成；返回是否仍在额度内（False 表示应回落）。"""
+        self._live_roll_day(now)
+        if self.live_gen_used >= LIVE_GEN_DAILY_MAX:
+            return False
+        self.live_gen_used = int(self.live_gen_used) + 1
+        self.save()
+        return True
+
+    def live_gen_used_today(self, now=None):
+        self._live_roll_day(now)
+        return int(self.live_gen_used)
 
     def reset_timer(self, kind, now=None):
         """用户改了间隔/重新打开开关：把该类的计时清零重来。"""

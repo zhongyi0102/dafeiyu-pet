@@ -370,6 +370,120 @@ def generate_all(persona, chat_cfg, app_dir, on_progress=None):
     return True, "已按人设生成 %d 个台词池" % len(got), len(got)
 
 
+# ===== 实时生成一句（阶段③）=====
+
+LIVE_PROMPT = (
+    "根据下面的人设，为这个场景写一句话。\n"
+    "\n"
+    "【人设】\n"
+    "{persona}\n"
+    "\n"
+    "【场景】{scene}\n"
+    "{required}"
+    "\n"
+    "【要求】\n"
+    "- 只输出这一句话，不要解释、不要引号、不要换行\n"
+    "- 不超过 {max_len} 字\n"
+    "- 不要括号动作、不要颜文字、不要 emoji\n"
+    "- 称呼用户的方式以人设为准；人设没写就用「你」\n"
+    "{placeholder_hint}"
+)
+
+
+def validate_live_line(text, required_info=""):
+    """校验实时生成的一句。返回 (ok, 原因, 干净句子)。"""
+    s = str(text or "").strip()
+    # 去掉可能的引号包裹
+    for q in ('"', "'", "\u201c", "\u201d", "\u300c", "\u300d"):
+        if s.startswith(q) and s.endswith(q) and len(s) > 2:
+            s = s[1:-1].strip()
+    if not s:
+        return False, "空", ""
+    # 只取第一行
+    s = s.split("\n")[0].strip()
+    from petcore.consts import LIVE_GEN_MIN_LEN as _MIN, LIVE_GEN_MAX_LEN as _MAX
+    if len(s) < _MIN:
+        return False, "太短", ""
+    if len(s) > _MAX:
+        return False, "太长", ""
+    if _BRACKET_RE.search(s):
+        return False, "含括号动作", ""
+    if _EMOJI_RE.search(s):
+        return False, "含 emoji", ""
+    if required_info and required_info not in s:
+        return False, "缺必须信息", ""
+    return True, "", s
+
+
+def live_generate_one(kind, persona, chat_cfg, app_dir,
+                      scene="", required_info="",
+                      placeholder="", timeout=None):
+    """现场生成一句台词。
+
+    返回 (ok, 句子, 原因)。失败时句子为空，调用方回落固定台词。
+    合格句子会追加进该人设的缓存池。
+    """
+    import time as _t
+    from petcore.consts import (
+        LIVE_GEN_TIMEOUT_SEC, LIVE_GEN_MAX_LEN, LIVE_GEN_MIN_LEN)
+
+    p = (persona or "").strip()
+    if not p:
+        return False, "", "人设为空"
+    base, key, model = chat_cfg or ("", "", "")
+    if not (base and key and model):
+        return False, "", "未配置聊天 Key"
+
+    to = LIVE_GEN_TIMEOUT_SEC if timeout is None else float(timeout)
+    prompt = LIVE_PROMPT.format(
+        persona=p[:1500],
+        scene=scene or (POOL_HINTS.get(kind) or kind),
+        required=("【必须包含】%s\n" % required_info) if required_info else "",
+        max_len=LIVE_GEN_MAX_LEN,
+        placeholder_hint=(
+            "【占位符】句子里必须出现 %s\n" % placeholder) if placeholder else "")
+
+    import requests
+    t0 = _t.time()
+    try:
+        r = requests.post(
+            (base or "").rstrip("/") + "/chat/completions",
+            headers={"Authorization": "Bearer " + key,
+                     "Content-Type": "application/json"},
+            json={"model": model,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.9, "max_tokens": 120},
+            timeout=to)
+    except Exception as ex:
+        return False, "", "请求失败: %s" % type(ex).__name__
+    if _t.time() - t0 > to:
+        return False, "", "超时"
+    if r.status_code != 200:
+        return False, "", "HTTP %s" % r.status_code
+    try:
+        text = ((r.json().get("choices") or [{}])[0]
+                .get("message", {}).get("content") or "")
+    except Exception:
+        return False, "", "响应解析失败"
+
+    ok, why, clean = validate_live_line(text, required_info)
+    if not ok:
+        return False, "", why
+
+    # 合格：顺手存进缓存池，下次复用
+    try:
+        pools = get_persona_pools(app_dir, p)
+        pool = list(pools.get(kind) or [])
+        if clean not in pool:
+            pool.append(clean)
+            # 只保留最近 20 句，避免无限增长
+            pools[kind] = pool[-20:]
+            save_persona_pools(app_dir, p, pools)
+    except Exception:
+        pass
+    return True, clean, ""
+
+
 # ===== 运行时取池 =====
 
 def get_pool(name, persona, app_dir):

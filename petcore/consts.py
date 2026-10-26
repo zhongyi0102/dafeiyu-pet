@@ -887,6 +887,12 @@ CARE_EXEMPT_KINDS = ("todo", "schedule")
 # 关心状态文件名
 CARE_STATE_NAME = "care_state.json"
 
+# 实时生成（阶段③）：每次调用的约束
+LIVE_GEN_DAILY_MAX = 30      # 每天最多实时生成几次
+LIVE_GEN_TIMEOUT_SEC = 3.0   # 超时秒数，超时回落固定台词
+LIVE_GEN_MAX_LEN = 30        # 生成句子的最大字数
+LIVE_GEN_MIN_LEN = 4         # 最小字数
+
 # 深夜催睡（傲娇风格，不带括号动作）
 SLEEP_LINES = [
     "都几点了，还不睡？眼睛不要了是吧。",
@@ -2623,6 +2629,12 @@ FEATURES = {
     "balance_auto": {
         "name": "余额自动查询", "group": "余额", "default": False, "needs_restart": False,
         "desc": "按间隔自动查询 DeepSeek 余额（手动「查看余额」始终可用）",
+    },
+    "care_live_generate": {
+        "name": "提醒也实时生成", "group": "互动", "default": False,
+        "needs_restart": False,
+        "desc": "弹提醒时按当前人设现场生成一句（耗 token，"
+                "每天最多 30 次，超时或失败自动回落固定台词）",
     },
     "auto_memory": {
         "name": "自动记忆", "group": "互动", "default": False, "needs_restart": False,

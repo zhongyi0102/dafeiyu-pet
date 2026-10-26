@@ -1859,6 +1859,48 @@ class PetApp(QObject):
             log("[记忆] 直接写会话失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
+    def _care_live_line(self, kind):
+        """实时生成一句提醒台词。返回句子或空串（空 = 回落固定台词）。
+
+        约束：
+          - 开关关闭 → 直接返回空
+          - 人设为空 → 直接返回空（无风格可生成）
+          - 达到每日上限 → 返回空
+          - 3 秒超时 / 请求失败 / 校验不通过 → 返回空
+        只替换「说什么」，不影响冷却、上限、静默、启动保护。
+        """
+        try:
+            if not self.is_enabled("care_live_generate"):
+                return ""
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg, LIVE_GEN_DAILY_MAX
+            p = persona_from_cfg(self.cfg)
+            if not p:
+                return ""
+            if self._care is not None:
+                if self._care.live_gen_left(daily_max=LIVE_GEN_DAILY_MAX) <= 0:
+                    log("[提醒] 实时生成已达今日上限，回落固定台词")
+                    return ""
+            _b, _k, _m = self._chat_cfg()
+            if not (_b and _k and _m):
+                return ""
+            okk, line, why = PL.live_generate_one(
+                "%s_LINES" % kind.upper(), p, (_b, _k, _m), APP_DIR,
+                scene=REMINDERS.get(kind, kind))
+            if not okk:
+                log("[提醒] 实时生成回落（%s）" % why)
+                return ""
+            if self._care is not None:
+                self._care.note_live_generate()
+            log("[提醒] 实时生成成功（今日第 %d 次）"
+                % (self._care.live_gen_used_today()
+                   if self._care is not None else 0))
+            return line
+        except Exception as ex:
+            log("[提醒] 实时生成异常: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return ""
+
     def _care_check_ignored(self, now=None):
         """检查上一条关心气泡是否超时未被处理（= 忽略）。
 
@@ -1984,9 +2026,12 @@ class PetApp(QObject):
             return False
 
         if text is None:
-            pool = REMIND_LINES.get(kind) or ["该休息一下了。"]
-            text = self._pick_line(pool, "remind_" + kind,
-                                   pool_name="%s_LINES" % kind.upper())
+            # 先试实时生成（开关开启时）；失败/超时/超限一律回落固定台词
+            text = self._care_live_line(kind)
+            if not text:
+                pool = REMIND_LINES.get(kind) or ["该休息一下了。"]
+                text = self._pick_line(pool, "remind_" + kind,
+                                       pool_name="%s_LINES" % kind.upper())
         icon = icon or REMIND_ICONS.get(kind, REMIND_ICON_CLOCK)
         log("[提醒] %s -> %s" % (REMINDERS.get(kind, kind), text))
 

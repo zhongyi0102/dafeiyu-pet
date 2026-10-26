@@ -488,6 +488,33 @@ class SettingsWindow(QDialog):
         return cb
 
     # ---------- 功能开关页 ----------
+    def _build_live_gen_row(self, lay):
+        """「提醒也实时生成」开关 + 今日已用次数。"""
+        try:
+            from petcore.consts import LIVE_GEN_DAILY_MAX
+            cb = QCheckBox("提醒也实时生成（耗 token）")
+            cb.setChecked(bool(self.app.is_enabled("care_live_generate")))
+            cb.toggled.connect(
+                lambda on: self.app.set_feature("care_live_generate", on))
+            lay.addWidget(cb)
+            used = 0
+            try:
+                if getattr(self.app, "_care", None) is not None:
+                    used = self.app._care.live_gen_used_today()
+            except Exception:
+                pass
+            hint = QLabel(
+                "关闭时固定台词只从缓存池或中性池抽取（0 token）。"
+                "开启后弹提醒时现场生成一句，每天最多 %d 次，"
+                "超时 3 秒或失败自动回落。今日已用 %d 次。"
+                % (LIVE_GEN_DAILY_MAX, used))
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
+            lay.addWidget(hint)
+        except Exception as ex:
+            log("[设置] 实时生成开关失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _build_features_page(self, lay):
         self._title(lay, "功能开关",
                     "关掉后对应功能不再触发、也不占用定时器。带「重启生效」标记的需要重启程序。")
@@ -515,6 +542,7 @@ class SettingsWindow(QDialog):
                     lambda on, k=key: self.app.set_feature(k, on),
                     spec.get("desc"), note)
                 self._feature_boxes[key] = cb
+        self._build_live_gen_row(lay)
         lay.addStretch(1)
 
     # ---------- 宠物页 ----------
