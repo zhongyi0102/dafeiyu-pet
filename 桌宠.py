@@ -833,6 +833,10 @@ class PetApp(QObject):
             log("[关心] 初始化引擎失败: %s: %s"
                 % (type(ex).__name__, ex), logging.ERROR)
             self._care = None
+        # 忽略检测用的「上一条关心」状态（默认已处理，避免误判）
+        self._care_last_kind = None
+        self._care_last_ts = 0.0
+        self._care_last_acked = True
         self._proc_last_name = ""
         self._proc_since = time.time()
         self._last_festival_hour = None
@@ -1530,6 +1534,50 @@ class PetApp(QObject):
                 return True
         return True
 
+    def mute_care_kind(self, kind):
+        """「别提这个」：该类当天不再出现；连续多天则提示是否关闭。"""
+        self._care_last_acked = True     # 已处理，不算忽略
+        try:
+            if self._care is None:
+                return
+            days = self._care.mute_kind_today(kind)
+            name = CARE_KINDS.get(kind, {}).get("name") or kind
+            self.say_main("好，今天不提%s了。" % name)
+            if days >= 3:
+                # 连续多天：提示可以永久关闭
+                self.say_main("连着 %d 天都不想提%s……"
+                              "要不要去设置里把它关掉？" % (days, name))
+                log("[关心] %s 连续 %d 天被别提，已提示关闭" % (kind, days))
+            # 关掉当前气泡
+            if self.main_pet is not None:
+                self.main_pet.hide_remind_bubble()
+        except Exception as ex:
+            log("[关心] mute 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _clear_care_mute(self):
+        """取消全局静默。"""
+        try:
+            if self._care is not None:
+                self._care.clear_mute_all()
+            self.say_main("好，那我又可以啰嗦了。")
+        except Exception as ex:
+            log("[关心] 取消静默失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def mute_care_all(self, hours=4):
+        """「别吵我」：全局静默 N 小时。"""
+        try:
+            if self._care is None:
+                return
+            self._care.mute_all(hours)
+            self.say_main("好，%d 小时内不吵你。" % int(hours))
+            if self.main_pet is not None:
+                self.main_pet.hide_remind_bubble()
+        except Exception as ex:
+            log("[关心] 全局静默失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _care_candidates(self, now_dt=None):
         """构造引擎候选列表：[(kind, cooldown_sec, daily_max)]。
 
@@ -1560,6 +1608,33 @@ class PetApp(QObject):
             out.append((kind, cd, int(spec.get("daily_max") or 0)))
         return out
 
+    def _care_check_ignored(self, now=None):
+        """检查上一条关心气泡是否超时未被处理（= 忽略）。
+
+        只有关心类参与降频；待办/日程是约定，不算忽略。
+        """
+        try:
+            kind = getattr(self, "_care_last_kind", None)
+            if not kind or kind not in CARE_KINDS:
+                return
+            if getattr(self, "_care_last_acked", True):
+                return
+            ts = float(getattr(self, "_care_last_ts", 0) or 0)
+            if ts <= 0:
+                return
+            cur = float(now if now is not None else time.time())
+            # 气泡 12 秒后消失，再留 3 秒余量判定
+            if cur - ts < REMIND_BUBBLE_HOLD + 3:
+                return
+            # 已超时未处理 → 记忽略（只记一次）
+            self._care_last_acked = True
+            self._care_last_kind = None
+            if self._care is not None:
+                self._care.note_ignored(kind)
+        except Exception as ex:
+            log("[关心] 忽略检测失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
+
     def _care_tick(self, now=None, blocked=False):
         """每个检查周期调用一次：最多挑一条触发。
 
@@ -1571,6 +1646,8 @@ class PetApp(QObject):
                 return
             cur = float(now if now is not None else time.time())
             self._care.roll_day(cur)
+            # 上一次提醒气泡已超时且未处理 → 记为「忽略」
+            self._care_check_ignored(cur)
             # 时间窗口（sleep/meal）按真实本地时间判断
             now_dt = datetime.datetime.fromtimestamp(cur)
             cands = self._care_candidates(now_dt)
@@ -1671,6 +1748,10 @@ class PetApp(QObject):
 
         ctx = {"text": text, "icon": icon, "kind": kind,
                "todo_id": todo_id, "schedule_id": schedule_id}
+        # 供「气泡超时 = 忽略」检测
+        self._care_last_kind = kind
+        self._care_last_ts = time.time()
+        self._care_last_acked = False
 
         # 被拖拽中：不移动，直接就地提醒
         if getattr(pet, "dragging", False):
@@ -1827,7 +1908,15 @@ class PetApp(QObject):
             log("[提醒] 短气泡失败: %s" % ex, logging.DEBUG)
 
     def acknowledge_reminder(self, kind, todo_id=None, schedule_id=None):
-        """点「知道了」：计入今日完成数 + 冒一句短回话。"""
+        """点「知道了」：计入今日完成数 + 清零忽略计数 + 冒一句短回话。"""
+        self._care_last_acked = True     # 已处理，不算忽略
+        # 关心类：清零连续忽略计数（待办/日程不参与降频）
+        try:
+            if self._care is not None and kind in CARE_KINDS:
+                self._care.note_acknowledged(kind)
+        except Exception as ex:
+            log("[关心] 记录确认失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
         self._bump_done(kind)
         if todo_id:
             self._todo_mark_done(todo_id)
@@ -1842,10 +1931,18 @@ class PetApp(QObject):
         log("[提醒] 已确认 %s" % kind)
 
     def snooze_reminder(self, kind, todo_id=None, schedule_id=None):
-        """点「稍后再提醒」：N 分钟后再来一次。"""
+        """点「稍后再提醒」：N 分钟后再来一次（关心类冷却 ×2）。"""
         mins = int(self._rem_extras().get("snooze_min") or REMIND_SNOOZE_MIN)
         if kind in self._rem_next:
             self._rem_next[kind] = time.time() + mins * 60
+        self._care_last_acked = True     # 已处理，不算忽略
+        # 关心类：引擎侧也延后，避免引擎立刻又触发
+        try:
+            if self._care is not None and kind in CARE_KINDS:
+                self._care.snooze_kind(kind, factor=2)
+        except Exception as ex:
+            log("[关心] 延后记录失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
         if self.main_pet is not None:
             self.main_pet.hide_remind_bubble()
         self._return_pet_after_remind()
@@ -4140,6 +4237,19 @@ class PetApp(QObject):
         m = QMenu(pet)
         m.addAction("显示/隐藏", lambda: self.toggle_visible(self.main_pet))
         m.addAction("回到屏幕内", lambda: pet.snap_into_screen())
+        m.addSeparator()
+        # 「别吵我」：全局静默，不影响待办/日程（那是约定）
+        _mute_left = 0
+        try:
+            if self._care is not None:
+                _mute_left = int(self._care.global_muted_left() // 60)
+        except Exception:
+            pass
+        if _mute_left > 0:
+            m.addAction("取消静默（还剩 %d 分钟）" % _mute_left,
+                         self._clear_care_mute)
+        else:
+            m.addAction("别吵我（4 小时）", lambda: self.mute_care_all(4))
         m.addSeparator()
         m.addAction("设置…", lambda: self.open_settings())
         m.addAction("退出", self.quit_app)

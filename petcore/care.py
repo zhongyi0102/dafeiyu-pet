@@ -41,6 +41,15 @@ STARTUP_GRACE_SEC = 300
 # 一条关心弹出后，全局互斥窗口（秒）
 ACTIVE_HOLD_SEC = 8
 
+# 同类连续忽略多少次后当天降频停提
+IGNORE_STREAK_LIMIT = 3
+
+# 「别吵我」默认静默小时数
+MUTE_HOURS_DEFAULT = 4
+
+# 连续多少天点「别提这个」后提示是否关闭该类
+MUTE_DAYS_HINT = 3
+
 
 class CareState:
     """关心引擎的状态存储与决策。
@@ -58,6 +67,11 @@ class CareState:
         self.deferred_until = {}  # kind -> 顺延重试的最早时间戳
         self.started_at = 0.0   # 程序启动时间（用于前 5 分钟保护）
         self.active_until = 0.0  # 全局互斥窗口结束时间
+        self.ignored_streak = {}  # kind -> 连续忽略次数（气泡超时无操作）
+        self.muted_kinds = {}     # kind -> 当天不再出现的日期（YYYY-MM-DD）
+        self.muted_until = 0.0    # 「别吵我」全局静默截止时间戳
+        self.muted_days = {}      # kind -> 连续多少天被「别提这个」
+        self.stats = {}           # kind -> {"fired":n,"acked":n,"ignored":n}
         self.load()
 
     # ---------- 持久化 ----------
@@ -91,6 +105,25 @@ class CareState:
                 self.active_until = float(data.get("active_until") or 0)
             except Exception:
                 self.active_until = 0.0
+            self.ignored_streak = self._clean_map(
+                data.get("ignored_streak"), int)
+            self.muted_kinds = self._clean_map(
+                data.get("muted_kinds"), str)
+            try:
+                self.muted_until = float(data.get("muted_until") or 0)
+            except Exception:
+                self.muted_until = 0.0
+            self.muted_days = self._clean_map(data.get("muted_days"), int)
+            st = data.get("stats")
+            self.stats = {}
+            if isinstance(st, dict):
+                for k, v in st.items():
+                    if isinstance(v, dict):
+                        self.stats[str(k)] = {
+                            "fired": int(v.get("fired") or 0),
+                            "acked": int(v.get("acked") or 0),
+                            "ignored": int(v.get("ignored") or 0),
+                        }
         except Exception as ex:
             # 损坏：备份后重建，绝不让启动失败
             self._quarantine(ex)
@@ -125,6 +158,11 @@ class CareState:
         self.deferred_until = {}
         self.started_at = 0.0
         self.active_until = 0.0
+        self.ignored_streak = {}
+        self.muted_kinds = {}
+        self.muted_until = 0.0
+        self.muted_days = {}
+        self.stats = {}
 
     def save(self):
         """原子写：写 .tmp 再 os.replace。"""
@@ -140,6 +178,11 @@ class CareState:
                 "deferred_until": dict(self.deferred_until),
                 "started_at": self.started_at,
                 "active_until": self.active_until,
+                "ignored_streak": dict(self.ignored_streak),
+                "muted_kinds": dict(self.muted_kinds),
+                "muted_until": self.muted_until,
+                "muted_days": dict(self.muted_days),
+                "stats": {k: dict(v) for k, v in self.stats.items()},
                 "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             tmp = self.path + ".tmp"
@@ -159,6 +202,9 @@ class CareState:
             self.day = today
             self.used = {}
             self.deferred_until = {}
+            self.ignored_streak = {}
+            # 跨天：清掉昨天设的「别提这个」（muted_kinds 存的就是日期）
+            self.muted_kinds = {}
             _log("[关心] 跨天重置当日计数")
             return True
         return False
@@ -206,6 +252,8 @@ class CareState:
         规则：全局互斥 > 启动保护 > 每日上限 > 冷却/顺延 > 优先级最高。
         """
         cur = float(now)
+        if self.global_muted_left(cur) > 0:
+            return None, "全局静默中"
         if self.global_left(cur) > 0:
             return None, "全局互斥中"
         if self.startup_grace_left(cur) > 0:
@@ -213,6 +261,10 @@ class CareState:
 
         ready = []
         for kind, cd_sec, daily_max in candidates:
+            if self.is_kind_muted_today(kind, cur):
+                continue
+            if self.is_streak_blocked(kind):
+                continue
             if daily_max > 0 and self.used_today(kind) >= daily_max:
                 continue
             if self.cooldown_left(kind, cur, cd_sec) > 0:
@@ -247,6 +299,85 @@ class CareState:
         self.deferred_until[kind] = cur + max(1, int(retry_sec))
         self.save()
         _log("[关心] %s 顺延重试（%d 秒后）" % (kind, int(retry_sec)))
+
+    # ---------- 降频与静默（阶段③）----------
+
+    def _today_str(self, now=None):
+        return self._today(now)
+
+    def is_kind_muted_today(self, kind, now=None):
+        """该类今天是否被「别提这个」关掉。"""
+        return self.muted_kinds.get(kind) == self._today_str(now)
+
+    def global_muted_left(self, now=None):
+        """「别吵我」剩余秒数。"""
+        cur = float(now if now is not None else time.time())
+        return max(0.0, self.muted_until - cur)
+
+    def is_streak_blocked(self, kind):
+        """同类连续忽略是否已达降频阈值。"""
+        return int(self.ignored_streak.get(kind) or 0) >= IGNORE_STREAK_LIMIT
+
+    def _stat(self, kind):
+        st = self.stats.get(kind)
+        if not isinstance(st, dict):
+            st = {"fired": 0, "acked": 0, "ignored": 0}
+            self.stats[kind] = st
+        return st
+
+    def note_acknowledged(self, kind, now=None):
+        """用户点了「知道了」：连续忽略清零。"""
+        self.ignored_streak.pop(kind, None)
+        st = self._stat(kind)
+        st["acked"] = int(st.get("acked") or 0) + 1
+        self.save()
+        _log("[关心] %s 已确认（累计 %d 次）" % (kind, st["acked"]))
+
+    def note_ignored(self, kind, now=None):
+        """气泡超时无操作 = 忽略：streak +1，达阈值当天停提。"""
+        cur = int(self.ignored_streak.get(kind) or 0) + 1
+        self.ignored_streak[kind] = cur
+        st = self._stat(kind)
+        st["ignored"] = int(st.get("ignored") or 0) + 1
+        self.save()
+        if cur >= IGNORE_STREAK_LIMIT:
+            _log("[关心] %s 连续忽略 %d 次，当天降频停提" % (kind, cur))
+        else:
+            _log("[关心] %s 被忽略（第 %d 次）" % (kind, cur))
+
+    def mute_kind_today(self, kind, now=None):
+        """「别提这个」：该类当天不再出现；返回连续天数（用于提示）。"""
+        self.muted_kinds[kind] = self._today_str(now)
+        days = int(self.muted_days.get(kind) or 0) + 1
+        self.muted_days[kind] = days
+        self.save()
+        _log("[关心] %s 当天不再出现（连续 %d 天）" % (kind, days))
+        return days
+
+    def mute_all(self, hours=None, now=None):
+        """「别吵我」：全局静默 N 小时。"""
+        cur = float(now if now is not None else time.time())
+        h = MUTE_HOURS_DEFAULT if hours is None else max(1, int(hours))
+        self.muted_until = cur + h * 3600
+        self.save()
+        _log("[关心] 全局静默 %d 小时" % h)
+
+    def clear_mute_all(self):
+        self.muted_until = 0.0
+        self.save()
+
+    def snooze_kind(self, kind, factor=2, now=None):
+        """「等会儿」：冷却翻倍（用 deferred 表示，避免污染正式冷却）。"""
+        cur = float(now if now is not None else time.time())
+        cd = 0
+        for k, spec in self.kinds.items():
+            if k == kind:
+                cd = int(spec.get("_cooldown_sec") or 0)
+                break
+        base = cd if cd > 0 else 3600
+        self.deferred_until[kind] = cur + base * max(1, int(factor))
+        self.save()
+        _log("[关心] %s 延后（%d 倍冷却）" % (kind, factor))
 
     def reset_timer(self, kind, now=None):
         """用户改了间隔/重新打开开关：把该类的计时清零重来。"""

@@ -1921,20 +1921,27 @@ class PetWindow(QWidget):
 
         # 左侧图标区 + 右侧内容区
         left_w = icon_d + gap
-        # 按钮（并排一行、等宽）
+        # 按钮（并排一行）
         btn_h = int(24 * REMIND_BUBBLE_SCALE)
         btn_gap = 8
         # 窗口窄（放不下标准气泡）时用短标签
         narrow = self.width() < REMIND_BUBBLE_MIN_W + 16
-        label1, label2 = ("知道了", "稍后") if narrow else ("知道了", "稍后再提醒")
+        label1 = "知道了"
+        label2 = "稍后" if narrow else "稍后再提醒"
+        # 第三个按钮：只有「关心类」才有（待办/日程是约定，不给这个选项）
+        self._remind_has_mute = self.remind_kind in CARE_KINDS
+        label3 = "别提" if narrow else "别提这个"
         w1min = fm.horizontalAdvance(label1) + 20
         w2min = fm.horizontalAdvance(label2) + 20
+        w3min = (fm.horizontalAdvance(label3) + 20) if self._remind_has_mute else 0
         # 计数文字（今天第 N 次）宽度
         cnt_text = "" if narrow else self._remind_count_text()
         cnt_w = fm.horizontalAdvance(cnt_text) + 6 if cnt_text else 0.0
 
         # 气泡宽度：至少 REMIND_BUBBLE_MIN_W；并保证按钮 + 计数放得下
-        min_btn_row = w1min + btn_gap + w2min + (cnt_w + 6 if cnt_w else 0)
+        min_btn_row = (w1min + btn_gap + w2min
+                       + ((btn_gap + w3min) if self._remind_has_mute else 0)
+                       + (cnt_w + 6 if cnt_w else 0))
         max_w = min(int(360 * REMIND_BUBBLE_SCALE), max(160, self.width() - 4))
         bw = max(REMIND_BUBBLE_MIN_W, min_btn_row + pad * 2 + left_w,
                  min(REMIND_BUBBLE_MIN_W, max_w))
@@ -1957,17 +1964,23 @@ class PetWindow(QWidget):
         bubble = QRectF(bx, by, bw, bh)
 
         btn_y = by + bh - pad - btn_h
-        # 按钮宽度：保证「稍后再提醒」完整放下；计数放不下就省略
-        btn_min_w = max(w1min, w2min)
+        # 按钮宽度：关心类有三个按钮，待办/日程只有两个
+        n_btn = 3 if getattr(self, "_remind_has_mute", False) else 2
+        btn_min_w = max([w1min, w2min] + ([w3min] if n_btn == 3 else []))
         avail = bw - pad * 2 - left_w
-        btn_w = (avail - btn_gap - cnt_w) / 2.0
+        gaps = btn_gap * (n_btn - 1)
+        btn_w = (avail - gaps - cnt_w) / float(n_btn)
         if btn_w < btn_min_w:
             # 计数让位，仍不够就压按钮宽（文字会略挤但不截断）
-            btn_w = max(btn_min_w, (avail - btn_gap) / 2.0)
+            btn_w = max(btn_min_w, (avail - gaps) / float(n_btn))
             cnt_w = 0.0
         b1 = QRectF(bx + pad + left_w, btn_y, btn_w, btn_h)
         b2 = QRectF(b1.right() + btn_gap, btn_y, btn_w, btn_h)
-        return bubble, b1, b2, lines, line_h, title_h
+        b3 = None
+        if n_btn == 3:
+            b3 = QRectF(b2.right() + btn_gap, btn_y, btn_w, btn_h)
+        self._remind_r3 = b3
+        return bubble, b1, b2, lines, line_h, title_h, b3
 
     def _remind_count_text(self):
         """按钮行右侧的「今天第 N 次」灰字（拿不到就返回空串）。"""
@@ -2037,15 +2050,17 @@ class PetWindow(QWidget):
         return out
 
     def _hit_remind_button(self, pos):
-        """判断点到了哪个按钮：'know' / 'snooze' / None。"""
+        """判断点到了哪个按钮：'know' / 'snooze' / 'mute' / None。"""
         if not self._remind_active():
             return None
         try:
-            _b, r1, r2, _l, _h, _t = self._remind_rects()
+            _b, r1, r2, _l, _h, _t, r3 = self._remind_rects()
             if r1.contains(QPointF(pos)):
                 return "know"
             if r2.contains(QPointF(pos)):
                 return "snooze"
+            if r3 is not None and r3.contains(QPointF(pos)):
+                return "mute"
         except Exception as ex:
             log("提醒按钮命中测试失败: %s" % ex, logging.DEBUG)
         return None
@@ -2054,7 +2069,7 @@ class PetWindow(QWidget):
         """画提醒气泡：暖色卡片 + 左侧圆形图标 + 标题/正文/按钮行。"""
         if not self._remind_active():
             return
-        bubble, r1, r2, lines, line_h, title_h = self._remind_rects()
+        bubble, r1, r2, lines, line_h, title_h, r3 = self._remind_rects()
         pad = 12.0
         gap = 10.0
         icon_d = REMIND_ICON_DIAMETER
@@ -2144,8 +2159,10 @@ class PetWindow(QWidget):
         # ---- 按钮（主实心 / 次描边）----
         btn_font = QFont(self.remind_font)
         btn_font.setPixelSize(max(10, int(self.remind_font.pixelSize() * 0.80)))
-        for rect, label, primary in ((r1, "知道了", True),
-                                     (r2, "稍后再提醒", False)):
+        btns = [(r1, "知道了", True), (r2, "稍后再提醒", False)]
+        if r3 is not None:
+            btns.append((r3, "别提这个", False))
+        for rect, label, primary in btns:
             if primary:
                 bg, bd, tf2 = QColor(255, 193, 110), QColor(238, 146, 44), QColor(96, 52, 8)
             else:
@@ -2167,12 +2184,16 @@ class PetWindow(QWidget):
             cf.setPixelSize(max(9, int(self.remind_font.pixelSize() * 0.70)))
             p.setFont(cf)
             p.setPen(sub_fg)
-            cnt_rect = QRectF(r2.right() + 6, r2.top(),
-                              bubble.right() - pad - r2.right() - 6, r2.height())
+            _last = r3 if r3 is not None else r2
+            cnt_rect = QRectF(_last.right() + 6, _last.top(),
+                              bubble.right() - pad - _last.right() - 6,
+                              _last.height())
             p.drawText(cnt_rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), cnt)
 
         p.restore()
         self._remind_btn_rects = {"know": r1, "snooze": r2}
+        if r3 is not None:
+            self._remind_btn_rects["mute"] = r3
 
     def say(self, text, inner=False):
         if text == self.last_line and not text.startswith("天气"):
@@ -2293,6 +2314,9 @@ class PetWindow(QWidget):
                 self.app.snooze_reminder(self.remind_kind,
                                          self.remind_todo_id,
                                          self.remind_schedule_id)
+                return
+            if hit == "mute":
+                self.app.mute_care_kind(self.remind_kind)
                 return
         if e.button() == Qt.MouseButton.LeftButton:
             self.last_press_pos = e.globalPosition().toPoint()
