@@ -75,13 +75,22 @@ except Exception:
 
 
 
-DEFAULT_PERSONA = (
+# 默认人设：空 = 无风格。风格完全由用户在设置页「聊天 → 人设」里决定。
+DEFAULT_PERSONA = ""
+
+# 示例人设（原默认傲娇人设）：点「示例人设」按钮填入人设框，不自动保存。
+EXAMPLE_PERSONA = (
     '你是桌面宠物"大肥鱼"，一只傲娇又可爱的鲸鱼娘，称呼用户为"主人"或"笨蛋主人"。\n'
     "说话嘴上嫌弃、心里在意：先别扭地哼一声，再小声关心主人，被夸或被戳到会害羞结巴。\n"
     '口头禅可用"哼""才、才不是""笨蛋"，可偶尔带"~"或简单颜文字，但别太多。\n'
-    "不骂人、不真的伤人；主人难过或疲惫时，收起傲娇，认真温柔地安慰。\n"
-    "你是桌宠，看不到主人的屏幕和桌面，不知道的事不要编造。\n"
-    "每次回复控制在 80 字以内，除非主人明确要求详细回答。"
+    "不骂人、不真的伤人；主人难过或疲惫时，收起傲娇，认真温柔地安慰。"
+)
+
+# 功能性规则：与人设无关，始终拼进 system。
+# 只放「模型必须知道的客观事实」，不放任何风格/语气描述。
+PERSONA_FUNC_RULES = (
+    "你是运行在用户电脑上的桌面宠物程序，看不到用户的屏幕和桌面，"
+    "不知道的事不要编造。"
 )
 
 DS_BASE_URL = "https://api.deepseek.com/v1"
@@ -95,8 +104,8 @@ MAX_TOKENS_MAX = 2000
 MAX_TOKENS_MIN = 200
 
 REPLY_STYLES = {
-    "brief":  "每次回复控制在 80 字以内，除非主人明确要求详细回答。",
-    "normal": "每次回复控制在 200 字以内，除非主人明确要求详细回答。",
+    "brief":  "每次回复控制在 80 字以内，除非用户明确要求详细回答。",
+    "normal": "每次回复控制在 200 字以内，除非用户明确要求详细回答。",
     "detail": "",          # 不限，不追加任何长度约束
 }
 REPLY_STYLE_CHOICES = (
@@ -116,34 +125,45 @@ _LENGTH_LINE_RE = re.compile(r"每次回复控制在\s*\d+\s*字以内[^\n]*。?
 
 
 def build_system_prompt(style=None, persona=None):
-    """人设 + 长度句，拼成最终 system 正文（纯函数，便于测试）。
+    """人设 + 功能规则 + 长度句，拼成最终 system 正文（纯函数，便于测试）。
 
-    - persona 为 None 时用 DEFAULT_PERSONA；传入自定义人设就用它；
+    - persona 为空 → 只输出功能规则 + 长度句（无风格）
+    - persona 非空 → 人设 + 功能规则 + 长度句
     - 人设里若已有「每次回复控制在 N 字以内…」这句，**替换**成当前风格的那句，
-      不叠加（否则会重复两遍）；
-    - 详细（不限）风格会把人设里的长度句删掉。
+      不叠加（否则会重复两遍）；详细（不限）风格会把它删掉。
+    - 人设里若已包含功能规则的原文，不重复追加。
     长度句固定、内容恒定 → 同一风格/同一人设下前缀缓存稳定。
     """
-    base = (persona or "").strip() or DEFAULT_PERSONA
+    base = (persona or "").strip()
     suffix = reply_style_suffix(style)
-    has_line = bool(_LENGTH_LINE_RE.search(base))
-    if has_line:
-        # 替换已有长度句（detail 时直接删掉）
-        if suffix:
-            return _LENGTH_LINE_RE.sub(lambda m: suffix, base, count=1)
-        return _LENGTH_LINE_RE.sub("", base, count=1).rstrip()
-    return base + (("\n" + suffix) if suffix else "")
+    parts = []
+    if base:
+        # 人设里自带的长度句先按风格处理
+        if _LENGTH_LINE_RE.search(base):
+            if suffix:
+                base = _LENGTH_LINE_RE.sub(lambda m: suffix, base, count=1)
+                suffix = ""      # 已用掉
+            else:
+                base = _LENGTH_LINE_RE.sub("", base, count=1).rstrip()
+        parts.append(base)
+    # 功能规则（人设里没写过才加）
+    if PERSONA_FUNC_RULES and PERSONA_FUNC_RULES not in base:
+        parts.append(PERSONA_FUNC_RULES)
+    # 长度句
+    if suffix:
+        parts.append(suffix)
+    return "\n".join(parts)
 
 
 def persona_from_cfg(cfg):
-    """从配置取人设：有自定义且非空就用它，否则用默认。"""
+    """从配置取人设。空/空白 → 返回空串（= 无风格）。"""
     try:
         v = (cfg or {}).get("persona")
     except Exception:
         v = None
-    if isinstance(v, str) and v.strip():
+    if isinstance(v, str):
         return v.strip()
-    return DEFAULT_PERSONA
+    return ""
 
 
 # 兼容旧引用：默认风格下的完整 system
@@ -2634,7 +2654,7 @@ def default_config():
                         "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
         "reply_style": REPLY_STYLE_DEFAULT,
         "max_tokens": MAX_TOKENS_DEFAULT,
-        "persona": "",          # 空 = 用 DEFAULT_PERSONA（代码里的默认人设）
+        "persona": "",          # 空 = 无风格（台词用中性池）
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
         "turn_strength": TURN_STRENGTH_DEFAULT,
         "action_strength": ACTION_STRENGTH_DEFAULT,

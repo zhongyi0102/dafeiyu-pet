@@ -71,15 +71,15 @@ OBSERVE_PROMPT = (
 
 # 搭话提示词默认值（可编辑、可恢复默认）
 DEFAULT_PROMPT = (
-    "你是主人电脑桌面上的宠物，现在要主动跟主人搭一句话。\n"
-    "主人正坐在电脑前，已经有一会儿没动了。\n"
+    "你要主动跟用户搭一句话。\n"
+    "用户正坐在电脑前，已经有一会儿没动了。\n"
     "【重要】你只能依据下面提供的【前台窗口】和【屏幕观察】来说话：\n"
     "- 里面没有提到的作品名、歌名、游戏名、人名、剧情、数字，"
     "一律不许出现，不许猜、不许编。\n"
     "- 不确定是什么就只描述你确实知道的部分（比如“这个界面”“这段代码”）。\n"
     "- 观察里写了“不确定”的，就当作不知道，别提。\n"
     "要求：\n"
-    "- 1到2句话，傲娇可爱，嘴上嫌弃但能看出关心。\n"
+    "- 1到2句话。语气遵循 system 里的人设描述；人设没写就正常说话。\n"
     "- 结合上面提供的具体内容说，不要套话、不要说教。\n"
     "- 不要说“注意休息”“适当运动”这类放哪都成立的话。\n"
     "- 不要用“我看到你在……”这种句式，像真的在旁边看着一样自然开口。\n"
@@ -88,9 +88,9 @@ DEFAULT_PROMPT = (
 
 # 回来打招呼默认提示词
 DEFAULT_WELCOME_PROMPT = (
-    "你是主人电脑桌面上的宠物。主人刚回到电脑前。\n"
+    "用户刚回到电脑前。\n"
     "要求：\n"
-    "- 1句话，傲娇可爱，像是等他回来很久了。\n"
+    "- 1句话。语气遵循 system 里的人设描述；人设没写就正常说话。\n"
     "- 不要套话，不要说教。\n"
     "- 只输出这一句话，不要解释。\n"
 )
@@ -452,8 +452,20 @@ def local_filter(info, cfg, cooldown_left_sec, used_today, chat_key_ok):
 
 # ───────────────────────── 搭话提示词组装 ─────────────────────────
 
-def build_messages(cfg, info, idle_sec, recent_lines, now=None):
-    """组装发给聊天模型的 messages。返回 (system, user)。"""
+def _persona_prefix(persona=""):
+    """把用户人设拼到 system 开头；空人设返回空串。"""
+    p = (persona or "").strip()
+    if not p:
+        return ""
+    return p + "\n\n"
+
+
+def build_messages(cfg, info, idle_sec, recent_lines, now=None,
+                   persona=""):
+    """组装发给聊天模型的 messages。返回 (system, user)。
+
+    persona：当前用户人设（空 = 无风格），拼在 system 开头。
+    """
     now = now or datetime.datetime.now()
     parts = []
     parts.append("当前时间：%s" % now.strftime("%Y-%m-%d %H:%M %A"))
@@ -473,7 +485,7 @@ def build_messages(cfg, info, idle_sec, recent_lines, now=None):
         for line in recent_lines[-5:]:
             parts.append("- " + str(line)[:60])
     user = "\n".join(parts)
-    system = cfg.get("prompt") or DEFAULT_PROMPT
+    system = _persona_prefix(persona) + (cfg.get("prompt") or DEFAULT_PROMPT)
     return system, user
 
 
@@ -494,11 +506,12 @@ def build_observe_messages(info, shot_data_url, now=None):
             ]}]
 
 
-def build_welcome_messages(cfg, info, recent_lines, now=None):
+def build_welcome_messages(cfg, info, recent_lines, now=None,
+                           persona=""):
     """回来打招呼的 messages。"""
     now = now or datetime.datetime.now()
     parts = ["当前时间：%s" % now.strftime("%Y-%m-%d %H:%M %A"),
-             "主人刚回到电脑前。"]
+             "用户刚回到电脑前。"]
     if cfg.get("send_title"):
         proc = info.get("proc") or "未知"
         title = (info.get("title") or "").strip()
@@ -511,7 +524,8 @@ def build_welcome_messages(cfg, info, recent_lines, now=None):
         parts.append("你最近说过（别重复这些）：")
         for line in recent_lines[-5:]:
             parts.append("- " + str(line)[:60])
-    system = cfg.get("welcome_prompt") or DEFAULT_WELCOME_PROMPT
+    system = _persona_prefix(persona) + (
+        cfg.get("welcome_prompt") or DEFAULT_WELCOME_PROMPT)
     return system, "\n".join(parts)
 
 

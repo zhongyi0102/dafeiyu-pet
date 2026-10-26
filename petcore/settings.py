@@ -1540,19 +1540,21 @@ class SettingsWindow(QDialog):
         self._persona_section.toggled.connect(
             lambda on: self._save_section_state("persona", on))
         _p_desc = QLabel(
-            "这段会作为 system 的开头发给模型。固定不变才有利于前缀缓存；"
-            "改完缓存会失效一次，建议新开一个对话。")
+            "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
+            "也决定固定台词的语气。留空 = 无风格。\n"
+            "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。")
         _p_desc.setWordWrap(True)
         _p_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
         self._persona_section.body_add(_p_desc)
 
         self.persona_edit = QTextEdit()
         self.persona_edit.setFixedHeight(150)
-        self.persona_edit.setPlaceholderText("留空则使用内置默认人设")
+        self.persona_edit.setPlaceholderText(
+            "留空 = 无风格（台词用中性池）。风格完全由这里决定。")
         self.persona_edit.setStyleSheet(
             "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
             "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
-        self.persona_edit.setPlainText(self.app.cfg.get("persona") or DEFAULT_PERSONA)
+        self.persona_edit.setPlainText(self.app.cfg.get("persona") or "")
         self.persona_edit.textChanged.connect(self._on_persona_edited)
         self._persona_section.body_add(self.persona_edit)
 
@@ -1563,6 +1565,10 @@ class SettingsWindow(QDialog):
         reset_btn = QPushButton("恢复默认")
         reset_btn.clicked.connect(self._reset_persona)
         prow.addWidget(reset_btn)
+        example_btn = QPushButton("示例人设")
+        example_btn.setToolTip("填入示例人设文本，不自动保存")
+        example_btn.clicked.connect(self._fill_example_persona)
+        prow.addWidget(example_btn)
         prow.addStretch(1)
         self._persona_section.body_add_layout(prow)
 
@@ -1912,11 +1918,9 @@ class SettingsWindow(QDialog):
         except Exception:
             return
         saved = (self.app.cfg.get("persona") or "").strip()
-        cur_n = cur or DEFAULT_PERSONA.strip()
-        saved_n = saved or DEFAULT_PERSONA.strip()
-        if cur_n == saved_n:
-            if saved_n == DEFAULT_PERSONA.strip():
-                self._persona_section.set_state("默认", "#8a8f9c")
+        if cur == saved:
+            if not saved:
+                self._persona_section.set_state("无风格", "#8a8f9c")
             else:
                 self._persona_section.set_state("已保存", "#1a7f37")
         else:
@@ -3014,27 +3018,40 @@ class SettingsWindow(QDialog):
         self._restore_vision_status()
 
     def _save_persona(self):
-        """保存人设到 config.json。留空/与默认一致时存空串（用内置默认）。"""
+        """保存人设。空 = 无风格（台词走中性池）。"""
         text = (self.persona_edit.toPlainText() or "").strip()
-        if not text or text == DEFAULT_PERSONA.strip():
-            self.app.cfg["persona"] = ""
-        else:
-            self.app.cfg["persona"] = text[:4000]
+        self.app.cfg["persona"] = text[:4000]
         self.app.save_cfg()
-        self._persona_hint.setText("已保存。前缀缓存会失效一次，建议新开一个对话。")
+        if text:
+            self._persona_hint.setText(
+                "已保存。前缀缓存会失效一次，建议新开一个对话。")
+        else:
+            self._persona_hint.setText("已清空人设：无风格，台词使用中性池。")
         self._refresh_persona_state()
         self.app.say_main("人设已保存")
         self._refresh_chat_hint()
         log("[聊天] 人设已更新（%d 字）" % len(text))
 
+    def _fill_example_persona(self):
+        """填入示例人设（不保存，用户自己决定是否保存）。"""
+        try:
+            self.persona_edit.setPlainText(EXAMPLE_PERSONA)
+            self._persona_hint.setText(
+                "已填入示例人设。点「保存人设」才会生效。")
+            self._refresh_persona_state()
+        except Exception as ex:
+            log("[聊天] 填入示例人设失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _reset_persona(self):
-        """恢复默认人设：清空配置字段 + 编辑框回填默认文本。"""
+        """恢复默认 = 清空人设并切回中性池。"""
         self.app.cfg["persona"] = ""
         self.app.save_cfg()
-        self.persona_edit.setPlainText(DEFAULT_PERSONA)
-        self._persona_hint.setText("已恢复默认人设。前缀缓存会失效一次，建议新开一个对话。")
+        self.persona_edit.setPlainText("")
+        self._persona_hint.setText(
+            "已清空人设：无风格，台词使用中性池。")
         self._refresh_persona_state()
-        self.app.say_main("人设已恢复默认")
+        self.app.say_main("人设已清空，台词切回中性池")
         self._refresh_chat_hint()
 
     def _set_reply_style(self, style):

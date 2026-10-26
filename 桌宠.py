@@ -1212,9 +1212,12 @@ class PetApp(QObject):
         st = self._pro_state
         recent = list(getattr(st, "recent", []) or [])
         if welcome:
-            system, user = PRO.build_welcome_messages(cfg, info, recent)
+            system, user = PRO.build_welcome_messages(
+                cfg, info, recent, persona=persona_from_cfg(self.cfg))
         else:
-            system, user = PRO.build_messages(cfg, info, idle_sec, recent)
+            system, user = PRO.build_messages(
+                cfg, info, idle_sec, recent,
+                persona=persona_from_cfg(self.cfg))
 
         # 截图观察（聊天场景/黑名单在 _proactive_tick 的本地过滤已拦，
         # 这里再兜底一次：微信/QQ 等聊天进程不发截图）
