@@ -2280,7 +2280,8 @@ class ChatWindow(QWidget):
         self.settings_menu.aboutToShow.connect(
             lambda: self.settings_btn.setObjectName("SideTextBtnActive"))
         self.settings_menu.aboutToHide.connect(self._restore_settings_btn_style)
-        self.settings_btn.setMenu(self.settings_menu)
+        # 不用 setMenu 自动弹（会自动溢出窗口），改手动控制位置
+        self.settings_btn.clicked.connect(self._show_settings_menu)
         foot.addWidget(self.settings_btn, 0)
         foot.addStretch(1)
         side.addLayout(foot)
@@ -2908,6 +2909,37 @@ class ChatWindow(QWidget):
             pass
 
     # ---------- 输入框自动增高 ----------
+    def _exec_menu_in_window(self, menu, anchor_widget):
+        """在窗口内弹出菜单，自动避开窗口边界。
+
+        优先显示在 anchor 下方；下方放不下就翻到上方；
+        左右也做夹紧，保证菜单不会溢出聊天窗口。
+        """
+        from PySide6.QtCore import QPoint
+        win = self.geometry()          # 聊天窗口的屏幕矩形
+        size = menu.sizeHint()
+        mw, mh = size.width(), size.height()
+
+        # anchor 左下角的全局坐标
+        r = anchor_widget.rect()
+        below = anchor_widget.mapToGlobal(QPoint(r.left(), r.bottom() + 2))
+        above = anchor_widget.mapToGlobal(QPoint(r.left(), r.top() - mh - 2))
+
+        # 垂直：优先下方，放不下就上方
+        y = below.y()
+        if y + mh > win.bottom():
+            y = above.y()
+            if y < win.top():
+                y = max(win.top(), win.bottom() - mh)
+
+        # 水平：夹在窗口内
+        x = below.x()
+        if x + mw > win.right():
+            x = win.right() - mw
+        x = max(win.left(), x)
+
+        menu.exec(QPoint(int(x), int(y)))
+
     def _open_dialog_params(self):
         """对话参数弹窗：上下文条数 / 温度 / Top P / 流式输出。"""
         try:
@@ -2976,10 +3008,7 @@ class ChatWindow(QWidget):
             act.triggered.connect(
                 lambda _=False, k=key: self._set_reasoning(k))
 
-        m.exec(self.model_btn.mapToGlobal(
-            self.model_btn.rect().bottomLeft().__class__(
-                self.model_btn.rect().bottomLeft().x(),
-                self.model_btn.rect().bottomLeft().y() - m.sizeHint().height())))
+        self._exec_menu_in_window(m, self.model_btn)
 
     def _set_model(self, name):
         try:
@@ -3095,6 +3124,14 @@ class ChatWindow(QWidget):
         s["title"] = title
         s["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._refresh_combo()
+
+    def _show_settings_menu(self):
+        """弹出设置菜单，位置夹在聊天窗口内。"""
+        try:
+            self._exec_menu_in_window(self.settings_menu, self.settings_btn)
+        except Exception as ex:
+            log("[聊天] 打开设置菜单失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _restore_settings_btn_style(self):
         """菜单收起后把「设置」按钮还原成普通样式（重新应用 QSS）。"""
@@ -4259,9 +4296,7 @@ class ChatWindow(QWidget):
                         lambda: self._pick_attachments(images_only=True))
             m.addAction("文本文件…",
                         lambda: self._pick_attachments(text_only=True))
-            pos = self.attach_btn.mapToGlobal(
-                self.attach_btn.rect().topLeft())
-            m.exec(pos)
+            self._exec_menu_in_window(m, self.attach_btn)
         except Exception as ex:
             log("[附件] 打开菜单失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
