@@ -934,6 +934,25 @@ class SettingsWindow(QDialog):
             "高速甩飞撞到屏幕边缘时，头部跟随速度方向旋转，停稳后回正",
             indent=22)
 
+        # 宠物互撞：只有一只时置灰
+        _col_row = QHBoxLayout()
+        _col_row.setContentsMargins(22, 0, 0, 0)
+        _col_row.setSpacing(6)
+        self._pet_collision_box = QCheckBox("宠物互撞")
+        self._pet_collision_box.setChecked(bool(_ph.get("pet_collision", False)))
+        self._pet_collision_box.toggled.connect(
+            lambda on: self.app.set_physics("pet_collision", bool(on)))
+        _col_row.addWidget(self._pet_collision_box)
+        self._collision_hint = QLabel("多只时生效")
+        self._collision_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _col_row.addWidget(self._collision_hint)
+        _col_row.addStretch(1)
+        lay.addLayout(_col_row)
+        _col_desc = QLabel("多只宠物碰到会互相弹开")
+        _col_desc.setWordWrap(True)
+        _col_desc.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
+        lay.addWidget(_col_desc)
+
         # ================= ④ 窗口 =================
         line_w = QFrame()
         line_w.setFrameShape(QFrame.Shape.HLine)
@@ -970,14 +989,30 @@ class SettingsWindow(QDialog):
         self._refresh_pet_physics_state()
 
     def _refresh_pet_physics_state(self):
-        """物理组联动：主开关关 → 子项置灰。"""
+        """物理组联动：主开关关 → 子项置灰；宠物只有一只 → 互撞置灰。"""
         try:
             physics_on = self.app.is_enabled("physics")
             for w in (getattr(self, "_top_bounce_box", None),
                       getattr(self, "_smash_spin_box", None)):
                 if w is not None:
                     w.setEnabled(physics_on)
-            # 宠物互撞已移除
+            box = getattr(self, "_pet_collision_box", None)
+            hint = getattr(self, "_collision_hint", None)
+            if box is not None:
+                n = len(self.app.cfg.get("pets") or [])
+                multi = n > 1
+                # 互撞要同时满足：有甩抛物理 + 多只宠物
+                box.setEnabled(physics_on and multi)
+                if hint is not None:
+                    if not multi:
+                        hint.setText("多只时生效")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                    elif not physics_on:
+                        hint.setText("需先开启甩抛物理")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+                    else:
+                        hint.setText("多只时生效")
+                        hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
         except Exception as ex:
             log("[设置] 刷新物理组状态失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
