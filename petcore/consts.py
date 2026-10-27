@@ -1456,7 +1456,7 @@ CHAT_LEFT_MAX = 400                   # 左栏可拖拽的最大宽度
 CHAT_LEFT_DEFAULT = 220               # 左栏默认宽度（可拖拽后）
 CHAT_TOP_BAR_H = 54                   # 聊天顶部栏高度
 CHAT_MIN_WIDTH = 560                  # 窗口最小宽度，避免内容被挤
-CHAT_INPUT_MIN_H = 56                 # 输入框默认 2 行（DSH 风格）
+CHAT_INPUT_MIN_H = 72                 # 输入框默认 3 行（DSH 比例约 60-70%）
 CHAT_INPUT_MAX_LINES = 6              # 最多 6 行自动增高
 
 # 空白状态的欢迎语（傲娇风，随机取一条）
@@ -1625,8 +1625,8 @@ def chat_qss(t):
     /* 输入区加号：极浅灰圆底 + 深灰细笔画（参考 DSH 风格） */
     QPushButton#PlusBtn {
         background: #f5f6f7; color: #2f3237;
-        border: none; border-radius: 14px;
-        font-size: 16px; font-weight: 300; padding: 0;
+        border: none; border-radius: 15px;
+        font-size: 17px; font-weight: 300; padding: 0;
         font-family: 'Segoe UI Symbol', 'Microsoft YaHei UI';
     }
     QPushButton#PlusBtn:hover { background: #eceef0; color: #1f2226; }

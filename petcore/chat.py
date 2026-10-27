@@ -630,7 +630,7 @@ class SendButton(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SendBtn")
-        self.setFixedSize(28, 28)
+        self.setFixedSize(30, 30)
         self._busy = False
 
     def set_busy(self, busy):
@@ -2144,7 +2144,7 @@ class ChatWindow(QWidget):
         # 方案 A：加号嵌进输入框左侧，不再单独占一行
         self.attach_btn = QPushButton("+")
         self.attach_btn.setObjectName("PlusBtn")
-        self.attach_btn.setFixedSize(28, 28)   # radius 14 = 真圆
+        self.attach_btn.setFixedSize(30, 30)   # radius 15 = 真圆
         self.attach_btn.setToolTip("添加图片或文本文件")
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_btn.clicked.connect(self._show_attach_menu)
@@ -2155,17 +2155,17 @@ class ChatWindow(QWidget):
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
 
-        # ---- 第一行：加号 + 输入框 ----
+        # ---- 第一行：输入框（全宽，DSH 结构）----
         _inrow = QHBoxLayout()
-        _inrow.setSpacing(8)
-        _inrow.setContentsMargins(0, 0, 0, 0)
-        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignTop)
+        _inrow.setSpacing(0)
+        _inrow.setContentsMargins(2, 0, 2, 0)
         _inrow.addWidget(self.input, 1)
 
-        # ---- 第二行：模型名 + 发送 ----
+        # ---- 第二行：加号 + 模型名 + 发送（DSH 工具行）----
         _botrow = QHBoxLayout()
         _botrow.setSpacing(8)
         _botrow.setContentsMargins(0, 0, 0, 0)
+        _botrow.addWidget(self.attach_btn, 0)
         self.model_label = QLabel("")
         self.model_label.setObjectName("ModelLabel")
         self.model_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2178,8 +2178,8 @@ class ChatWindow(QWidget):
         self.input_card.setObjectName("InputCard")
         self.input_card.setProperty("focused", "false")   # 默认灰边，聚焦才蓝
         _card = QVBoxLayout(self.input_card)
-        _card.setContentsMargins(12, 10, 10, 8)
-        _card.setSpacing(6)
+        _card.setContentsMargins(12, 8, 10, 6)
+        _card.setSpacing(4)
         _card.addWidget(self.attach_bar)
         _card.addLayout(_inrow)
         _card.addLayout(_botrow)
