@@ -531,24 +531,43 @@ class SettingsWindow(QDialog):
 
     # ---------- 通用小组件 ----------
     def _title(self, lay, text, desc=None):
-        lab = QLabel(text)
-        f = QFont()
-        f.setPointSize(11)
-        f.setBold(True)
-        lab.setFont(f)
-        lay.addWidget(lab)
+        """页面标题。desc 不为空时，改为标题行右侧的可点击 i 图标。"""
         if desc:
-            d = QLabel(desc)
-            d.setWordWrap(True)
-            d.setStyleSheet("color:#8a8f9c;font-size:11px;")
-            lay.addWidget(d)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            lab = QLabel(text)
+            f = QFont()
+            f.setPointSize(11)
+            f.setBold(True)
+            lab.setFont(f)
+            row.addWidget(lab)
+            row.addStretch(1)
+            row.addWidget(self._info_btn(text, desc))
+            lay.addLayout(row)
+        else:
+            lab = QLabel(text)
+            f = QFont()
+            f.setPointSize(11)
+            f.setBold(True)
+            lab.setFont(f)
+            lay.addWidget(lab)
 
     def _check(self, lay, label, checked, on_toggle, desc=None, note=None,
                indent=0):
+        """复选框。desc 改为复选框右侧的可点击 i 图标。"""
         cb = QCheckBox(label)
         cb.setChecked(bool(checked))
         cb.toggled.connect(on_toggle)
-        if indent:
+        if desc:
+            wrap = QHBoxLayout()
+            wrap.setContentsMargins(int(indent), 0, 0, 0)
+            wrap.setSpacing(6)
+            wrap.addWidget(cb)
+            wrap.addWidget(self._info_btn(label, desc), 0)
+            wrap.addStretch(1)
+            lay.addLayout(wrap)
+        elif indent:
             wrap = QHBoxLayout()
             wrap.setContentsMargins(int(indent), 0, 0, 0)
             wrap.addWidget(cb)
@@ -556,12 +575,6 @@ class SettingsWindow(QDialog):
             lay.addLayout(wrap)
         else:
             lay.addWidget(cb)
-        if desc:
-            d = QLabel(desc)
-            d.setWordWrap(True)
-            d.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:%dpx;"
-                            % (22 + int(indent)))
-            lay.addWidget(d)
         if note:
             n = QLabel(note)
             n.setStyleSheet("color:#d08a00;font-size:11px;margin-left:%dpx;"
@@ -1201,20 +1214,16 @@ class SettingsWindow(QDialog):
         self._frame_section = CollapsibleSection("帧序列动画", expanded=True)
         _fbody = self._frame_section.body_layout
 
-        _fintro = QLabel(
+        # 说明改为「启用帧序列动画」右侧的 i 图标
+        self._frame_anim_box = self._check(
+            _fbody, "启用帧序列动画", bool(fa.get("enabled", True)),
+            lambda on: self._set_frame_anim(on),
             "桌宠有两套动画引擎：\n"
             "· 代码变形——实时拉伸/旋转一张图，省内存但略僵。\n"
             "· 帧序列动画——每个动作一整套手绘 PNG 逐帧播放（12 fps），"
             "像看动画一样流畅。\n"
             "动作目录 sprites/anim/<动作名>/ 里有 png 就走帧序列，"
-            "没有的仍用代码变形。")
-        _fintro.setWordWrap(True)
-        _fintro.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _fbody.addWidget(_fintro)
-
-        self._frame_anim_box = self._check(
-            _fbody, "启用帧序列动画", bool(fa.get("enabled", True)),
-            lambda on: self._set_frame_anim(on),
+            "没有的仍用代码变形。\n\n"
             "关掉后所有动作退回代码变形，画面变糙但能省内存"
             "（缓存 4 个动作约 92 MB）。")
 
