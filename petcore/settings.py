@@ -435,6 +435,7 @@ class SettingsWindow(QDialog):
             "QPushButton#DialogInfoBtn:pressed {"
             "  background: #3f6fe8; border-color: #3f6fe8;"
             "}")
+        self._init_persona_widgets()
         self._build_ui()
         # 视觉识别的跨线程信号（替代在线程里用 QTimer.singleShot）
         self._vbus = _VisionBus(self)
@@ -458,6 +459,64 @@ class SettingsWindow(QDialog):
             self.app.pet_state_changed.connect(self._on_pet_state_changed)
         except Exception:
             pass
+
+    def _init_persona_widgets(self):
+        """预先创建人设编辑框和状态标签。
+
+        人设 UI 已从设置页移到聊天窗口的弹窗，但这些控件和逻辑
+        仍留在本类里被复用，所以先建好但不加进任何布局。
+        """
+        self.persona_edit = QTextEdit()
+        self.persona_edit.setFixedHeight(150)
+        self.persona_edit.setPlaceholderText(
+            "留空 = 无风格（台词用中性池）。风格和回复长短都由这里决定。\n"
+            "例：你是猫娘，说话简短，每次回复控制在 50 字以内。")
+        self.persona_edit.setStyleSheet(
+            "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;"
+            "border-radius:8px;padding:8px;"
+            "font-family:'Microsoft YaHei UI';font-size:12px;}")
+        self.persona_edit.setPlainText(self.app.cfg.get("persona") or "")
+        self.persona_edit.textChanged.connect(self._on_persona_edited)
+
+        self._persona_hint = QLabel("")
+        self._persona_hint.setWordWrap(True)
+        self._persona_hint.setStyleSheet(
+            "color:#d08a00;font-size:11px;margin-left:2px;")
+
+        self._persona_lines_status = QLabel("")
+        self._persona_lines_status.setWordWrap(True)
+        self._persona_lines_status.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;")
+
+        self._persona_reasons = QLabel("")
+        self._persona_reasons.setWordWrap(True)
+        self._persona_reasons.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;background:#f7f8fa;"
+            "border-radius:6px;padding:8px;")
+        self._persona_reasons.hide()
+
+        # 动作按钮（弹窗里显示，写进设置页也能用）
+        self._persona_retry_btn = QPushButton("重试")
+        self._persona_retry_btn.setFixedWidth(64)
+        self._persona_retry_btn.clicked.connect(self._regen_persona_lines)
+        self._persona_retry_btn.hide()
+        self._persona_retry_failed_btn = QPushButton("重试失败项")
+        self._persona_retry_failed_btn.setFixedWidth(96)
+        self._persona_retry_failed_btn.clicked.connect(
+            self._retry_failed_persona_pools)
+        self._persona_retry_failed_btn.hide()
+        self._persona_reason_btn = QPushButton("查看原因")
+        self._persona_reason_btn.setFixedWidth(84)
+        self._persona_reason_btn.setCheckable(True)
+        self._persona_reason_btn.clicked.connect(self._toggle_persona_reasons)
+        self._persona_reason_btn.hide()
+        self._persona_reset_lines_btn = QPushButton("恢复默认台词")
+        self._persona_reset_lines_btn.clicked.connect(
+            self._reset_persona_lines)
+        self._persona_regen_btn = QPushButton("重新生成")
+        self._persona_regen_btn.clicked.connect(self._regen_persona_lines)
+        # 状态位（原折叠组，已移除；保留占位避免方法报错）
+        self._persona_section = None
 
     # ---------- 骨架 ----------
     def _build_ui(self):
@@ -2061,122 +2120,7 @@ class SettingsWindow(QDialog):
 
         lay.addWidget(self._chat_section)
 
-        # ================= ② 人设（默认折叠）=================
-        self._persona_section = _PersonaGroup()
-        _pbody = self._persona_section.body_layout
-        _phead = QHBoxLayout()
-        _phead.addWidget(QLabel("人设内容"))
-        _phead.addStretch(1)
-        _phead.addWidget(self._info_btn(
-            "人设",
-            "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
-            "也决定固定台词的语气。留空 = 无风格。\n"
-            "回复的详细程度也由这里决定——想限制长度就写「每次回复控制在 80 字以内」，"
-            "不写则不限制。\n"
-            "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。"))
-        _pbody.addLayout(_phead)
-
-        self.persona_edit = QTextEdit()
-        self.persona_edit.setFixedHeight(150)
-        self.persona_edit.setPlaceholderText(
-            "留空 = 无风格（台词用中性池）。风格和回复长短都由这里决定。\n"
-            "例：你是猫娘，说话简短，每次回复控制在 50 字以内。")
-        self.persona_edit.setStyleSheet(
-            "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
-            "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
-        self.persona_edit.setPlainText(self.app.cfg.get("persona") or "")
-        self.persona_edit.textChanged.connect(self._on_persona_edited)
-        _pbody.addWidget(self.persona_edit)
-
-        prow = QHBoxLayout()
-        save_btn = QPushButton("保存人设")
-        save_btn.clicked.connect(self._save_persona)
-        prow.addWidget(save_btn)
-        reset_btn = QPushButton("恢复默认")
-        reset_btn.clicked.connect(self._reset_persona)
-        prow.addWidget(reset_btn)
-        example_btn = QPushButton("示例人设")
-        example_btn.setToolTip("填入示例人设文本，不自动保存")
-        example_btn.clicked.connect(self._fill_example_persona)
-        prow.addWidget(example_btn)
-        self._persona_regen_btn = QPushButton("重新生成")
-        self._persona_regen_btn.setToolTip("按当前人设重新生成固定台词池（耗 token）")
-        self._persona_regen_btn.clicked.connect(self._regen_persona_lines)
-        prow.addWidget(self._persona_regen_btn)
-        self._persona_reset_lines_btn = QPushButton("恢复默认台词")
-        self._persona_reset_lines_btn.setToolTip("清掉生成缓存，回落到内置中性台词")
-        self._persona_reset_lines_btn.clicked.connect(self._reset_persona_lines)
-        prow.addWidget(self._persona_reset_lines_btn)
-        view_btn = QPushButton("查看/编辑台词")
-        view_btn.setToolTip("查看当前人设生成出的台词，可手动修改")
-        view_btn.clicked.connect(self._open_lines_dialog)
-        prow.addWidget(view_btn)
-        prow.addStretch(1)
-        _pbody.addLayout(prow)
-
-        # ---- 台词池状态行（常驻）----
-        _srow = QHBoxLayout()
-        _srow.setSpacing(8)
-        self._persona_lines_status = QLabel("")
-        self._persona_lines_status.setWordWrap(True)
-        self._persona_lines_status.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;")
-        _srow.addWidget(self._persona_lines_status, 1)
-        self._persona_retry_btn = QPushButton("重试")
-        self._persona_retry_btn.setFixedWidth(64)
-        self._persona_retry_btn.clicked.connect(self._regen_persona_lines)
-        self._persona_retry_btn.hide()
-        _srow.addWidget(self._persona_retry_btn)
-        self._persona_retry_failed_btn = QPushButton("重试失败项")
-        self._persona_retry_failed_btn.setFixedWidth(96)
-        self._persona_retry_failed_btn.clicked.connect(
-            self._retry_failed_persona_pools)
-        self._persona_retry_failed_btn.hide()
-        _srow.addWidget(self._persona_retry_failed_btn)
-        self._persona_reason_btn = QPushButton("查看原因")
-        self._persona_reason_btn.setFixedWidth(84)
-        self._persona_reason_btn.setCheckable(True)
-        self._persona_reason_btn.clicked.connect(self._toggle_persona_reasons)
-        self._persona_reason_btn.hide()
-        _srow.addWidget(self._persona_reason_btn)
-        _pbody.addLayout(_srow)
-
-        # 失败原因列表（默认收起）
-        self._persona_reasons = QLabel("")
-        self._persona_reasons.setWordWrap(True)
-        self._persona_reasons.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;background:#f7f8fa;"
-            "border-radius:6px;padding:8px;")
-        self._persona_reasons.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._persona_reasons.hide()
-        _pbody.addWidget(self._persona_reasons)
-
-        self._persona_hint = QLabel("")
-        self._persona_hint.setWordWrap(True)
-        self._persona_hint.setStyleSheet("color:#d08a00;font-size:11px;margin-left:2px;")
-        _pbody.addWidget(self._persona_hint)
-
-        lay.addWidget(self._persona_section)
-        self._refresh_persona_state()
-
-        # ================= ③ 长期记忆（默认折叠）=================
-        self._memory_section = _MemoryGroup()
-        _mbody = self._memory_section.body_layout
-        _mrow = QHBoxLayout()
-        _mb = QPushButton("打开记忆管理")
-        _mb.clicked.connect(self.app._open_memory)
-        _mrow.addWidget(_mb)
-        _mrow.addStretch(1)
-        _mrow.addWidget(self._info_btn(
-            "长期记忆",
-            "长期记忆会拼在系统提示词末尾，影响所有会话。"))
-        _mbody.addLayout(_mrow)
-        self._memory_count = QLabel("")
-        self._memory_count.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _mbody.addWidget(self._memory_count)
-        lay.addWidget(self._memory_section)
-
+        # 长期记忆入口已移到聊天窗口的「设置」菜单
         # ================= ④ 看屏幕 / 视觉（默认折叠）=================
         self._vision_section = _VisionGroup()
         self._build_vision_into(self._vision_section.body_layout)
@@ -2488,13 +2432,15 @@ class SettingsWindow(QDialog):
         except Exception:
             return
         saved = (self.app.cfg.get("persona") or "").strip()
-        if cur == saved:
-            if not saved:
-                self._persona_section.set_state("无风格", "#8a8f9c")
+        sec = self._persona_section
+        if sec is not None:
+            if cur == saved:
+                if not saved:
+                    sec.set_state("无风格", "#8a8f9c")
+                else:
+                    sec.set_state("已保存", "#1a7f37")
             else:
-                self._persona_section.set_state("已保存", "#1a7f37")
-        else:
-            self._persona_section.set_state("未保存", "#d08a00")
+                sec.set_state("未保存", "#d08a00")
         # 收起时的标题摘要跟着刷新
         self._refresh_persona_summary()
 

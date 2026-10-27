@@ -664,6 +664,117 @@ def _needs_time_divider(prev_ts, cur_ts):
         return False
 
 
+class PersonaDialog(QDialog):
+    """人设编辑弹窗。
+
+    为了不重复实现 20 多个方法，直接复用 SettingsWindow 里已有的
+    人设控件与逻辑：把 self.persona_edit 等控件临时接到本对话框显示，
+    关闭时还原回父窗口。
+    """
+
+    def __init__(self, parent, settings_win):
+        super().__init__(parent)
+        self.sw = settings_win
+        self.setWindowTitle("人设")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        try:
+            from PySide6.QtGui import QShortcut, QKeySequence
+            _sc = QShortcut(QKeySequence("Esc"), self)
+            _sc.activated.connect(self.accept)
+        except Exception:
+            pass
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+
+        # 说明（复用设置页那条，带可点击 i）
+        head = QHBoxLayout()
+        lb = QLabel("人设内容")
+        lb.setStyleSheet("font-size:12.5px;color:#2c3040;")
+        head.addWidget(lb)
+        head.addStretch(1)
+        head.addWidget(settings_win._info_btn(
+            "人设",
+            "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
+            "也决定固定台词的语气。留空 = 无风格。\n"
+            "回复的详细程度也由这里决定——想限制长度就写"
+            "「每次回复控制在 80 字以内」，不写则不限制。\n"
+            "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。"))
+        lay.addLayout(head)
+
+        # 把人设输入框临时搬进来
+        self._edit = settings_win.persona_edit
+        self._edit_layout = None   # 原来没有布局，关闭时只需断开
+        lay.addWidget(self._edit, 1)
+        self.resize(560, 380)
+
+        # 按钮行
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for txt, fn, tip in (
+            ("保存人设", settings_win._save_persona, ""),
+            ("恢复默认", settings_win._reset_persona, ""),
+            ("示例人设", settings_win._fill_example_persona, "填入示例文本，不自动保存"),
+            ("重新生成台词", settings_win._regen_persona_lines, "按当前人设重新生成台词池（耗 token）"),
+            ("查看/编辑台词", settings_win._open_lines_dialog, ""),
+        ):
+            b = QPushButton(txt)
+            if tip:
+                b.setToolTip(tip)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        # 状态行
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        lay.addWidget(self._status)
+        self._refresh_status()
+
+    def _refresh_status(self):
+        try:
+            from petcore import persona_lines as PL
+            from petcore.consts import persona_from_cfg
+            p = persona_from_cfg(self.sw.app.cfg)
+            if not p:
+                self._status.setText("当前：无风格（台词用中性池）")
+                return
+            pools = PL.get_persona_pools(APP_DIR, p) if p else {}
+            n = len(pools or {})
+            if n:
+                self._status.setText(
+                    "当前人设 %d 字 · 台词池 %d 个" % (len(p), n))
+            else:
+                self._status.setText(
+                    "当前人设 %d 字 · 尚未生成台词池（用中性池）" % len(p))
+        except Exception:
+            pass
+
+    def _detach_edit(self):
+        """把输入框从本对话框摘出来，归还给设置窗口。
+
+        控件原本就没有父布局（只是预建未加入布局），
+        所以要 setParent 回设置窗口，否则本对话框销毁时会连带删除它。
+        """
+        try:
+            self._edit.setParent(self.sw)
+            self._edit.hide()
+        except Exception:
+            pass
+
+    def accept(self):
+        self._detach_edit()
+        super().accept()
+
+    def reject(self):
+        self._detach_edit()
+        super().reject()
+
+
 class DialogParamsDialog(QDialog):
     """对话参数弹窗：上下文条数 / 温度 / Top P / 流式输出。
 
@@ -2258,6 +2369,7 @@ class ChatWindow(QWidget):
         # 菜单：长期记忆 + 对话参数 + 完整设置
         self.memory_action = self.settings_menu.addAction(
             "长期记忆…", lambda: self.pet._open_memory())
+        self.settings_menu.addAction("人设…", self._open_persona_dlg)
         self.settings_menu.addSeparator()
         self.settings_menu.addAction("对话参数…", self._open_dialog_params)
         self.settings_menu.addSeparator()
@@ -2939,6 +3051,22 @@ class ChatWindow(QWidget):
         x = max(win.left(), x)
 
         menu.exec(QPoint(int(x), int(y)))
+
+    def _open_persona_dlg(self):
+        """人设编辑弹窗（复用设置窗口的人设控件与逻辑）。"""
+        try:
+            sw = self.pet.settings_window
+            if sw is None:
+                # 没开过设置窗口：临时建一个（不显示），用完销毁
+                from petcore.settings import SettingsWindow
+                sw = SettingsWindow(self.pet)
+                self.pet.settings_window = sw
+            dlg = PersonaDialog(self, sw)
+            dlg.exec()
+            self._refresh_model_label()
+        except Exception as ex:
+            log("[聊天] 打开人设失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _open_dialog_params(self):
         """对话参数弹窗：上下文条数 / 温度 / Top P / 流式输出。"""
