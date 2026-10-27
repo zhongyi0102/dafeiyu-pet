@@ -2990,6 +2990,7 @@ def default_config():
         # reply_style 已移除：回复长度由人设控制
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 无风格（台词用中性池）
+    "persona_greeting": "", # 角色卡带来的开场白（新对话第一条）
     "history_msg_limit": 20,        # 上下文消息条数上限
     "temperature": None,            # 温度（None = 不传，用 API 默认）
     "top_p": None,                  # Top P（None = 不传）
@@ -3688,6 +3689,13 @@ def migrate_and_validate(raw):
             changed = True
     elif _mh is not None:
         issues.append("model_history")
+        changed = True
+
+    _pg = raw.get("persona_greeting")
+    if isinstance(_pg, str):
+        cfg["persona_greeting"] = _pg.strip()[:500]
+    elif _pg is not None:
+        issues.append("persona_greeting")
         changed = True
 
     _re = raw.get("reasoning_effort")

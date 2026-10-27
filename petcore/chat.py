@@ -793,7 +793,9 @@ class PersonaDialog(QDialog):
             if name:
                 msg += " · 角色名「%s」" % name
             if greeting:
-                msg += " · 含开场白"
+                msg += " · 已保存开场白"
+                self.sw.app.cfg["persona_greeting"] = greeting[:500]
+                self.sw.app.save_cfg()
             self._import_hint.setText(msg)
             self._import_hint.show()
             self._edit.setPlainText(merged)
@@ -3126,6 +3128,30 @@ class ChatWindow(QWidget):
             log("[聊天] 清理多余空会话 %d 个" % removed)
         return removed
 
+    def _inject_greeting(self, sess):
+        """新会话开头插入一条宠物开场白（来自导入的角色卡）。
+
+        只在新会话为空时插入，避免重复或覆盖已有内容。
+        """
+        try:
+            greet = (self.pet.cfg.get("persona_greeting") or "").strip()
+            if not greet:
+                return
+            if not self._session_is_empty(sess):
+                return
+            msg = {
+                "role": "assistant",
+                "content": greet,
+                "ts": time.time(),
+            }
+            msgs = sess.setdefault("messages", [])
+            msgs.append(msg)
+            self.messages = msgs
+            log("[聊天] 已插入开场白（%d 字）" % len(greet))
+        except Exception as ex:
+            log("[聊天] 插入开场白失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _new_session(self):
         """新建会话。当前会话还是空的就直接复用，只把焦点放回输入框。"""
         if self.busy:
@@ -3148,6 +3174,7 @@ class ChatWindow(QWidget):
         s = self._make_session(self._next_default_title())
         self.sessions.append(s)
         self._activate_session(s["id"])
+        self._inject_greeting(s)
         self._render_current_session()
         self._set_usage_label("")
         self._write_sessions()
