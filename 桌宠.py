@@ -4832,6 +4832,8 @@ class PetApp(QObject):
             m.addAction("别吵我（4 小时）", lambda: self.mute_care_all(4))
         m.addSeparator()
         m.addAction("设置…", lambda: self.open_settings())
+        # 「重启」：重新加载代码，调试时免去手动开关
+        m.addAction("重启", self.restart_app)
         m.addAction("退出", self.quit_app)
         return m
 
@@ -4991,6 +4993,48 @@ class PetApp(QObject):
             if cfg.get("display", True):
                 self.set_visible(pid, True, reason)
 
+    def restart_app(self):
+        """重启：启动新进程并退出当前进程。
+
+        新进程带 --restart 参数，会轮询等待本进程释放单实例 Mutex，
+        因此不会因「已有实例」而启动失败。
+        仅源码运行时真正重启；打包 exe 同样适用（sys.executable 就是 exe）。
+        """
+        try:
+            frozen = bool(getattr(sys, "frozen", False))
+            if frozen:
+                # 打包版：直接重启 exe
+                exe = sys.executable
+                args = ["--restart"]
+            else:
+                # 源码版：用同一个 pythonw 重新跑 桌宠.py
+                exe = sys.executable
+                script = os.path.abspath(__file__)
+                args = [script, "--restart"]
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen([exe] + args, cwd=APP_DIR, creationflags=flags,
+                             close_fds=True)
+            log("[重启] 已启动新进程：%s %s" % (exe, " ".join(args)))
+            try:
+                self.say_main("重启中…")
+            except Exception:
+                pass
+        except Exception as ex:
+            log("[重启] 启动新进程失败: %s: %s"
+                % (type(ex).__name__, ex), logging.ERROR)
+            try:
+                QMessageBox.warning(self.main_pet, "重启失败",
+                                    "无法启动新进程：%s\n请手动重启。" % ex)
+            except Exception:
+                pass
+            return
+        # 给新进程一点启动时间，再退出（避免抢 Mutex）
+        try:
+            from PySide6.QtCore import QTimer as _QT
+            _QT.singleShot(400, self.quit_app)
+        except Exception:
+            self.quit_app()
+
     def quit_app(self):
         """退出：静默清理（不弹任何结算框），停线程后保存配置退出"""
         try:
@@ -5026,19 +5070,49 @@ _MUTEX_HANDLE = None
 MUTEX_NAME = "DafeiyuPet_SingleInstance_7f3a"
 
 
-def acquire_single_instance():
-    """Windows 命名 Mutex：返回 (handle, is_first)"""
+def _is_restart_launch():
+    """本次启动是否来自「重启」菜单（带 --restart 参数）。"""
+    try:
+        return "--restart" in sys.argv[1:]
+    except Exception:
+        return False
+
+
+def acquire_single_instance(wait_restart=False, timeout_sec=8.0):
+    """Windows 命名 Mutex：返回 (handle, is_first)。
+
+    wait_restart=True（重启模式）时，如果检测到已有实例，
+    说明旧进程还没退干净——轮询等待它释放 Mutex，最多 timeout_sec 秒。
+    这样「托盘 → 重启」不会因 Mutex 冲突而启动失败。
+    """
     global _MUTEX_HANDLE
     try:
         kernel32 = ctypes.windll.kernel32
-        kernel32.SetLastError(0)
-        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-        err = kernel32.GetLastError()
-        if not handle:
-            log("创建单实例 Mutex 失败, err=%s" % err, logging.WARNING)
-            return None, True
-        _MUTEX_HANDLE = handle
-        return handle, (err != 183)  # 183 = ERROR_ALREADY_EXISTS
+        import time as _t
+        deadline = _t.time() + float(timeout_sec)
+        while True:
+            kernel32.SetLastError(0)
+            handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+            err = kernel32.GetLastError()
+            if not handle:
+                log("创建单实例 Mutex 失败, err=%s" % err, logging.WARNING)
+                return None, True
+            is_first = (err != 183)   # 183 = ERROR_ALREADY_EXISTS
+            if is_first:
+                _MUTEX_HANDLE = handle
+                return handle, True
+            # 已有实例：关掉这个 handle 再等
+            try:
+                kernel32.CloseHandle(handle)
+            except Exception:
+                pass
+            if not wait_restart:
+                return None, False
+            if _t.time() >= deadline:
+                log("重启等待超时（旧进程未退出）")
+                return None, False
+            log("重启模式：等待旧进程释放 Mutex…")
+            _t.sleep(0.3)
     except Exception as ex:
         log("单实例检查异常: %s" % ex, logging.WARNING)
         return None, True
@@ -5071,7 +5145,8 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     log("---- 启动 ----")
-    handle, is_first = acquire_single_instance()
+    _restart_mode = _is_restart_launch()
+    handle, is_first = acquire_single_instance(wait_restart=_restart_mode)
     if not is_first:
         # 已有实例：立即退出，**不要弹模态框**——弹框会留住进程，
         # 造成任务栏出现多个"桌宠"窗口（历史 bug）
