@@ -4046,16 +4046,14 @@ class ChatWindow(QWidget):
 
     # ---------- 附件：添加 / 移除 / 渲染缩略条 ----------
     def _show_attach_menu(self):
-        """加号按钮：弹出小菜单，选图片或文本文件。"""
+        """加号按钮：选择图片或文本文件。"""
         from PySide6.QtWidgets import QMenu
         try:
             m = QMenu(self)
-            m.addAction("图片…", lambda: self._pick_attachments(images_only=True))
-            m.addAction("文本文件…", lambda: self._pick_attachments(text_only=True))
-            m.addSeparator()
-            m.addAction("粘贴剪贴板图片",
-                        lambda: (self._paste_image_from_clipboard() or
-                                 self._add_notice("剪贴板里没有图片")))
+            m.addAction("图片…",
+                        lambda: self._pick_attachments(images_only=True))
+            m.addAction("文本文件…",
+                        lambda: self._pick_attachments(text_only=True))
             pos = self.attach_btn.mapToGlobal(
                 self.attach_btn.rect().topLeft())
             m.exec(pos)
