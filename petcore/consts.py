@@ -1682,6 +1682,19 @@ def chat_qss(t):
     }
     QPushButton#NewChatBtn:hover { background: %(accent)s; }
     /* 底部按钮（记忆 / 设置）：高 36、圆角 10、透明底 */
+    /* 侧栏底部图标按钮（记忆 / 设置）*/
+    QPushButton#SideIconBtn {
+        background: transparent; color: %(side_btn_fg)s;
+        border: none; border-radius: %(radius_sm)dpx;
+        font-size: 15px; padding: 0; outline: none;
+    }
+    QPushButton#SideIconBtn:hover { background: %(side_btn_hover)s; }
+    QPushButton#SideIconBtn:pressed { background: %(side_btn_hover)s; }
+    QPushButton#SideIconBtnActive {
+        background: %(side_btn_hover)s; color: %(side_btn_fg)s;
+        border: none; border-radius: %(radius_sm)dpx;
+        font-size: 15px; padding: 0; outline: none;
+    }
     QPushButton#SideSmallBtn {
         background: transparent; color: %(side_btn_fg)s;
         border: none; border-radius: 10px;

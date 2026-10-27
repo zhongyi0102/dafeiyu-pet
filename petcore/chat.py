@@ -1833,16 +1833,22 @@ class ChatWindow(QWidget):
         self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         side.addWidget(self.session_list, 1)
 
+        # 底部：两个图标按钮（记忆 / 设置），余额已合并到用量行
         foot = QHBoxLayout()
-        foot.setSpacing(8)
-        self.memory_btn = QPushButton("记忆")
-        self.memory_btn.setObjectName("SideSmallBtn")
+        foot.setSpacing(6)
+        foot.setContentsMargins(0, 4, 0, 2)
+        self.memory_btn = QPushButton("🧠")
+        self.memory_btn.setObjectName("SideIconBtn")
+        self.memory_btn.setFixedSize(30, 30)
+        self.memory_btn.setToolTip("长期记忆")
         self.memory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.memory_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.memory_btn.clicked.connect(self.pet._open_memory)
-        foot.addWidget(self.memory_btn, 1)
-        self.settings_btn = QPushButton("设置")
-        self.settings_btn.setObjectName("SideSmallBtn")
+        foot.addWidget(self.memory_btn, 0)
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setObjectName("SideIconBtn")
+        self.settings_btn.setFixedSize(30, 30)
+        self.settings_btn.setToolTip("设置")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.settings_btn.setPopupMode = None
@@ -1875,10 +1881,11 @@ class ChatWindow(QWidget):
         self.settings_menu.aboutToShow.connect(self._refresh_settings_menu)
         # 展开时按钮保持高亮：换 objectName，收起后还原
         self.settings_menu.aboutToShow.connect(
-            lambda: self.settings_btn.setObjectName("SideSmallBtnActive"))
+            lambda: self.settings_btn.setObjectName("SideIconBtnActive"))
         self.settings_menu.aboutToHide.connect(self._restore_settings_btn_style)
         self.settings_btn.setMenu(self.settings_menu)
-        foot.addWidget(self.settings_btn, 1)
+        foot.addWidget(self.settings_btn, 0)
+        foot.addStretch(1)
         side.addLayout(foot)
         root.addWidget(self.sidebar)
 
@@ -1927,8 +1934,7 @@ class ChatWindow(QWidget):
         # 输入框：2 行起，随内容增高，最多 6 行
         self.input = QTextEdit(right)
         self.input.setObjectName("ChatInput")
-        self.input.setPlaceholderText(
-            "输入消息… Enter 发送 · Shift+Enter 换行 · 可粘贴或拖入图片")
+        self.input.setPlaceholderText("输入消息…")
         self.input.setAcceptRichText(False)
         # 复制粘贴等标准操作
         self.input.setUndoRedoEnabled(True)
@@ -1970,8 +1976,9 @@ class ChatWindow(QWidget):
         # 与消息区形成视觉分隔，同时消掉输入框上方的大片空白
         self.input_card = QFrame()
         self.input_card.setObjectName("InputCard")
+        self.input_card.setProperty("focused", "false")   # 默认灰边，聚焦才蓝
         _card = QVBoxLayout(self.input_card)
-        _card.setContentsMargins(10, 8, 10, 6)
+        _card.setContentsMargins(12, 10, 12, 8)
         _card.setSpacing(6)
         _card.addWidget(self.attach_bar)
         _card.addLayout(_inrow)
@@ -2517,7 +2524,7 @@ class ChatWindow(QWidget):
     def _restore_settings_btn_style(self):
         """菜单收起后把「设置」按钮还原成普通样式（重新应用 QSS）。"""
         try:
-            self.settings_btn.setObjectName("SideSmallBtn")
+            self.settings_btn.setObjectName("SideIconBtn")
             # objectName 改变后必须重新 polish 才能生效
             self.settings_btn.style().unpolish(self.settings_btn)
             self.settings_btn.style().polish(self.settings_btn)
@@ -4886,10 +4893,16 @@ class ChatWindow(QWidget):
             rate = ("%.1f%%" % (hit / denom * 100.0)) if denom else "-"
             if prompt or comp:
                 # 参考图样式：本会话 ¥金额 · 命中 x% · 输入 · 缓存 · 输出
-                line = ("本会话 ¥%.4f · 命中 %s · 输入 %s · 缓存 %s · 输出 %s"
-                        % (self._session_cost(), rate,
-                           self._fmt_tokens(prompt), self._fmt_tokens(hit),
-                           self._fmt_tokens(comp)))
+                # 余额（若已查询过）也并进来，避免侧栏与用量行两套账
+                _bal = self._balance_short()
+                _parts = ["本会话 ¥%.4f" % self._session_cost(),
+                          "命中 %s" % rate,
+                          "输入 %s" % self._fmt_tokens(prompt),
+                          "缓存 %s" % self._fmt_tokens(hit),
+                          "输出 %s" % self._fmt_tokens(comp)]
+                if _bal:
+                    _parts.append("余额 %s" % _bal)
+                line = " · ".join(_parts)
             else:
                 line = ""
         else:
@@ -4907,6 +4920,17 @@ class ChatWindow(QWidget):
             return (hit / 1e6 * 0.5 + miss / 1e6 * 2.0 + comp / 1e6 * 8.0)
         except Exception:
             return 0.0
+
+    def _balance_short(self):
+        """账户余额（上次查询结果），没有则返回空串。"""
+        try:
+            b = self.pet.cfg.get("balance") or {}
+            v = b.get("last_value")
+            if v is None:
+                return ""
+            return "≈¥%.2f" % float(v)
+        except Exception:
+            return ""
 
     @staticmethod
     def _first_sentence(text):
