@@ -756,38 +756,45 @@ class PersonaDialog(QDialog):
         self._refresh_status()
 
     def _import_persona_file(self):
-        """从文本文件导入人设内容，追加到现有文本后面。"""
+        """导入人设：支持文本 / JSON 角色卡 / PNG 内嵌角色卡。"""
         try:
             from PySide6.QtWidgets import QFileDialog
             from petcore import chat_attach as CA
+            from petcore import card_reader as CR
             exts = " ".join("*" + e for e in CA.TEXT_EXTS)
             path, _ = QFileDialog.getOpenFileName(
                 self, "导入人设文件", "",
-                "文本文件 (%s);;所有文件 (*)" % exts)
+                "人设卡 (*.json *.png);;"
+                "文本文件 (%s);;"
+                "所有文件 (*)" % exts)
             if not path:
                 return
-            data, truncated, err = CA.read_text_file(path)
-            if err:
-                QMessageBox.warning(self, "导入失败", err)
+
+            ok, text, name, greeting, note = CR.read_card(
+                path, text_reader=CA.read_text_file)
+            if not ok:
+                QMessageBox.warning(self, "导入失败", note or "无法识别该文件")
                 return
-            text = (data or "").strip()
+
+            text = (text or "").strip()
             if not text:
-                QMessageBox.information(self, "导入", "文件是空的。")
+                QMessageBox.information(self, "导入", "文件里没有人设内容。")
                 return
 
             # 追加到现有内容后面（不覆盖，避免误丢已写好的）
             cur = self._edit.toPlainText().rstrip()
             if cur:
                 merged = cur + "\n\n" + text
-                self._import_hint.setText(
-                    "已追加 %d 字（原 %d 字，合计 %d 字）%s"
-                    % (len(text), len(cur), len(merged),
-                       "；文件较长已截断" if truncated else ""))
+                msg = "已追加 %d 字（原 %d 字，合计 %d 字）· %s" % (
+                    len(text), len(cur), len(merged), note)
             else:
                 merged = text
-                self._import_hint.setText(
-                    "已导入 %d 字%s"
-                    % (len(text), "；文件较长已截断" if truncated else ""))
+                msg = "已导入 %d 字 · %s" % (len(text), note)
+            if name:
+                msg += " · 角色名「%s」" % name
+            if greeting:
+                msg += " · 含开场白"
+            self._import_hint.setText(msg)
             self._import_hint.show()
             self._edit.setPlainText(merged)
             self._refresh_status()
