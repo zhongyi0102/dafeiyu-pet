@@ -2716,7 +2716,7 @@ class ChatWindow(QWidget):
 
     # ---------- 输入框自动增高 ----------
     def _known_models(self):
-        """收集可选模型：设置页识别过的 + 当前生效的 + 常见内置。"""
+        """收集可选模型：用过的历史 + 设置页识别过的 + 当前生效的 + 内置。"""
         out = []
         seen = set()
 
@@ -2726,6 +2726,15 @@ class ChatWindow(QWidget):
                 seen.add(n)
                 out.append(n)
 
+        # 1) 用过的模型（最近在前）
+        try:
+            for n in (self.pet.cfg.get("model_history") or []):
+                _add(n)
+        except Exception:
+            pass
+        # 2) 当前生效的
+        _add(self.pet.cfg.get("chat_model") or "")
+        # 3) 设置页识别过的
         try:
             sw = getattr(self.pet, "settings_window", None)
             cb = getattr(sw, "chat_model", None) if sw is not None else None
@@ -2734,7 +2743,7 @@ class ChatWindow(QWidget):
                     _add(cb.itemText(i))
         except Exception:
             pass
-        _add(self.pet.cfg.get("chat_model") or "")
+        # 4) 内置兜底
         for n in ("deepseek-chat", "deepseek-reasoner"):
             _add(n)
         return out
@@ -2774,10 +2783,18 @@ class ChatWindow(QWidget):
             name = (name or "").strip()
             if not name:
                 return
+            old = (self.pet.cfg.get("chat_model") or "").strip()
             self.pet.cfg["chat_model"] = name
+            # 记进历史：新模型排最前，旧模型也要留下（首次切换时它还没进过历史）
+            hist = []
+            for n in [name, old] + list(self.pet.cfg.get("model_history") or []):
+                if isinstance(n, str) and n and n not in hist:
+                    hist.append(n)
+            self.pet.cfg["model_history"] = hist[:10]
             self.pet.save_cfg()
             self._refresh_model_label()
-            log("[聊天] 模型 -> %s" % name)
+            log("[聊天] 模型 -> %s（历史 %d 个）"
+                % (name, len(hist[:10])))
         except Exception as ex:
             log("[聊天] 切换模型失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)

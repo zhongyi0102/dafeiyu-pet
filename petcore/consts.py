@@ -2993,6 +2993,7 @@ def default_config():
     "top_p": None,                  # Top P（None = 不传）
     "stream_output": True,          # 流式输出
     "reasoning_effort": "",         # 推理等级："" = 不传
+    "model_history": [],            # 用过的模型（最近在前，最多 10 个）
     "chat_sidebar_width": 220,      # 聊天侧栏宽度（可拖拽 160-400）
     "chat_sidebar_collapsed": False,  # 聊天侧栏是否折叠
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
@@ -3677,6 +3678,21 @@ def migrate_and_validate(raw):
             changed = True
     else:
         issues.append("top_p")
+        changed = True
+
+    _mh = raw.get("model_history")
+    if isinstance(_mh, list):
+        _clean = []
+        for v in _mh[:10]:
+            if isinstance(v, str) and v.strip():
+                v = v.strip()
+                if v not in _clean:
+                    _clean.append(v)
+        cfg["model_history"] = _clean
+        if cfg["model_history"] != _mh:
+            changed = True
+    elif _mh is not None:
+        issues.append("model_history")
         changed = True
 
     _re = raw.get("reasoning_effort")
