@@ -1229,8 +1229,21 @@ NEUTRAL_AFFECTION_LINES = {
 
 
 def neutral_pool(name):
-    """取中性池；不存在返回空列表。"""
-    return list(NEUTRAL_POOLS.get(name) or [])
+    """取中性池；不存在返回空列表。
+
+    好感度池名形如 AFFECTION_COLD_REACT，从中解析出 kind
+    再去 NEUTRAL_AFFECTION_LINES 取（中性模式不分档）。
+    """
+    lines = NEUTRAL_POOLS.get(name)
+    if lines:
+        return list(lines)
+    # AFFECTION_{TIER}_{KIND}
+    n = (name or "").strip().upper()
+    if n.startswith("AFFECTION_"):
+        for kind in ("REACT", "POKE", "STROKE"):
+            if n.endswith("_" + kind):
+                return list(NEUTRAL_AFFECTION_LINES.get(kind.lower()) or [])
+    return []
 
 
 # 视觉工具结果卡片上方的开场白（对外别名，便于直接引用）
