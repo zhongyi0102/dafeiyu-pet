@@ -1242,11 +1242,6 @@ class SettingsWindow(QDialog):
             "关掉后所有动作退回代码变形，画面变糙但能省内存"
             "（缓存 4 个动作约 92 MB）。")
 
-        self._frame_stat = QLabel("")
-        self._frame_stat.setWordWrap(True)
-        self._frame_stat.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        _fbody.addWidget(self._frame_stat)
-
         row = QHBoxLayout()
         row.addSpacing(22)
         reload_btn = QPushButton("重新扫描帧目录")
@@ -1445,17 +1440,7 @@ class SettingsWindow(QDialog):
         self.app.say_main("帧缓存已释放")
 
     def _refresh_frame_stat(self):
-        try:
-            n, nbytes = _FRAME_CACHE.stats()
-            avail = self._scan_frame_actions()
-            mb = nbytes / (1024.0 * 1024.0)
-            self._frame_stat.setText(
-                "已加载 %d 个动作 · 估算占用 %.1f MB · 缓存上限 %d 个\n"
-                "磁盘上检测到 %d 个帧动作目录%s"
-                % (n, mb, _FRAME_CACHE.max_items, len(avail),
-                   ("：" + "、".join(avail[:6]) + ("…" if len(avail) > 6 else "")) if avail else ""))
-        except Exception:
-            pass
+        """帧状态行已移除，保留空方法供既有调用点使用。"""
 
     def _scan_frame_actions(self):
         """扫描 sprites/anim 下有哪些动作目录。"""
