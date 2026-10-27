@@ -245,6 +245,15 @@ TEMPERATURE_DEFAULT = None       # None = 不传，用 API 默认
 TOP_P_DEFAULT = None             # None = 不传，用 API 默认
 STREAM_DEFAULT = True            # 流式输出默认开
 
+# 推理等级（reasoning_effort）：空 = 不传
+REASONING_LEVELS = (
+    ("", "默认"),          # 不传该参数
+    ("low", "低"),
+    ("medium", "中"),
+    ("high", "高"),
+)
+REASONING_DEFAULT = ""
+
 CONTEXT_LIMIT_TOKENS = 60000     # deepseek-chat 上下文上限（保守取值）
 SUMMARIZE_AT_TOKENS = 42000      # 估算超过这个数就先总结旧记录
 KEEP_RECENT_MESSAGES = 12        # 总结时保留最近多少条消息
@@ -1661,6 +1670,15 @@ def chat_qss(t):
         color: %(sub)s; font-size: 11.5px; font-family: '%(font)s';
         background: transparent; padding: 0 2px;
     }
+    /* 底部工具行的模型按钮：透明底，hover 才显浅灰 */
+    QPushButton#ModelBtn {
+        background: transparent; color: %(sub)s;
+        border: none; border-radius: 8px;
+        font-size: 11.5px; font-family: '%(font)s';
+        padding: 2px 6px; text-align: left;
+    }
+    QPushButton#ModelBtn:hover { background: %(btn_bg)s; color: %(fg)s; }
+    QPushButton#ModelBtn:pressed { background: %(btn_border)s; }
     QLabel#UsageLabel {
         color: %(sub)s; font-size: %(usage)dpx; font-family: '%(font)s';
         padding: 2px 2px 0 2px;
@@ -2974,6 +2992,7 @@ def default_config():
     "temperature": None,            # 温度（None = 不传，用 API 默认）
     "top_p": None,                  # Top P（None = 不传）
     "stream_output": True,          # 流式输出
+    "reasoning_effort": "",         # 推理等级："" = 不传
     "chat_sidebar_width": 220,      # 聊天侧栏宽度（可拖拽 160-400）
     "chat_sidebar_collapsed": False,  # 聊天侧栏是否折叠
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
@@ -3658,6 +3677,15 @@ def migrate_and_validate(raw):
             changed = True
     else:
         issues.append("top_p")
+        changed = True
+
+    _re = raw.get("reasoning_effort")
+    if _re in ("", None):
+        cfg["reasoning_effort"] = ""
+    elif isinstance(_re, str) and _re in ("low", "medium", "high"):
+        cfg["reasoning_effort"] = _re
+    else:
+        issues.append("reasoning_effort")
         changed = True
 
     _so = raw.get("stream_output")

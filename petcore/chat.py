@@ -399,7 +399,8 @@ class ChatWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, messages, api_key, max_tokens=None, base_url=None,
-                 model=None, temperature=None, top_p=None, stream=True):
+                 model=None, temperature=None, top_p=None, stream=True,
+                 reasoning_effort=None):
         self.base_url = (base_url or DS_BASE_URL).rstrip("/")
         self.model = model or DS_MODEL
         super().__init__()
@@ -409,6 +410,7 @@ class ChatWorker(QThread):
         self.temperature = temperature
         self.top_p = top_p
         self.stream = bool(stream)
+        self.reasoning_effort = (reasoning_effort or "").strip()
         self._stop = False
 
     def request_stop(self):
@@ -436,8 +438,18 @@ class ChatWorker(QThread):
                 payload["temperature"] = float(self.temperature)
             if self.top_p is not None:
                 payload["top_p"] = float(self.top_p)
+            if self.reasoning_effort:
+                payload["reasoning_effort"] = self.reasoning_effort
             r = requests.post(url, headers=headers, json=payload,
                               stream=self.stream, timeout=180)
+            if r.status_code != 200 and self.reasoning_effort:
+                # 服务端可能不认 reasoning_effort：去掉后重试一次
+                log("[聊天] reasoning_effort 被拒（HTTP %s），去掉后重试"
+                    % r.status_code, logging.WARNING)
+                payload.pop("reasoning_effort", None)
+                self.reasoning_effort = ""
+                r = requests.post(url, headers=headers, json=payload,
+                                  stream=self.stream, timeout=180)
             if r.status_code != 200:
                 self.failed.emit(_http_error_message(r.status_code, r.text))
                 return
@@ -2187,12 +2199,14 @@ class ChatWindow(QWidget):
         _botrow.setSpacing(8)
         _botrow.setContentsMargins(0, 0, 0, 0)
         _botrow.addWidget(self.attach_btn, 0)
-        self.model_label = QLabel("")
-        self.model_label.setObjectName("ModelLabel")
-        self.model_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.model_label.setToolTip("当前聊天模型")
-        _botrow.addWidget(self.model_label, 0)
         _botrow.addStretch(1)
+        # 模型信息按钮：点击弹菜单切换模型 / 推理等级
+        self.model_btn = QPushButton("")
+        self.model_btn.setObjectName("ModelBtn")
+        self.model_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.model_btn.setFlat(True)
+        self.model_btn.clicked.connect(self._show_model_menu)
+        _botrow.addWidget(self.model_btn, 0)
         _botrow.addWidget(self.send_btn, 0)
 
         self.input_card = QFrame()
@@ -2701,14 +2715,114 @@ class ChatWindow(QWidget):
             pass
 
     # ---------- 输入框自动增高 ----------
+    def _known_models(self):
+        """收集可选模型：设置页识别过的 + 当前生效的 + 常见内置。"""
+        out = []
+        seen = set()
+
+        def _add(n):
+            n = (n or "").strip()
+            if n and n not in seen:
+                seen.add(n)
+                out.append(n)
+
+        try:
+            sw = getattr(self.pet, "settings_window", None)
+            cb = getattr(sw, "chat_model", None) if sw is not None else None
+            if cb is not None:
+                for i in range(cb.count()):
+                    _add(cb.itemText(i))
+        except Exception:
+            pass
+        _add(self.pet.cfg.get("chat_model") or "")
+        for n in ("deepseek-chat", "deepseek-reasoner"):
+            _add(n)
+        return out
+
+    def _show_model_menu(self):
+        """模型按钮菜单：模型 › / 推理等级 ›"""
+        m = QMenu(self)
+        m.setObjectName("ModelMenu")
+
+        # ---- 模型二级菜单 ----
+        mm = m.addMenu("模型")
+        cur_model = (self.pet.cfg.get("chat_model") or "").strip()
+        for name in self._known_models():
+            act = mm.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == cur_model)
+            act.triggered.connect(
+                lambda _=False, n=name: self._set_model(n))
+        mm.addSeparator()
+        mm.addAction("自定义…", self._ask_custom_model)
+        mm.addSeparator()
+        mm.addAction("打开设置…", lambda: self.pet.open_settings())
+
+        # ---- 推理等级二级菜单 ----
+        rm = m.addMenu("推理等级")
+        cur_lv = (self.pet.cfg.get("reasoning_effort") or "").strip()
+        for key, label in REASONING_LEVELS:
+            act = rm.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == cur_lv)
+            act.triggered.connect(
+                lambda _=False, k=key: self._set_reasoning(k))
+
+        m.exec(self.model_btn.mapToGlobal(
+            self.model_btn.rect().bottomLeft().__class__(
+                self.model_btn.rect().bottomLeft().x(),
+                self.model_btn.rect().bottomLeft().y() - m.sizeHint().height())))
+
+    def _set_model(self, name):
+        try:
+            name = (name or "").strip()
+            if not name:
+                return
+            self.pet.cfg["chat_model"] = name
+            self.pet.save_cfg()
+            self._refresh_model_label()
+            log("[聊天] 模型 -> %s" % name)
+        except Exception as ex:
+            log("[聊天] 切换模型失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _ask_custom_model(self):
+        try:
+            cur = (self.pet.cfg.get("chat_model") or "").strip()
+            txt, ok = QInputDialog.getText(
+                self, "自定义模型", "模型名：", text=cur)
+            if ok and (txt or "").strip():
+                self._set_model(txt)
+        except Exception as ex:
+            log("[聊天] 自定义模型失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_reasoning(self, key):
+        try:
+            key = (key or "").strip()
+            self.pet.cfg["reasoning_effort"] = key
+            self.pet.save_cfg()
+            self._refresh_model_label()
+            log("[聊天] 推理等级 -> %r" % key)
+        except Exception as ex:
+            log("[聊天] 设置推理等级失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _refresh_model_label(self):
-        """刷新底部工具行里的模型名。"""
+        """刷新底部工具行的模型按钮文字（模型名 · 推理等级）。"""
         try:
             name = (self.pet.cfg.get("chat_model") or "").strip()
             name = name or "未配置模型"
-            if len(name) > 28:
-                name = name[:26] + "…"
-            self.model_label.setText(name)
+            if len(name) > 22:
+                name = name[:20] + "…"
+            lv = (self.pet.cfg.get("reasoning_effort") or "").strip()
+            if lv:
+                label = dict((k, v) for k, v in REASONING_LEVELS).get(lv, lv)
+                name = "%s · %s" % (name, label)
+            _btn = getattr(self, "model_btn", None)
+            if _btn is not None:
+                _btn.setText(name + "  ⌄")
+                _btn.setToolTip("点击切换模型 / 推理等级")
         except Exception:
             pass
 
@@ -4666,7 +4780,8 @@ class ChatWindow(QWidget):
             base_url=_base, model=_model,
             temperature=self.pet.cfg.get("temperature"),
             top_p=self.pet.cfg.get("top_p"),
-            stream=bool(self.pet.cfg.get("stream_output", True)))
+            stream=bool(self.pet.cfg.get("stream_output", True)),
+            reasoning_effort=self.pet.cfg.get("reasoning_effort") or None)
         self.pet.set_work_state("thinking")
         self.worker.chunk.connect(self._on_chunk)
         self.worker.done.connect(self._on_done)
