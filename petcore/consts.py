@@ -1441,7 +1441,9 @@ CHAT_RADIUS_SM = 6           # 小控件（按钮、标签）
 CHAT_RADIUS_MD = 10          # 气泡
 CHAT_RADIUS_LG = 12          # 容器（输入区卡片）
 
-CHAT_BUBBLE_RADIUS = CHAT_RADIUS_MD
+CHAT_BUBBLE_RADIUS = 16               # 气泡主圆角（方案 B）
+CHAT_BUBBLE_TIP = 5                   # 气泡尖端圆角（指向头像那侧）
+CHAT_BUBBLE_MAXW_RATIO = 0.72         # 气泡最大宽 = 聊天区宽度 × 该比例
 CHAT_BUBBLE_PAD = (13, 10, 13, 10)     # 左 上 右 下
 CHAT_BUBBLE_MAXW = 460
 CHAT_BUBBLE_GAP = 11                   # 气泡之间的间距
@@ -1616,12 +1618,14 @@ def chat_qss(t):
         border: none; border-radius: 0;
         padding: 2px 4px; font-family: '%(font)s'; font-size: %(fs)dpx;
     }
+    /* 输入区圆形按钮：默认透明，hover 才显浅底，不再有边框 */
     QPushButton#PlusBtn {
-        background: %(btn_bg)s; color: %(fg)s;
+        background: transparent; color: %(sub)s;
         border: none; border-radius: 14px;
-        font-size: 17px; font-weight: bold; padding: 0;
+        font-size: 18px; font-weight: normal; padding: 0;
     }
-    QPushButton#PlusBtn:hover { background: %(btn_border)s; }
+    QPushButton#PlusBtn:hover { background: %(btn_bg)s; color: %(accent)s; }
+    QPushButton#PlusBtn:pressed { background: %(btn_border)s; }
     QPushButton {
         background: %(btn_bg)s; color: %(btn_fg)s;
         border: 1px solid %(btn_border)s; border-radius: 9px;
@@ -1631,10 +1635,12 @@ def chat_qss(t):
     QPushButton:disabled { color: %(sub)s; }
     QPushButton#SendBtn {
         background: %(accent)s; color: %(accent_fg)s; border: none;
-        border-radius: 17px; font-size: 17px; font-weight: bold; padding: 0;
+        border-radius: 17px; font-size: 16px; font-weight: normal; padding: 0;
     }
     QPushButton#SendBtn:hover { background: %(accent_hover)s; }
-    QPushButton#SendBtn:disabled { background: %(btn_border)s; color: %(sub)s; }
+    QPushButton#SendBtn:disabled {
+        background: %(btn_bg)s; color: %(sub)s;
+    }
     QLabel#UsageLabel {
         color: %(sub)s; font-size: %(usage)dpx; font-family: '%(font)s';
         padding: 2px 2px 0 2px;
@@ -1797,27 +1803,39 @@ def chat_qss(t):
     }
 
 
+# 气泡圆角：主 16px，指向头像那侧 5px（方案 B）
+# 用户气泡在右侧 → 右下尖；助手气泡在左侧 → 左下尖
+_R_TL = CHAT_BUBBLE_RADIUS
+_R_TR = CHAT_BUBBLE_RADIUS
+_R_BR = CHAT_BUBBLE_RADIUS
+_R_BL = CHAT_BUBBLE_RADIUS
+_USER_RADIUS = "%dpx %dpx %dpx %dpx" % (_R_TL, _R_TR, CHAT_BUBBLE_TIP, _R_BL)
+_PET_RADIUS = "%dpx %dpx %dpx %dpx" % (_R_TL, _R_TR, _R_BR, CHAT_BUBBLE_TIP)
+
+
 def chat_bubble_qss(role, t=None):
-    """单个气泡的样式"""
+    """单个气泡的样式。用户气泡右下尖，助手气泡左下尖。"""
     t = t or _CHAT_THEME
     if role == "user":
-        return ("QFrame#Bubble{background:%s;border-radius:%dpx;}"
+        return ("QFrame#Bubble{background:%s;border-radius:%s;}"
                 "QLabel#BubbleText{color:%s;font-size:%dpx;font-family:'%s';}" % (
-                    t["user_bg"], CHAT_BUBBLE_RADIUS, t["user_fg"], CHAT_FONT_SIZE,
+                    t["user_bg"], _USER_RADIUS, t["user_fg"], CHAT_FONT_SIZE,
                     CHAT_FONT_FAMILY))
     if role == "error":
-        return ("QFrame#Bubble{background:%s;border:1px solid %s;border-radius:%dpx;}"
+        return ("QFrame#Bubble{background:%s;border:1px solid %s;"
+                "border-radius:%dpx;}"
                 "QLabel#BubbleText{color:%s;font-size:%dpx;font-family:'%s';}" % (
                     t["error_bg"], t["error_border"], CHAT_BUBBLE_RADIUS,
                     t["error_fg"], CHAT_FONT_SIZE, CHAT_FONT_FAMILY))
     if role == "note":
-        return ("QFrame#Bubble{background:%s;border:1px solid %s;border-radius:%dpx;}"
+        return ("QFrame#Bubble{background:%s;border:1px solid %s;"
+                "border-radius:%dpx;}"
                 "QLabel#BubbleText{color:%s;font-size:%dpx;font-family:'%s';}" % (
                     t["note_bg"], t["note_border"], CHAT_BUBBLE_RADIUS,
                     t["note_fg"], CHAT_SMALL_SIZE, CHAT_FONT_FAMILY))
-    return ("QFrame#Bubble{background:%s;border:1px solid %s;border-radius:%dpx;}"
+    return ("QFrame#Bubble{background:%s;border:1px solid %s;border-radius:%s;}"
             "QLabel#BubbleText{color:%s;font-size:%dpx;font-family:'%s';}" % (
-                t["pet_bg"], t["border"], CHAT_BUBBLE_RADIUS,
+                t["pet_bg"], t["border"], _PET_RADIUS,
                 t["pet_fg"], CHAT_FONT_SIZE, CHAT_FONT_FAMILY))
 
 
@@ -1860,7 +1878,24 @@ def chat_text_width(text, font):
         for line in (text or "").splitlines() or [""]:
             plain = line.strip("`")
             w = max(w, fm.horizontalAdvance(plain))
-        return min(CHAT_BUBBLE_MAXW, max(80, w + 12))
+        # 上限取「固定上限」与「聊天区宽度 × 比例」中较小者，
+        # 这样窗口拉宽时气泡不会跟着无限变宽，窄窗口时也不溢出。
+        limit = CHAT_BUBBLE_MAXW
+        try:
+            app = QApplication.instance()
+            area = 0
+            if app is not None:
+                for wd in app.topLevelWidgets():
+                    obj = wd.objectName() if hasattr(wd, "objectName") else ""
+                    if obj == "ChatRoot" and wd.isVisible():
+                        area = wd.width()
+                        break
+            if area > 200:
+                limit = min(CHAT_BUBBLE_MAXW,
+                            int(area * CHAT_BUBBLE_MAXW_RATIO))
+        except Exception:
+            pass
+        return min(limit, max(80, w + 12))
     except Exception:
         return 240
 
