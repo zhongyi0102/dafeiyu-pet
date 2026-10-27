@@ -1482,6 +1482,7 @@ CHAT_THEME_LIGHT = {
     "btn_border": "#e0e4ee",
     "accent": "#5686fe",
     "accent_fg": "#ffffff",
+    "accent_hover": "#477CFE",
     "code_bg": "#f1f3f9",
     "scroll": "#e2e6ef",
     # ---- 语音卡片 ----
@@ -1539,6 +1540,7 @@ CHAT_THEME_DARK = {
     "btn_border": "#3f4450",
     "accent": "#4c7df0",
     "accent_fg": "#ffffff",
+    "accent_hover": "#5c8bf5",
     "code_bg": "#22252c",
     "scroll": "#3a3e48",
     # ---- 语音卡片（深色）----
@@ -1591,8 +1593,17 @@ def chat_qss(t):
     QWidget#ChatBody { background: transparent; }
     QTextEdit#ChatInput {
         background: %(input_bg)s; color: %(fg)s;
-        border: 1px solid %(input_border)s; border-radius: 10px;
+        border: 1px solid %(input_border)s; border-radius: 8px;
         padding: 8px; font-family: '%(font)s'; font-size: %(fs)dpx;
+    }
+    QTextEdit#ChatInput:focus { border: 1px solid %(accent)s; }
+    QPushButton#AttachBtn {
+        background: transparent; color: %(sub)s;
+        border: 1px solid transparent; border-radius: 8px;
+        font-size: 15px; padding: 0;
+    }
+    QPushButton#AttachBtn:hover {
+        background: %(btn_bg)s; border-color: %(btn_border)s;
     }
     QPushButton {
         background: %(btn_bg)s; color: %(btn_fg)s;
@@ -1603,9 +1614,10 @@ def chat_qss(t):
     QPushButton:disabled { color: %(sub)s; }
     QPushButton#SendBtn {
         background: %(accent)s; color: %(accent_fg)s; border: 1px solid %(accent)s;
-        font-weight: bold; min-width: 64px;
+        border-radius: 6px; font-weight: bold; font-size: 13px;
     }
-    QPushButton#SendBtn:hover { background: %(accent)s; }
+    QPushButton#SendBtn:hover { background: %(accent_hover)s; border-color: %(accent_hover)s; }
+    QPushButton#SendBtn:disabled { background: %(sub)s; border-color: %(sub)s; }
     QLabel#UsageLabel { color: %(sub)s; font-size: %(small)dpx; font-family: '%(font)s'; }
     QComboBox {
         background: %(input_bg)s; color: %(fg)s;
@@ -1698,6 +1710,7 @@ def chat_qss(t):
         "input_bg": t["input_bg"], "input_border": t["input_border"],
         "btn_bg": t["btn_bg"], "btn_fg": t["btn_fg"], "btn_border": t["btn_border"],
         "accent": t["accent"], "accent_fg": t["accent_fg"],
+        "accent_hover": t.get("accent_hover", t["accent"]),
         "card": t["card"], "border": t["border"], "scroll": t["scroll"],
         "sidebar": t["sidebar"], "sidebar_sel": t["sidebar_sel"],
         "secondary_bg": t["secondary_bg"], "secondary_fg": t["secondary_fg"],

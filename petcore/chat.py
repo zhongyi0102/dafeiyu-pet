@@ -1946,22 +1946,24 @@ class ChatWindow(QWidget):
         self.attach_bar.hide()
         rlay.addWidget(self.attach_bar)
 
-        # 输入行：附件按钮 + 输入框
+        # 输入框整行：附件按钮在左（包在输入框行内，垂直居中），
+        # 输入框占满剩余宽度
         _inrow = QHBoxLayout()
-        _inrow.setSpacing(6)
+        _inrow.setSpacing(8)
         self.attach_btn = QPushButton("📎")
-        self.attach_btn.setObjectName("SideSmallBtn")
-        self.attach_btn.setFixedSize(34, 34)
+        self.attach_btn.setObjectName("AttachBtn")
+        self.attach_btn.setFixedSize(30, 30)
         self.attach_btn.setToolTip("添加图片或文本文件")
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_btn.clicked.connect(self._pick_attachments)
-        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         _inrow.addWidget(self.input, 1)
         rlay.addLayout(_inrow)
 
         # 允许拖拽文件进窗口
         self.setAcceptDrops(True)
 
+        # 底部行：用量文字在左，发送按钮居中（参考样式）
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         self.token_label = QLabel("")
@@ -1974,9 +1976,13 @@ class ChatWindow(QWidget):
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("SendBtn")
         self.send_btn.setDefault(True)
-        self.send_btn.setFixedWidth(76)
+        self.send_btn.setFixedSize(90, 29)   # 参考图实测 90×29
         self.send_btn.clicked.connect(self._on_send_clicked)
+        # 发送按钮居中：左侧 stretch 已被 token_label(1) 占掉，
+        # 这里用两端等量 stretch 把它推到中间
+        bottom.addStretch(1)
         bottom.addWidget(self.send_btn, 0)
+        bottom.addStretch(1)
         rlay.addLayout(bottom)
 
         # 兼容旧代码里的"生成中禁用"引用（清空按钮已移到设置菜单，这里用动作代替）
