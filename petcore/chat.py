@@ -2055,41 +2055,45 @@ class ChatWindow(QWidget):
         # 附件缩略条（有附件时才显示）
         self._pending_atts = []
         self.attach_bar = QWidget()
+        self.attach_bar.setMaximumHeight(64)   # 56px 缩略图 + 上下留白
         _ab = QHBoxLayout(self.attach_bar)
-        _ab.setContentsMargins(0, 0, 0, 0)
+        _ab.setContentsMargins(0, 0, 0, 2)
         _ab.setSpacing(6)
         _ab.addStretch(1)
         self.attach_bar.hide()
         rlay.addWidget(self.attach_bar)
 
-        # 输入行：圆形加号 + 输入框 + 圆形上箭头发送（三者同一行）
-        _inrow = QHBoxLayout()
-        _inrow.setSpacing(8)
+        # 输入区卡片：附件条 + [加号 | 输入框 | 发送] 一行
+        # 方案 A：加号嵌进输入框左侧，不再单独占一行
         self.attach_btn = QPushButton("+")
         self.attach_btn.setObjectName("PlusBtn")
         self.attach_btn.setFixedSize(28, 28)
         self.attach_btn.setToolTip("添加图片或文本文件")
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_btn.clicked.connect(self._show_attach_menu)
-        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
-        _inrow.addWidget(self.input, 1)
+
         self.send_btn = QPushButton("↑")
         self.send_btn.setObjectName("SendBtn")
         self.send_btn.setDefault(True)
-        self.send_btn.setFixedSize(34, 34)   # 参考图实测 34×34 圆形
+        self.send_btn.setFixedSize(30, 30)
         self.send_btn.setToolTip("发送")
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
+
+        # 输入行容器：三者同一水平线，加号/发送靠底部对齐
+        _inrow = QHBoxLayout()
+        _inrow.setSpacing(6)
+        _inrow.setContentsMargins(0, 0, 0, 0)
+        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        _inrow.addWidget(self.input, 1)
         _inrow.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
 
-        # 输入区卡片：把附件条 + 输入行 + 用量行包进一个浅色容器，
-        # 与消息区形成视觉分隔，同时消掉输入框上方的大片空白
         self.input_card = QFrame()
         self.input_card.setObjectName("InputCard")
         self.input_card.setProperty("focused", "false")   # 默认灰边，聚焦才蓝
         _card = QVBoxLayout(self.input_card)
-        _card.setContentsMargins(12, 10, 12, 8)
-        _card.setSpacing(6)
+        _card.setContentsMargins(10, 8, 10, 8)
+        _card.setSpacing(4)
         _card.addWidget(self.attach_bar)
         _card.addLayout(_inrow)
         rlay.addWidget(self.input_card)
@@ -2583,14 +2587,15 @@ class ChatWindow(QWidget):
 
     # ---------- 输入框自动增高 ----------
     def _autosize_input(self):
-        """默认约 2 行，随内容增高，最多 6 行。"""
+        """默认 1 行，随内容增高，最多 6 行。"""
         try:
             fm = QFontMetrics(self.input.font())
             line_h = max(15, fm.lineSpacing())
             doc = self.input.document()
             doc.setTextWidth(max(80, self.input.viewport().width()))
-            lines = max(2, min(CHAT_INPUT_MAX_LINES, doc.size().height() / max(1.0, line_h)))
-            h = int(lines * line_h + 18)
+            lines = max(1, min(CHAT_INPUT_MAX_LINES,
+                               doc.size().height() / max(1.0, line_h)))
+            h = int(lines * line_h + 12)
             h = max(CHAT_INPUT_MIN_H, h)
             if abs(self.input.height() - h) > 1:
                 self.input.setFixedHeight(h)
@@ -3899,39 +3904,68 @@ class ChatWindow(QWidget):
                 % (type(ex).__name__, ex), logging.WARNING)
 
     def _attach_chip(self, att, idx):
-        """单个附件小卡片：缩略图/文件名 + 右上角 ×。"""
-        from petcore import chat_attach as CA
+        """单个附件缩略图：56x56 方形卡片，右上角悬浮 × 删除。
+
+        图片：显示真实缩略图，铺满卡片（KeepAspectRatioByExpanding + 裁剪）
+        文件：居中显示 📄 图标
+        ×  ：绝对定位在右上角，hover 变红，点击移除该附件
+        """
+        SIZE = 56
         box = QFrame()
+        box.setFixedSize(SIZE, SIZE)
+        box.setObjectName("AttachChip")
         box.setStyleSheet(
-            "QFrame{background:#f5f7fb;border:1px solid #dfe3ec;"
-            "border-radius:6px;}")
-        h = QHBoxLayout(box)
-        h.setContentsMargins(6, 4, 4, 4)
-        h.setSpacing(6)
+            "QFrame#AttachChip{background:#f2f5fb;"
+            "border:1px solid #e2e7f2;border-radius:8px;}")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
         if att.get("kind") == "image":
             lab = QLabel()
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lab.setStyleSheet("background:transparent;border:none;")
             pm = QPixmap(att.get("thumb") or "")
             if not pm.isNull():
-                lab.setPixmap(pm.scaled(
-                    40, 40, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
+                # 铺满 + 居中裁剪
+                pm2 = pm.scaled(
+                    SIZE - 4, SIZE - 4,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation)
+                x0 = max(0, (pm2.width() - (SIZE - 4)) // 2)
+                y0 = max(0, (pm2.height() - (SIZE - 4)) // 2)
+                pm2 = pm2.copy(x0, y0, SIZE - 4, SIZE - 4)
+                lab.setPixmap(pm2)
             else:
                 lab.setText("🖼")
-            h.addWidget(lab)
-            txt = QLabel("图片")
+                lab.setStyleSheet(
+                    "background:transparent;border:none;font-size:20px;")
+            lay.addWidget(lab)
         else:
-            txt = QLabel("📄 %s" % (att.get("name") or "文件"))
-        txt.setStyleSheet("color:#5a6070;font-size:11px;")
-        txt.setMaximumWidth(180)
-        h.addWidget(txt)
-        x = QPushButton("×")
-        x.setFixedSize(18, 18)
+            lab = QLabel("📄")
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lab.setStyleSheet(
+                "background:transparent;border:none;font-size:20px;")
+            lay.addWidget(lab)
+
+        # 文件名 tooltip
+        tip = att.get("name") or ("图片" if att.get("kind") == "image" else "文件")
+        box.setToolTip(tip)
+
+        # 右上角删除按钮：绝对定位，压在缩略图上
+        x = QPushButton("×", box)
+        x.setFixedSize(16, 16)
+        x.move(SIZE - 17, 1)
         x.setCursor(Qt.CursorShape.PointingHandCursor)
+        x.setToolTip("移除")
         x.setStyleSheet(
-            "QPushButton{border:none;background:transparent;"
-            "color:#8a8f9c;font-size:13px;}")
-        x.clicked.connect(lambda _=False, i=idx: self._remove_attachment(i))
-        h.addWidget(x)
+            "QPushButton{background:rgba(40,48,72,0.62);color:#ffffff;"
+            "border:none;border-radius:8px;font-size:12px;"
+            "font-weight:bold;padding:0;}"
+            "QPushButton:hover{background:#e05353;}")
+        x.clicked.connect(
+            lambda _=False, i=idx: self._remove_attachment(i))
+        x.raise_()
         return box
 
     def dragEnterEvent(self, e):

@@ -1456,7 +1456,7 @@ CHAT_LEFT_MAX = 400                   # 左栏可拖拽的最大宽度
 CHAT_LEFT_DEFAULT = 220               # 左栏默认宽度（可拖拽后）
 CHAT_TOP_BAR_H = 54                   # 聊天顶部栏高度
 CHAT_MIN_WIDTH = 560                  # 窗口最小宽度，避免内容被挤
-CHAT_INPUT_MIN_H = 46                 # 输入框默认约 2 行
+CHAT_INPUT_MIN_H = 34                 # 输入框默认 1 行
 CHAT_INPUT_MAX_LINES = 6              # 最多 6 行自动增高
 
 # 空白状态的欢迎语（傲娇风，随机取一条）
@@ -1608,7 +1608,7 @@ def chat_qss(t):
     QFrame#InputCard {
         background: %(input_bg)s;
         border: 1px solid %(border)s;
-        border-radius: %(radius_lg)dpx;
+        border-radius: 18px;
     }
     QFrame#InputCard[focused="true"] { border: 1px solid %(accent)s; }
     QScrollArea { border: none; background: transparent; }
@@ -1616,7 +1616,7 @@ def chat_qss(t):
     QTextEdit#ChatInput {
         background: transparent; color: %(fg)s;
         border: none; border-radius: 0;
-        padding: 2px 4px; font-family: '%(font)s'; font-size: %(fs)dpx;
+        padding: 0 2px; font-family: '%(font)s'; font-size: %(fs)dpx;
     }
     /* 输入区圆形按钮：默认透明，hover 才显浅底，不再有边框 */
     QPushButton#PlusBtn {
