@@ -1932,29 +1932,24 @@ class ChatWindow(QWidget):
         self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         side.addWidget(self.session_list, 1)
 
-        # 底部：两个图标按钮（记忆 / 设置），余额已合并到用量行
+        # 底部：一个「设置」文字按钮，菜单里含记忆入口
         foot = QHBoxLayout()
         foot.setSpacing(6)
-        foot.setContentsMargins(0, 4, 0, 2)
-        self.memory_btn = QPushButton("🧠")
-        self.memory_btn.setObjectName("SideIconBtn")
-        self.memory_btn.setFixedSize(30, 30)
-        self.memory_btn.setToolTip("长期记忆")
-        self.memory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.memory_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.memory_btn.clicked.connect(self.pet._open_memory)
-        foot.addWidget(self.memory_btn, 0)
-        self.settings_btn = QPushButton("⚙")
-        self.settings_btn.setObjectName("SideIconBtn")
-        self.settings_btn.setFixedSize(30, 30)
-        self.settings_btn.setToolTip("设置")
+        foot.setContentsMargins(4, 6, 4, 4)
+        self.settings_btn = QPushButton("设置")
+        self.settings_btn.setObjectName("SideTextBtn")
+        self.settings_btn.setFixedHeight(30)
+        self.settings_btn.setToolTip("设置与记忆")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.settings_btn.setPopupMode = None
         self.settings_menu = QMenu(self.settings_btn)
         self.settings_menu.setFixedWidth(168)
-        # 菜单项顺序：Key → 重命名 → 清空 → ─── → 删除 → 打开完整设置
+        # 菜单项顺序：记忆 → ─── → Key → 重命名 → 清空 → ─── → 删除 → 完整设置
         # 文字在 aboutToShow 时刷新（每次打开菜单都重新读 Key 状态）
+        self.memory_action = self.settings_menu.addAction(
+            "长期记忆…", lambda: self.pet._open_memory())
+        self.settings_menu.addSeparator()
         self.key_action = self.settings_menu.addAction("设置 Key（未设置）",
                                                        self.pet._set_key_dialog)
         self.rename_action = self.settings_menu.addAction("重命名当前对话", self._rename_current)
@@ -1980,7 +1975,7 @@ class ChatWindow(QWidget):
         self.settings_menu.aboutToShow.connect(self._refresh_settings_menu)
         # 展开时按钮保持高亮：换 objectName，收起后还原
         self.settings_menu.aboutToShow.connect(
-            lambda: self.settings_btn.setObjectName("SideIconBtnActive"))
+            lambda: self.settings_btn.setObjectName("SideTextBtnActive"))
         self.settings_menu.aboutToHide.connect(self._restore_settings_btn_style)
         self.settings_btn.setMenu(self.settings_menu)
         foot.addWidget(self.settings_btn, 0)
@@ -2654,7 +2649,7 @@ class ChatWindow(QWidget):
     def _restore_settings_btn_style(self):
         """菜单收起后把「设置」按钮还原成普通样式（重新应用 QSS）。"""
         try:
-            self.settings_btn.setObjectName("SideIconBtn")
+            self.settings_btn.setObjectName("SideTextBtn")
             # objectName 改变后必须重新 polish 才能生效
             self.settings_btn.style().unpolish(self.settings_btn)
             self.settings_btn.style().polish(self.settings_btn)
@@ -2687,7 +2682,7 @@ class ChatWindow(QWidget):
             self.rename_action.setEnabled(not busy)
             self.delete_action.setEnabled(not busy)
             self.clear_action.setEnabled(not busy)
-            self.memory_btn.setEnabled(True)
+            self.memory_action.setEnabled(True)
             self._update_send_button()
         except Exception:
             pass

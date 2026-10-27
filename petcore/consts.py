@@ -1713,6 +1713,21 @@ def chat_qss(t):
         font-size: 15px; padding: 0; outline: none;
     }
     QPushButton#SideIconBtn:hover { background: %(side_btn_hover)s; }
+    /* 侧栏底部「设置」文字按钮 */
+    QPushButton#SideTextBtn {
+        background: transparent; color: %(side_btn_fg)s;
+        border: none; border-radius: 8px;
+        font-size: 12.5px; padding: 0 10px; outline: none;
+        text-align: left;
+    }
+    QPushButton#SideTextBtn:hover { background: %(side_btn_hover)s; }
+    QPushButton#SideTextBtn:pressed { background: %(side_btn_hover)s; }
+    QPushButton#SideTextBtnActive {
+        background: %(side_btn_hover)s; color: %(accent)s;
+        border: none; border-radius: 8px;
+        font-size: 12.5px; padding: 0 10px; outline: none;
+        text-align: left;
+    }
     QPushButton#SideIconBtn:pressed { background: %(side_btn_hover)s; }
     QPushButton#SideIconBtnActive {
         background: %(side_btn_hover)s; color: %(side_btn_fg)s;
