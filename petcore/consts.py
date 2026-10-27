@@ -1593,18 +1593,16 @@ def chat_qss(t):
     QWidget#ChatBody { background: transparent; }
     QTextEdit#ChatInput {
         background: %(input_bg)s; color: %(fg)s;
-        border: 1px solid %(input_border)s; border-radius: 8px;
-        padding: 8px; font-family: '%(font)s'; font-size: %(fs)dpx;
+        border: 1px solid %(input_border)s; border-radius: 10px;
+        padding: 8px 10px; font-family: '%(font)s'; font-size: %(fs)dpx;
     }
     QTextEdit#ChatInput:focus { border: 1px solid %(accent)s; }
-    QPushButton#AttachBtn {
-        background: transparent; color: %(sub)s;
-        border: 1px solid transparent; border-radius: 8px;
-        font-size: 15px; padding: 0;
+    QPushButton#PlusBtn {
+        background: %(btn_bg)s; color: %(fg)s;
+        border: none; border-radius: 14px;
+        font-size: 17px; font-weight: bold; padding: 0;
     }
-    QPushButton#AttachBtn:hover {
-        background: %(btn_bg)s; border-color: %(btn_border)s;
-    }
+    QPushButton#PlusBtn:hover { background: %(btn_border)s; }
     QPushButton {
         background: %(btn_bg)s; color: %(btn_fg)s;
         border: 1px solid %(btn_border)s; border-radius: 9px;
@@ -1613,11 +1611,11 @@ def chat_qss(t):
     QPushButton:hover { background: %(accent)s; color: %(accent_fg)s; border-color: %(accent)s; }
     QPushButton:disabled { color: %(sub)s; }
     QPushButton#SendBtn {
-        background: %(accent)s; color: %(accent_fg)s; border: 1px solid %(accent)s;
-        border-radius: 6px; font-weight: bold; font-size: 13px;
+        background: %(accent)s; color: %(accent_fg)s; border: none;
+        border-radius: 17px; font-size: 17px; font-weight: bold; padding: 0;
     }
-    QPushButton#SendBtn:hover { background: %(accent_hover)s; border-color: %(accent_hover)s; }
-    QPushButton#SendBtn:disabled { background: %(sub)s; border-color: %(sub)s; }
+    QPushButton#SendBtn:hover { background: %(accent_hover)s; }
+    QPushButton#SendBtn:disabled { background: %(btn_border)s; color: %(sub)s; }
     QLabel#UsageLabel { color: %(sub)s; font-size: %(small)dpx; font-family: '%(font)s'; }
     QComboBox {
         background: %(input_bg)s; color: %(fg)s;

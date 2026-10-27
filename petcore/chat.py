@@ -1946,44 +1946,38 @@ class ChatWindow(QWidget):
         self.attach_bar.hide()
         rlay.addWidget(self.attach_bar)
 
-        # 输入框整行：附件按钮在左（包在输入框行内，垂直居中），
-        # 输入框占满剩余宽度
+        # 输入行：圆形加号 + 输入框 + 圆形上箭头发送（三者同一行）
         _inrow = QHBoxLayout()
         _inrow.setSpacing(8)
-        self.attach_btn = QPushButton("📎")
-        self.attach_btn.setObjectName("AttachBtn")
-        self.attach_btn.setFixedSize(30, 30)
+        self.attach_btn = QPushButton("+")
+        self.attach_btn.setObjectName("PlusBtn")
+        self.attach_btn.setFixedSize(28, 28)
         self.attach_btn.setToolTip("添加图片或文本文件")
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.attach_btn.clicked.connect(self._pick_attachments)
-        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.attach_btn.clicked.connect(self._show_attach_menu)
+        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
         _inrow.addWidget(self.input, 1)
+        self.send_btn = QPushButton("↑")
+        self.send_btn.setObjectName("SendBtn")
+        self.send_btn.setDefault(True)
+        self.send_btn.setFixedSize(34, 34)   # 参考图实测 34×34 圆形
+        self.send_btn.setToolTip("发送")
+        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_btn.clicked.connect(self._on_send_clicked)
+        _inrow.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
         rlay.addLayout(_inrow)
 
         # 允许拖拽文件进窗口
         self.setAcceptDrops(True)
 
-        # 底部行：用量文字在左，发送按钮居中（参考样式）
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
+        # 底部行：用量文字（独立一行，参考图样式）
         self.token_label = QLabel("")
         self.token_label.setObjectName("UsageLabel")
         self.token_label.setToolTip(self._usage_tooltip())
-        self.token_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.token_label.setMinimumWidth(60)
+        self.token_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                       QSizePolicy.Policy.Preferred)
         self.token_label.setVisible(False)   # 没有用量数据时整行隐藏
-        bottom.addWidget(self.token_label, 1)
-        self.send_btn = QPushButton("发送")
-        self.send_btn.setObjectName("SendBtn")
-        self.send_btn.setDefault(True)
-        self.send_btn.setFixedSize(90, 29)   # 参考图实测 90×29
-        self.send_btn.clicked.connect(self._on_send_clicked)
-        # 发送按钮居中：左侧 stretch 已被 token_label(1) 占掉，
-        # 这里用两端等量 stretch 把它推到中间
-        bottom.addStretch(1)
-        bottom.addWidget(self.send_btn, 0)
-        bottom.addStretch(1)
-        rlay.addLayout(bottom)
+        rlay.addWidget(self.token_label)
 
         # 兼容旧代码里的"生成中禁用"引用（清空按钮已移到设置菜单，这里用动作代替）
         self.clear_btn = None
@@ -3627,8 +3621,10 @@ class ChatWindow(QWidget):
             self.send_message()
 
     def _update_send_button(self):
+        """圆形按钮：空闲时上箭头，生成中变成停止方块。"""
         try:
-            self.send_btn.setText("停止" if self.busy else "发送")
+            self.send_btn.setText("■" if self.busy else "↑")
+            self.send_btn.setToolTip("停止生成" if self.busy else "发送")
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "_update_send_button", type(ex).__name__, ex),
@@ -3638,14 +3634,37 @@ class ChatWindow(QWidget):
         return "输入 - · 输出 - · 缓存命中 -"
 
     # ---------- 附件：添加 / 移除 / 渲染缩略条 ----------
-    def _pick_attachments(self):
-        """回形针按钮：选图片或文本文件。"""
+    def _show_attach_menu(self):
+        """加号按钮：弹出小菜单，选图片或文本文件。"""
+        from PySide6.QtWidgets import QMenu
+        try:
+            m = QMenu(self)
+            m.addAction("图片…", lambda: self._pick_attachments(images_only=True))
+            m.addAction("文本文件…", lambda: self._pick_attachments(text_only=True))
+            m.addSeparator()
+            m.addAction("粘贴剪贴板图片",
+                        lambda: (self._paste_image_from_clipboard() or
+                                 self._add_notice("剪贴板里没有图片")))
+            pos = self.attach_btn.mapToGlobal(
+                self.attach_btn.rect().topLeft())
+            m.exec(pos)
+        except Exception as ex:
+            log("[附件] 打开菜单失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _pick_attachments(self, images_only=False, text_only=False):
+        """选图片或文本文件。images_only / text_only 限定类型。"""
         from PySide6.QtWidgets import QFileDialog
+        if images_only:
+            flt = "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+        elif text_only:
+            flt = "文本文件 (*.txt *.md *.py *.json *.csv *.log)"
+        else:
+            flt = ("图片或文本 (*.png *.jpg *.jpeg *.webp *.bmp *.gif "
+                   "*.txt *.md *.py *.json *.csv *.log);;所有文件 (*)")
         try:
             files, _ = QFileDialog.getOpenFileNames(
-                self, "添加附件", "",
-                "图片或文本 (*.png *.jpg *.jpeg *.webp *.bmp *.gif "
-                "*.txt *.md *.py *.json *.csv *.log);;所有文件 (*)")
+                self, "添加附件", "", flt)
         except Exception as ex:
             log("[附件] 打开文件对话框失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -4809,6 +4828,19 @@ class ChatWindow(QWidget):
         return ("累计：输入 %d · 输出 %d · 合计 %d tokens · 缓存命中率 %s · 共 %d 次"
                 % (hit + miss, comp, tot, rate, req))
 
+    @staticmethod
+    def _fmt_tokens(n):
+        """token 数 → 4.2K / 5.4M 这种缩写。"""
+        try:
+            n = int(n or 0)
+        except Exception:
+            return "0"
+        if n >= 1_000_000:
+            return "%.1fM" % (n / 1_000_000.0)
+        if n >= 1_000:
+            return "%.1fK" % (n / 1_000.0)
+        return str(n)
+
     def _update_usage(self, usage, text=None):
         usage = usage or {}
         try:
@@ -4821,14 +4853,30 @@ class ChatWindow(QWidget):
         if usage:
             self.pet.add_usage(usage)
             denom = hit + miss
-            rate = ("%.0f%%" % (hit / denom * 100.0)) if denom else "-"
+            rate = ("%.1f%%" % (hit / denom * 100.0)) if denom else "-"
             if prompt or comp:
-                line = "输入 %d · 输出 %d · 缓存命中 %s" % (prompt, comp, rate)
+                # 参考图样式：本会话 ¥金额 · 命中 x% · 输入 · 缓存 · 输出
+                line = ("本会话 ¥%.4f · 命中 %s · 输入 %s · 缓存 %s · 输出 %s"
+                        % (self._session_cost(), rate,
+                           self._fmt_tokens(prompt), self._fmt_tokens(hit),
+                           self._fmt_tokens(comp)))
             else:
                 line = ""
         else:
             line = ""
         self._set_usage_label(line)
+
+    def _session_cost(self):
+        """本会话估算花费（元）。按 DeepSeek 定价粗略折算。"""
+        try:
+            u = self.pet.cfg.get("usage") or {}
+            hit = int(u.get("prompt_cache_hit_tokens", 0) or 0)
+            miss = int(u.get("prompt_cache_miss_tokens", 0) or 0)
+            comp = int(u.get("completion_tokens", 0) or 0)
+            # deepseek-chat: 命中 0.5 元/M，未命中 2 元/M，输出 8 元/M
+            return (hit / 1e6 * 0.5 + miss / 1e6 * 2.0 + comp / 1e6 * 8.0)
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _first_sentence(text):
