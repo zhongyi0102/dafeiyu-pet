@@ -728,28 +728,51 @@ class SettingsWindow(QDialog):
         """「提醒也实时生成」开关 + 今日已用次数。"""
         try:
             from petcore.consts import LIVE_GEN_DAILY_MAX
-            cb = QCheckBox("提醒也实时生成（耗 token）")
-            cb.setChecked(bool(self.app.is_enabled("care_live_generate")))
-            cb.toggled.connect(
-                lambda on: self.app.set_feature("care_live_generate", on))
-            lay.addWidget(cb)
             used = 0
             try:
                 if getattr(self.app, "_care", None) is not None:
                     used = self.app._care.live_gen_used_today()
             except Exception:
                 pass
-            hint = QLabel(
-                "关闭时固定台词只从缓存池或中性池抽取（0 token）。"
+            _lg_tip = (
+                "关闭时固定台词只从缓存池或中性池抽取（0 token）。\n"
                 "开启后弹提醒时现场生成一句，每天最多 %d 次，"
-                "超时 3 秒或失败自动回落。今日已用 %d 次。"
+                "超时 3 秒或失败自动回落。\n今日已用 %d 次。"
                 % (LIVE_GEN_DAILY_MAX, used))
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
-            lay.addWidget(hint)
+            # 复选框 + 右侧说明图标，同一行
+            _lg_row = QHBoxLayout()
+            _lg_row.setContentsMargins(0, 0, 0, 0)
+            cb = QCheckBox("提醒也实时生成（耗 token）")
+            cb.setChecked(bool(self.app.is_enabled("care_live_generate")))
+            cb.toggled.connect(
+                lambda on: self.app.set_feature("care_live_generate", on))
+            _lg_row.addWidget(cb)
+            _lg_row.addStretch(1)
+            _lg_row.addWidget(self._info_btn("提醒也实时生成", _lg_tip))
+            lay.addLayout(_lg_row)
         except Exception as ex:
             log("[设置] 实时生成开关失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
+
+    def _info_btn(self, title, text, size=16):
+        """创建一个可点击的说明图标：点开弹出 text。"""
+        b = QPushButton("i")
+        b.setObjectName("DialogInfoBtn")
+        b.setFixedSize(size, size)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setToolTip(text)
+        b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        b.clicked.connect(
+            lambda _=False, t=text, n=title:
+            QMessageBox.information(self, n, t))
+        return b
+
+    def _info_row(self, layout, title, text, add_stretch=True):
+        """在给定布局末尾追加一个说明图标。"""
+        if add_stretch:
+            layout.addStretch(1)
+        layout.addWidget(self._info_btn(title, text), 0)
+        return layout
 
     def _build_features_page(self, lay):
         self._title(lay, "功能开关",
@@ -2003,11 +2026,11 @@ class SettingsWindow(QDialog):
         _mt_row.addWidget(self._max_tokens_field, 1)
         _mt_row.addStretch(0)
         _body.addLayout(_mt_row)
-        hint2 = QLabel("模型单次最多输出多少 token（中文约 1.5 字/token）。"
-                       "「回复风格」决定说多长，这个值决定最多能说多长。")
-        hint2.setWordWrap(True)
-        hint2.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:2px;")
-        _body.addWidget(hint2)
+        _mt_row.addWidget(self._info_btn(
+            "单次输出上限",
+            "模型单次最多输出多少 token（中文约 1.5 字/token）。"
+            "「回复风格」决定说多长，这个值决定最多能说多长。"), 0)
+        _mt_row.addStretch(0)
 
         # ---- 余额（原「余额」页迁入，一行）----
         _bsep = QFrame()
@@ -2045,13 +2068,15 @@ class SettingsWindow(QDialog):
         # ================= ② 人设（默认折叠）=================
         self._persona_section = _PersonaGroup()
         _pbody = self._persona_section.body_layout
-        _p_desc = QLabel(
+        _phead = QHBoxLayout()
+        _phead.addWidget(QLabel("人设内容"))
+        _phead.addStretch(1)
+        _phead.addWidget(self._info_btn(
+            "人设",
             "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
             "也决定固定台词的语气。留空 = 无风格。\n"
-            "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。")
-        _p_desc.setWordWrap(True)
-        _p_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _pbody.addWidget(_p_desc)
+            "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。"))
+        _pbody.addLayout(_phead)
 
         self.persona_edit = QTextEdit()
         self.persona_edit.setFixedHeight(150)
@@ -2294,15 +2319,14 @@ class SettingsWindow(QDialog):
         # ================= ③ 长期记忆（默认折叠）=================
         self._memory_section = _MemoryGroup()
         _mbody = self._memory_section.body_layout
-        _m_desc = QLabel("长期记忆会拼在系统提示词末尾，影响所有会话。")
-        _m_desc.setWordWrap(True)
-        _m_desc.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _mbody.addWidget(_m_desc)
         _mrow = QHBoxLayout()
         _mb = QPushButton("打开记忆管理")
         _mb.clicked.connect(self.app._open_memory)
         _mrow.addWidget(_mb)
         _mrow.addStretch(1)
+        _mrow.addWidget(self._info_btn(
+            "长期记忆",
+            "长期记忆会拼在系统提示词末尾，影响所有会话。"))
         _mbody.addLayout(_mrow)
         self._memory_count = QLabel("")
         self._memory_count.setStyleSheet("color:#8a8f9c;font-size:11px;")
@@ -2380,12 +2404,8 @@ class SettingsWindow(QDialog):
 
         lay.addLayout(form)
 
-        # 风格灰字：紧贴「描述风格」控件下方
-        self._vision_style_hint = QLabel("")
-        self._vision_style_hint.setWordWrap(True)
-        self._vision_style_hint.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(self._vision_style_hint)
+        # 描述风格说明：改为可点击图标（内容动态生成）
+        self._vision_style_hint = self._info_btn("描述风格", "…")
 
         # ---- 识别规则（视觉请求 system，可收缩，默认收起）----
         _r_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_rule", False))
@@ -2393,10 +2413,13 @@ class SettingsWindow(QDialog):
         self._rule_section.toggled.connect(
             lambda on: self._save_section_state("vision_rule", on))
 
-        _rule_hint = QLabel("这段会作为视觉请求的 system，长度句自动追加在末尾")
-        _rule_hint.setWordWrap(True)
-        _rule_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        self._rule_section.body_add(_rule_hint)
+        _rrow = QHBoxLayout()
+        _rrow.addWidget(QLabel("识别规则内容"))
+        _rrow.addStretch(1)
+        _rrow.addWidget(self._info_btn(
+            "识别规则",
+            "这段会作为视觉请求的 system，长度句自动追加在末尾"))
+        self._rule_section.body_add_layout(_rrow)
 
         self.vision_rule_edit = QTextEdit()
         self.vision_rule_edit.setFixedHeight(120)   # 约 6 行
@@ -3197,10 +3220,10 @@ class SettingsWindow(QDialog):
 
 
     def _refresh_vision_style_hint(self):
-        """风格行下方灰字：显示当前追加句（和聊天页写法一致）。"""
+        """刷新「描述风格」说明按钮的 tooltip。"""
         try:
             suffix = vision_style_suffix(self._style_from_widget())
-            self._vision_style_hint.setText(
+            self._vision_style_hint.setToolTip(
                 "当前风格下，视觉请求 system 末尾会追加：「%s」" % suffix)
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
