@@ -224,7 +224,7 @@ class ChatGroupBox(QWidget):
 
 
 class _ChatModelGroup(ChatGroupBox):
-    """① 聊天模型：Key / 地址 / 模型 + 回复风格 + 单次输出上限。默认展开。"""
+    """① 聊天模型：Key / 地址 / 模型 + 单次输出上限。默认展开。"""
 
     def __init__(self, parent=None):
         super().__init__("聊天模型", expanded=True, parent=parent)
@@ -2027,13 +2027,13 @@ class SettingsWindow(QDialog):
         _mt_row = QHBoxLayout()
         _mt_row.addWidget(QLabel("单次输出上限"))
         _mt_row.addWidget(self._max_tokens_field, 1)
-        _mt_row.addStretch(0)
-        _body.addLayout(_mt_row)
         _mt_row.addWidget(self._info_btn(
             "单次输出上限",
-            "模型单次最多输出多少 token（中文约 1.5 字/token）。"
-            "「回复风格」决定说多长，这个值决定最多能说多长。"), 0)
+            "模型单次最多输出多少 token（中文约 1.5 字/token）。\n"
+            "人设决定说话风格和长短，这个值只是硬性截断，"
+            "防止一次回复过长消耗过多额度。"), 0)
         _mt_row.addStretch(0)
+        _body.addLayout(_mt_row)
 
         # ---- 余额（原「余额」页迁入，一行）----
         _bsep = QFrame()

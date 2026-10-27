@@ -4447,8 +4447,8 @@ class ChatWindow(QWidget):
                 self._estimate_tokens() > CONTEXT_LIMIT_TOKENS * 0.7)
 
     def _build_request_messages(self):
-        # 开头永远是同一段 system（人设 + 长度句 + 长期记忆）。
-        # 长度句由「回复风格」决定：同一风格下内容恒定 → 前缀缓存稳定；切换风格时失效一次属正常。
+        # 开头永远是同一段 system（人设 + 功能规则 + 长期记忆）。
+        # 回复长短由人设决定：人设不变则 system 恒定 → 前缀缓存稳定。
         persona = persona_from_cfg(self.pet.cfg)
         sys_text = build_system_prompt(persona)
         # 唱歌场景：**联网搜真实歌词**，搜到就直接用（跳过模型）
