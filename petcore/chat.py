@@ -619,6 +619,83 @@ def _needs_time_divider(prev_ts, cur_ts):
         return False
 
 
+class SendButton(QPushButton):
+    """发送按钮：圆形底 + 手绘几何箭头。
+
+    用 QPainter 画箭头而不是「↑」字符，原因是字符笔画太细
+    且受字体影响；几何图形可以精确控制粗细和大小。
+    busy 状态画一个实心方块（停止生成）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SendBtn")
+        self.setFixedSize(28, 28)
+        self._busy = False
+
+    def set_busy(self, busy):
+        self._busy = bool(busy)
+        self.update()
+
+    def paintEvent(self, e):
+        from PySide6.QtGui import QPainter, QPainterPath, QPen, QBrush
+        from PySide6.QtCore import Qt as _Qt, QRectF, QPointF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(0, 0, self.width(), self.height())
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+
+        # 圆形底
+        if not self.isEnabled():
+            bg = QColor("#eef0f3")
+        elif self.isDown():
+            bg = QColor("#8aaaf0")
+        elif self.underMouse():
+            bg = QColor("#9db8f0")
+        else:
+            bg = QColor("#b3c8f5")
+        p.setPen(_Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(bg))
+        p.drawEllipse(r)
+
+        # 前景色
+        fg = QColor("#c2c7cf") if not self.isEnabled() else QColor("#ffffff")
+
+        if self._busy:
+            # 停止：实心圆角方块
+            s = 7.0
+            box = QRectF(cx - s / 2, cy - s / 2, s, s)
+            p.setBrush(QBrush(fg))
+            p.drawRoundedRect(box, 1.5, 1.5)
+        else:
+            # 发送：锥形箭头（实心填充，比线条更粗更有力）
+            p.setPen(_Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(fg))
+            top = cy - 6.5
+            bottom = cy + 6.5
+            head_h = 6.0          # 箭头三角高度
+            head_w = 5.2          # 箭头三角半宽
+            shaft_w = 1.5         # 竖杆半宽
+            head_bottom = top + head_h
+
+            tri = QPainterPath()
+            tri.moveTo(cx, top)
+            tri.lineTo(cx + head_w, head_bottom)
+            tri.lineTo(cx - head_w, head_bottom)
+            tri.closeSubpath()
+            p.drawPath(tri)
+
+            shaft = QPainterPath()
+            shaft.moveTo(cx - shaft_w, head_bottom - 0.8)
+            shaft.lineTo(cx + shaft_w, head_bottom - 0.8)
+            shaft.lineTo(cx + shaft_w, bottom)
+            shaft.lineTo(cx - shaft_w, bottom)
+            shaft.closeSubpath()
+            p.drawPath(shaft)
+        p.end()
+
+
 class SidebarDragHandle(QWidget):
     """侧栏右边缘拖拽条：拖动调整侧栏宽度。
 
@@ -2072,10 +2149,8 @@ class ChatWindow(QWidget):
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_btn.clicked.connect(self._show_attach_menu)
 
-        self.send_btn = QPushButton("↑")
-        self.send_btn.setObjectName("SendBtn")
+        self.send_btn = SendButton()
         self.send_btn.setDefault(True)
-        self.send_btn.setFixedSize(28, 28)   # radius 14 = 真圆
         self.send_btn.setToolTip("发送")
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
@@ -3790,7 +3865,7 @@ class ChatWindow(QWidget):
     def _update_send_button(self):
         """圆形按钮：空闲时上箭头，生成中变成停止方块。"""
         try:
-            self.send_btn.setText("■" if self.busy else "↑")
+            self.send_btn.set_busy(bool(self.busy))
             self.send_btn.setToolTip("停止生成" if self.busy else "发送")
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
