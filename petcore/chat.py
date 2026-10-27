@@ -1971,14 +1971,6 @@ class ChatWindow(QWidget):
         self.token_label.setMinimumWidth(60)
         self.token_label.setVisible(False)   # 没有用量数据时整行隐藏
         bottom.addWidget(self.token_label, 1)
-        # 删除当前对话（常驻，比藏在设置菜单里直观）
-        self.delete_chat_btn = QPushButton("删除对话")
-        self.delete_chat_btn.setObjectName("SideSmallBtn")
-        self.delete_chat_btn.setFixedWidth(76)
-        self.delete_chat_btn.setToolTip("删除当前对话（不可恢复）")
-        self.delete_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.delete_chat_btn.clicked.connect(self._delete_current_session)
-        bottom.addWidget(self.delete_chat_btn, 0)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("SendBtn")
         self.send_btn.setDefault(True)
@@ -2541,14 +2533,6 @@ class ChatWindow(QWidget):
             self.clear_action.setEnabled(not busy)
             self.memory_btn.setEnabled(True)
             self._update_send_button()
-            # 删除对话：生成中禁用；空对话时禁用（没内容可删）
-            btn = getattr(self, "delete_chat_btn", None)
-            if btn is not None:
-                cur = self._current_session()
-                empty = self._session_is_empty(cur)
-                btn.setEnabled((not busy) and (not empty))
-                btn.setToolTip("当前对话是空的，无需删除" if empty
-                               else "删除当前对话（不可恢复）")
         except Exception:
             pass
 
