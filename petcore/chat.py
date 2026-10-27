@@ -676,6 +676,13 @@ class DialogParamsDialog(QDialog):
         self.setWindowTitle("对话参数")
         self.setModal(True)
         self.setMinimumWidth(420)
+        # Esc 关闭
+        try:
+            from PySide6.QtGui import QShortcut, QKeySequence
+            _sc = QShortcut(QKeySequence("Esc"), self)
+            _sc.activated.connect(self.accept)
+        except Exception:
+            pass
         self.setStyleSheet("""
             QDialog { background: #ffffff; }
             QLabel#DlgLabel {
@@ -707,6 +714,19 @@ class DialogParamsDialog(QDialog):
                 background: #5686fe; border-radius: 7px;
             }
             QSlider::handle:horizontal:hover { background: #3f6fe8; }
+            QPushButton#DialogInfoBtn {
+                background: #e3e8f0; color: #5a6376;
+                border: 1px solid #d3dae6; border-radius: 9px;
+                font-size: 12px; font-weight: 700; padding: 0 0 1px 0;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+            }
+            QPushButton#DialogInfoBtn:hover {
+                background: #5686fe; color: #ffffff;
+                border-color: #5686fe;
+            }
+            QPushButton#DialogInfoBtn:pressed {
+                background: #3f6fe8; border-color: #3f6fe8;
+            }
         """)
 
         lay = QVBoxLayout(self)
@@ -792,13 +812,7 @@ class DialogParamsDialog(QDialog):
         self.stream_sw.toggled.connect(self._set_stream)
         _row("流式输出", "关闭后要等整段回复生成完才显示", self.stream_sw)
 
-        lay.addSpacing(8)
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        close = QPushButton("关闭")
-        close.clicked.connect(self.accept)
-        btns.addWidget(close)
-        lay.addLayout(btns)
+        # 关闭用窗口右上角 × 或 Esc，不再放底部按钮
 
     def _set_history(self, v):
         try:
