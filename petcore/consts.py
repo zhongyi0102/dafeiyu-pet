@@ -237,6 +237,14 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 CHAT_PATH = os.path.join(APP_DIR, "chats.json")
 MEMORY_PATH = os.path.join(APP_DIR, "memory.json")
 LOG_PATH = os.path.join(APP_DIR, "error.log")
+# ===== 对话参数（参考 Chatbox 对话设置）=====
+HISTORY_MSG_LIMIT = 20           # 上下文最多带多少条历史消息
+HISTORY_MSG_MIN = 2              # 最少 2 条（一问一答）
+HISTORY_MSG_MAX = 200            # 最多 200 条
+TEMPERATURE_DEFAULT = None       # None = 不传，用 API 默认
+TOP_P_DEFAULT = None             # None = 不传，用 API 默认
+STREAM_DEFAULT = True            # 流式输出默认开
+
 CONTEXT_LIMIT_TOKENS = 60000     # deepseek-chat 上下文上限（保守取值）
 SUMMARIZE_AT_TOKENS = 42000      # 估算超过这个数就先总结旧记录
 KEEP_RECENT_MESSAGES = 12        # 总结时保留最近多少条消息
@@ -2962,6 +2970,10 @@ def default_config():
         "reply_style": REPLY_STYLE_DEFAULT,
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 无风格（台词用中性池）
+    "history_msg_limit": 20,        # 上下文消息条数上限
+    "temperature": None,            # 温度（None = 不传，用 API 默认）
+    "top_p": None,                  # Top P（None = 不传）
+    "stream_output": True,          # 流式输出
     "chat_sidebar_width": 220,      # 聊天侧栏宽度（可拖拽 160-400）
     "chat_sidebar_collapsed": False,  # 聊天侧栏是否折叠
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
@@ -3614,6 +3626,46 @@ def migrate_and_validate(raw):
             cfg["chat_window"] = geo
     elif cw is not None:
         issues.append("chat_window")
+
+    # 4.85) 对话参数（温度 / Top P / 流式 / 上下文条数）
+    _hm = raw.get("history_msg_limit")
+    if isinstance(_hm, int) and not isinstance(_hm, bool):
+        cfg["history_msg_limit"] = max(HISTORY_MSG_MIN,
+                                       min(HISTORY_MSG_MAX, int(_hm)))
+        if cfg["history_msg_limit"] != _hm:
+            changed = True
+    elif _hm is not None:
+        issues.append("history_msg_limit")
+        changed = True
+
+    _tp = raw.get("temperature")
+    if _tp is None:
+        cfg["temperature"] = None
+    elif isinstance(_tp, (int, float)) and not isinstance(_tp, bool):
+        cfg["temperature"] = max(0.0, min(2.0, float(_tp)))
+        if cfg["temperature"] != _tp:
+            changed = True
+    else:
+        issues.append("temperature")
+        changed = True
+
+    _tpp = raw.get("top_p")
+    if _tpp is None:
+        cfg["top_p"] = None
+    elif isinstance(_tpp, (int, float)) and not isinstance(_tpp, bool):
+        cfg["top_p"] = max(0.0, min(1.0, float(_tpp)))
+        if cfg["top_p"] != _tpp:
+            changed = True
+    else:
+        issues.append("top_p")
+        changed = True
+
+    _so = raw.get("stream_output")
+    if isinstance(_so, bool):
+        cfg["stream_output"] = _so
+    elif _so is not None:
+        issues.append("stream_output")
+        changed = True
 
     # 4.9) 聊天侧栏宽度 / 折叠状态（UI 偏好，直接透传）
     _sw = raw.get("chat_sidebar_width")

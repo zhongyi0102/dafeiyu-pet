@@ -398,13 +398,17 @@ class ChatWorker(QThread):
     done = Signal(str, dict)
     failed = Signal(str)
 
-    def __init__(self, messages, api_key, max_tokens=None, base_url=None, model=None):
+    def __init__(self, messages, api_key, max_tokens=None, base_url=None,
+                 model=None, temperature=None, top_p=None, stream=True):
         self.base_url = (base_url or DS_BASE_URL).rstrip("/")
         self.model = model or DS_MODEL
         super().__init__()
         self.messages = messages
         self.api_key = api_key
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.stream = bool(stream)
         self._stop = False
 
     def request_stop(self):
@@ -422,37 +426,60 @@ class ChatWorker(QThread):
             payload = {
                 "model": self.model,
                 "messages": self.messages,
-                "stream": True,
-                "stream_options": {"include_usage": True},
+                "stream": self.stream,
             }
+            if self.stream:
+                payload["stream_options"] = {"include_usage": True}
             if self.max_tokens:
                 payload["max_tokens"] = int(self.max_tokens)
-            with requests.post(url, headers=headers, json=payload, stream=True, timeout=180) as r:
-                if r.status_code != 200:
-                    self.failed.emit(_http_error_message(r.status_code, r.text))
+            if self.temperature is not None:
+                payload["temperature"] = float(self.temperature)
+            if self.top_p is not None:
+                payload["top_p"] = float(self.top_p)
+            r = requests.post(url, headers=headers, json=payload,
+                              stream=self.stream, timeout=180)
+            if r.status_code != 200:
+                self.failed.emit(_http_error_message(r.status_code, r.text))
+                return
+            r.encoding = "utf-8"
+
+            if not self.stream:
+                # 非流式：一次性拿完整结果
+                try:
+                    data = r.json()
+                except Exception as ex:
+                    self.failed.emit("响应解析失败：" + str(ex))
                     return
-                r.encoding = "utf-8"
-                for line in r.iter_lines(decode_unicode=True):
-                    if self._stop:
-                        return
-                    if not line:
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except Exception:
-                        continue
-                    if obj.get("usage"):
-                        usage = obj["usage"]
-                    for ch in obj.get("choices") or []:
-                        delta = ((ch.get("delta") or {}).get("content")) or ""
-                        if delta:
-                            full += delta
-                            self.chunk.emit(delta)
+                usage = data.get("usage") or {}
+                for ch in data.get("choices") or []:
+                    full += ((ch.get("message") or {}).get("content")) or ""
+                if full:
+                    self.chunk.emit(full)
+                self.done.emit(full, usage)
+                return
+
+            # 流式
+            for line in r.iter_lines(decode_unicode=True):
+                if self._stop:
+                    return
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                for ch in obj.get("choices") or []:
+                    delta = ((ch.get("delta") or {}).get("content")) or ""
+                    if delta:
+                        full += delta
+                        self.chunk.emit(delta)
             self.done.emit(full, usage)
         except requests.exceptions.RequestException as ex:
             self.failed.emit("网络连接失败：" + str(ex) + "\n（检查网络 / 代理是否可用）")
@@ -2024,19 +2051,13 @@ class ChatWindow(QWidget):
         self.settings_menu.setFixedWidth(168)
         # 菜单项顺序：记忆 → ─── → Key → 重命名 → 清空 → ─── → 删除 → 完整设置
         # 文字在 aboutToShow 时刷新（每次打开菜单都重新读 Key 状态）
+        # 菜单只保留「长期记忆」和「完整设置」两个入口，
+        # Key / 重命名 / 清空 / 删除 都移到设置的聊天页。
         self.memory_action = self.settings_menu.addAction(
             "长期记忆…", lambda: self.pet._open_memory())
         self.settings_menu.addSeparator()
-        self.key_action = self.settings_menu.addAction("设置 Key（未设置）",
-                                                       self.pet._set_key_dialog)
-        self.rename_action = self.settings_menu.addAction("重命名当前对话", self._rename_current)
-        self.clear_action = self.settings_menu.addAction("清空当前对话", self.clear_chat)
-        # 清空 / 删除之间用分隔线隔开，删除是危险操作 → 红字
-        self.settings_menu.addSeparator()
-        self.delete_action = self.settings_menu.addAction("删除当前对话",
-                                                          self._delete_current_session)
-        self.delete_action.setObjectName("DangerAction")
-        self.settings_menu.addAction("打开完整设置…", lambda: self.pet.open_settings())
+        self.settings_menu.addAction("打开完整设置…",
+                                     lambda: self.pet.open_settings())
         # 菜单阴影（QSS 不支持 box-shadow，用 QGraphicsDropShadowEffect）
         try:
             from PySide6.QtWidgets import QGraphicsDropShadowEffect
@@ -2771,7 +2792,10 @@ class ChatWindow(QWidget):
         """菜单每次打开时重新读取：Key 是否已设置、生成中禁用哪些项。"""
         try:
             key = (self.pet.cfg.get("ds_api_key") or "").strip()
-            self.key_action.setText("设置 Key（已设置）" if key else "设置 Key（未设置）")
+            _ka = getattr(self, "key_action", None)
+            if _ka is not None:
+                _ka.setText("设置 Key（已设置）" if key
+                            else "设置 Key（未设置）")
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "_refresh_settings_menu", type(ex).__name__, ex),
@@ -2789,9 +2813,10 @@ class ChatWindow(QWidget):
         try:
             self.session_list.setEnabled(not busy)
             self.new_btn.setEnabled(not busy)
-            self.rename_action.setEnabled(not busy)
-            self.delete_action.setEnabled(not busy)
-            self.clear_action.setEnabled(not busy)
+            for _n in ("rename_action", "delete_action", "clear_action"):
+                _a = getattr(self, _n, None)
+                if _a is not None:
+                    _a.setEnabled(not busy)
             self.memory_action.setEnabled(True)
             self._update_send_button()
         except Exception:
@@ -4359,8 +4384,20 @@ class ChatWindow(QWidget):
         if self.summary:
             msgs.append({"role": "system",
                          "content": "以下是你和用户更早的聊天摘要（原始记录保留在本地，不再重复发送）：\n" + self.summary})
-        # 当前会话的历史按原顺序追加
-        for m in self.messages[self.summarized_upto:]:
+        # 当前会话的历史按原顺序追加，但受「上下文消息条数上限」约束
+        try:
+            limit = int(self.pet.cfg.get("history_msg_limit",
+                                         HISTORY_MSG_LIMIT) or HISTORY_MSG_LIMIT)
+        except Exception:
+            limit = HISTORY_MSG_LIMIT
+        limit = max(HISTORY_MSG_MIN, min(HISTORY_MSG_MAX, limit))
+        hist = self.messages[self.summarized_upto:]
+        if len(hist) > limit:
+            # 只保留最近 limit 条；条数对齐到偶数，避免把一问一答拆开
+            keep = limit if limit % 2 == 0 else limit - 1
+            keep = max(HISTORY_MSG_MIN, keep)
+            hist = hist[-keep:]
+        for m in hist:
             msgs.append({"role": m["role"], "content": m["content"]})
         return msgs
 
@@ -4626,7 +4663,10 @@ class ChatWindow(QWidget):
         self.worker = ChatWorker(
             messages, key,
             max_tokens=self.pet.cfg.get("max_tokens", MAX_TOKENS_DEFAULT),
-            base_url=_base, model=_model)
+            base_url=_base, model=_model,
+            temperature=self.pet.cfg.get("temperature"),
+            top_p=self.pet.cfg.get("top_p"),
+            stream=bool(self.pet.cfg.get("stream_output", True)))
         self.pet.set_work_state("thinking")
         self.worker.chunk.connect(self._on_chunk)
         self.worker.done.connect(self._on_done)

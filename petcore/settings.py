@@ -2134,6 +2134,110 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._persona_section)
         self._refresh_persona_state()
 
+        # ================= 对话设置（参考 Chatbox）=================
+        _dlg = QFrame()
+        _dlg.setObjectName("DialogBox")
+        _dlg.setStyleSheet(
+            "QFrame#DialogBox{background:#fbfcfd;border:1px solid #e8ecf3;"
+            "border-radius:12px;}")
+        _dl = QVBoxLayout(_dlg)
+        _dl.setContentsMargins(16, 14, 16, 14)
+        _dl.setSpacing(12)
+
+        _dt = QLabel("对话设置")
+        _dt.setStyleSheet("font-size:13px;font-weight:600;color:#2c3040;")
+        _dl.addWidget(_dt)
+
+        # ---- 上下文消息数量上限 ----
+        _hr = QHBoxLayout()
+        _h1 = QLabel("上下文的消息数量上限")
+        _h1.setStyleSheet("font-size:12.5px;color:#2c3040;")
+        _hr.addWidget(_h1)
+        _hi = QLabel("ⓘ")
+        _hi.setToolTip("每次请求最多携带多少条历史消息")
+        _hi.setStyleSheet("color:#b0b6c2;font-size:12px;")
+        _hr.addWidget(_hi)
+        _hr.addStretch(1)
+        self.history_spin = QSpinBox()
+        self.history_spin.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
+        self.history_spin.setValue(int(self.app.cfg.get(
+            "history_msg_limit", HISTORY_MSG_LIMIT) or HISTORY_MSG_LIMIT))
+        self.history_spin.setFixedWidth(84)
+        self.history_spin.valueChanged.connect(self._set_history_limit)
+        _hr.addWidget(self.history_spin)
+        _dl.addLayout(_hr)
+
+        self.history_slider = QSlider(Qt.Orientation.Horizontal)
+        self.history_slider.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
+        self.history_slider.setValue(self.history_spin.value())
+        self.history_slider.valueChanged.connect(self.history_spin.setValue)
+        self.history_spin.valueChanged.connect(self.history_slider.setValue)
+        _dl.addWidget(self.history_slider)
+
+        # ---- 温度 ----
+        _tr = QHBoxLayout()
+        _t1 = QLabel("温度")
+        _t1.setStyleSheet("font-size:12.5px;color:#2c3040;")
+        _tr.addWidget(_t1)
+        _ti = QLabel("ⓘ")
+        _ti.setToolTip("越高越随机，越低越稳定。不设置则用 API 默认")
+        _ti.setStyleSheet("color:#b0b6c2;font-size:12px;")
+        _tr.addWidget(_ti)
+        _tr.addStretch(1)
+        self.temp_spin = QDoubleSpinBox()
+        self.temp_spin.setRange(0.0, 2.0)
+        self.temp_spin.setSingleStep(0.1)
+        self.temp_spin.setDecimals(1)
+        self.temp_spin.setFixedWidth(84)
+        self.temp_spin.setSpecialValueText("未设置")
+        cur_t = self.app.cfg.get("temperature")
+        self.temp_spin.setValue(-1.0 if cur_t is None else float(cur_t))
+        self.temp_spin.setMinimum(-1.0)
+        self.temp_spin.valueChanged.connect(self._set_temperature)
+        _tr.addWidget(self.temp_spin)
+        _dl.addLayout(_tr)
+
+        # ---- Top P ----
+        _pr = QHBoxLayout()
+        _p1 = QLabel("Top P")
+        _p1.setStyleSheet("font-size:12.5px;color:#2c3040;")
+        _pr.addWidget(_p1)
+        _pi = QLabel("ⓘ")
+        _pi.setToolTip("核采样。不设置则用 API 默认")
+        _pi.setStyleSheet("color:#b0b6c2;font-size:12px;")
+        _pr.addWidget(_pi)
+        _pr.addStretch(1)
+        self.topp_spin = QDoubleSpinBox()
+        self.topp_spin.setRange(-1.0, 1.0)
+        self.topp_spin.setSingleStep(0.05)
+        self.topp_spin.setDecimals(2)
+        self.topp_spin.setFixedWidth(84)
+        self.topp_spin.setSpecialValueText("未设置")
+        cur_p = self.app.cfg.get("top_p")
+        self.topp_spin.setValue(-1.0 if cur_p is None else float(cur_p))
+        self.topp_spin.valueChanged.connect(self._set_top_p)
+        _pr.addWidget(self.topp_spin)
+        _dl.addLayout(_pr)
+
+        # ---- 流式输出 ----
+        _sr = QHBoxLayout()
+        _s1 = QLabel("流式输出")
+        _s1.setStyleSheet("font-size:12.5px;color:#2c3040;")
+        _sr.addWidget(_s1)
+        _sr.addStretch(1)
+        self.stream_sw = QCheckBox()
+        self.stream_sw.setChecked(bool(self.app.cfg.get("stream_output", True)))
+        self.stream_sw.toggled.connect(self._set_stream_output)
+        _sr.addWidget(self.stream_sw)
+        _dl.addLayout(_sr)
+
+        _dhint = QLabel("关闭流式后要等整段回复生成完才显示")
+        _dhint.setWordWrap(True)
+        _dhint.setStyleSheet("color:#8a8f9c;font-size:11px;")
+        _dl.addWidget(_dhint)
+
+        lay.addWidget(_dlg)
+
         # ================= ③ 长期记忆（默认折叠）=================
         self._memory_section = _MemoryGroup()
         _mbody = self._memory_section.body_layout
@@ -4015,6 +4119,41 @@ class SettingsWindow(QDialog):
         self.app.say_main("回复风格：%s" % label)
         self._refresh_chat_hint()
         log("[聊天] 回复风格 -> %s" % style)
+
+    def _set_history_limit(self, v):
+        try:
+            v = max(HISTORY_MSG_MIN, min(HISTORY_MSG_MAX, int(v)))
+            self.app.cfg["history_msg_limit"] = v
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[设置] 保存上下文条数失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_temperature(self, v):
+        try:
+            v = float(v)
+            self.app.cfg["temperature"] = None if v < 0 else round(v, 2)
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[设置] 保存温度失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_top_p(self, v):
+        try:
+            v = float(v)
+            self.app.cfg["top_p"] = None if v < 0 else round(v, 3)
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[设置] 保存 Top P 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_stream_output(self, on):
+        try:
+            self.app.cfg["stream_output"] = bool(on)
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[设置] 保存流式开关失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _set_max_tokens(self, value):
         v = max(MAX_TOKENS_MIN, min(MAX_TOKENS_MAX, int(value)))
