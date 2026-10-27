@@ -826,16 +826,18 @@ class PersonaDialog(QDialog):
     def _fill_pools(self):
         try:
             from petcore import persona_lines as PL
-            cur = self._pool_box.currentText()
+            cur = self._pool_box.currentData()
             self._pool_box.blockSignals(True)
             self._pool_box.clear()
             names = sorted(PL.POOL_SPECS.keys())
             for n in names:
-                self._pool_box.addItem(n)
+                hint = PL.POOL_HINTS.get(n, n)
+                self._pool_box.addItem(hint, n)     # 显示中文，data 存英文名
             if cur:
-                i = self._pool_box.findText(cur)
-                if i >= 0:
-                    self._pool_box.setCurrentIndex(i)
+                for i in range(self._pool_box.count()):
+                    if self._pool_box.itemData(i) == cur:
+                        self._pool_box.setCurrentIndex(i)
+                        break
             self._pool_box.blockSignals(False)
             self._load_pool()
         except Exception as ex:
@@ -850,7 +852,8 @@ class PersonaDialog(QDialog):
             return ""
 
     def _load_pool(self, *a):
-        name = self._pool_box.currentText() if hasattr(self, "_pool_box") else ""
+        name = (self._pool_box.currentData()
+                if hasattr(self, "_pool_box") else "") or ""
         if not name:
             return
         try:
@@ -870,7 +873,7 @@ class PersonaDialog(QDialog):
                 % (type(ex).__name__, ex), logging.WARNING)
 
     def _save_pool(self):
-        name = self._pool_box.currentText()
+        name = self._pool_box.currentData() or ""
         p = self._cur_persona()
         if not name:
             return
@@ -894,7 +897,7 @@ class PersonaDialog(QDialog):
             QMessageBox.warning(self, "台词", "保存失败：%s" % ex)
 
     def _reset_pool(self):
-        name = self._pool_box.currentText()
+        name = self._pool_box.currentData() or ""
         p = self._cur_persona()
         if not name or not p:
             return
