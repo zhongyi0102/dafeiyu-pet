@@ -619,6 +619,101 @@ def _needs_time_divider(prev_ts, cur_ts):
         return False
 
 
+class SidebarDragHandle(QWidget):
+    """侧栏右边缘拖拽条：拖动调整侧栏宽度。
+
+    - hover 时变蓝，提示可拖
+    - 拖动范围 CHAT_LEFT_MIN ~ CHAT_LEFT_MAX
+    - 松手回调 on_release(新宽度)，由调用方持久化
+    """
+    WIDTH = 4
+
+    def __init__(self, target, on_release, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(self.WIDTH)
+        self.setCursor(Qt.CursorShape.SplitHCursor)
+        self.setObjectName("SidebarDragHandle")
+        self.setToolTip("拖动调整侧栏宽度")
+        self._target = target
+        self._on_release = on_release
+        self._dragging = False
+        self._start_x = 0
+        self._start_w = 0
+
+    def _repolish(self):
+        try:
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        except Exception:
+            pass
+
+    def enterEvent(self, e):
+        if not self._dragging:
+            self.setObjectName("SidebarDragHandleHover")
+            self._repolish()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if not self._dragging:
+            self.setObjectName("SidebarDragHandle")
+            self._repolish()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._start_x = e.globalPosition().x()
+            self._start_w = self._target.width()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if not self._dragging:
+            return
+        dx = e.globalPosition().x() - self._start_x
+        w = int(self._start_w + dx)
+        w = max(CHAT_LEFT_MIN, min(CHAT_LEFT_MAX, w))
+        self._target.setFixedWidth(w)
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging:
+            self._dragging = False
+            self.setObjectName("SidebarDragHandle")
+            self._repolish()
+            try:
+                self._on_release(self._target.width())
+            except Exception as ex:
+                log("[聊天] 保存侧栏宽度失败: %s: %s"
+                    % (type(ex).__name__, ex), logging.WARNING)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+
+class ChatTopBar(QWidget):
+    """聊天顶部栏：标题 + 在线状态。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChatTopBar")
+        self.setFixedHeight(CHAT_TOP_BAR_H)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 0, 16, 0)
+        lay.setSpacing(8)
+
+        self.title = QLabel("大肥鱼")
+        self.title.setObjectName("TopBarTitle")
+        lay.addWidget(self.title)
+
+        self.sub = QLabel("在线")
+        self.sub.setObjectName("TopBarSub")
+        lay.addWidget(self.sub)
+        lay.addStretch(1)
+
+
 class ChatBubble(QFrame):
     """聊天气泡：用户靠右、宠物靠左（头像在 ChatWindow 里加），支持 ``` 代码块"""
 
@@ -1806,7 +1901,11 @@ class ChatWindow(QWidget):
         # ===== 左栏：新对话 + 会话列表 + 底部小按钮 =====
         self.sidebar = QWidget(self)
         self.sidebar.setObjectName("ChatSidebar")
-        self.sidebar.setFixedWidth(CHAT_LEFT_WIDTH)
+        _side_w = int(self.pet.cfg.get("chat_sidebar_width",
+                                       CHAT_LEFT_DEFAULT)
+                      or CHAT_LEFT_DEFAULT)
+        _side_w = max(CHAT_LEFT_MIN, min(CHAT_LEFT_MAX, _side_w))
+        self.sidebar.setFixedWidth(_side_w)
         side = QVBoxLayout(self.sidebar)
         side.setContentsMargins(8, 9, 8, 8)
         side.setSpacing(7)
@@ -1889,6 +1988,11 @@ class ChatWindow(QWidget):
         side.addLayout(foot)
         root.addWidget(self.sidebar)
 
+        # 侧栏右边缘拖拽条：拖动调整宽度
+        self.drag_handle = SidebarDragHandle(
+            self.sidebar, self._save_sidebar_width)
+        root.addWidget(self.drag_handle)
+
         # 收起后的窄条（只留一个展开按钮）
         self.sidebar_mini = QWidget(self)
         self.sidebar_mini.setObjectName("ChatSidebarCollapsed")
@@ -1909,8 +2013,18 @@ class ChatWindow(QWidget):
         right = QWidget(self)
         right.setObjectName("ChatRoot")
         rlay = QVBoxLayout(right)
-        rlay.setContentsMargins(10, 10, 10, 8)
-        rlay.setSpacing(7)
+        rlay.setContentsMargins(0, 0, 0, 8)
+        rlay.setSpacing(0)
+
+        # 顶部栏：标题 + 在线状态
+        self.top_bar = ChatTopBar(right)
+        rlay.addWidget(self.top_bar)
+
+        # 消息区容器（保留原有内边距）
+        _body = QWidget(right)
+        _bd = QVBoxLayout(_body)
+        _bd.setContentsMargins(10, 8, 10, 0)
+        _bd.setSpacing(7)
 
         self.scroll = QScrollArea(right)
         self.scroll.setWidgetResizable(True)
@@ -1923,7 +2037,8 @@ class ChatWindow(QWidget):
         self.msg_layout.setSpacing(CHAT_BUBBLE_GAP)
         self.msg_layout.addStretch(1)
         self.scroll.setWidget(self.container)
-        rlay.addWidget(self.scroll, 1)
+        _bd.addWidget(self.scroll, 1)
+        rlay.addWidget(_body, 1)
 
         self._build_empty_state()
 
@@ -2437,11 +2552,24 @@ class ChatWindow(QWidget):
         self._delete_session(self.current_id)
 
     # ---------- 左栏收起/展开 ----------
+    def _save_sidebar_width(self, w):
+        """拖拽结束后保存侧栏宽度。"""
+        try:
+            w = int(max(CHAT_LEFT_MIN, min(CHAT_LEFT_MAX, int(w))))
+            self.pet.cfg["chat_sidebar_width"] = w
+            self.pet.save_cfg()
+            log("[聊天] 侧栏宽度 -> %d" % w)
+        except Exception as ex:
+            log("[聊天] 保存侧栏宽度失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _set_sidebar_collapsed(self, collapsed):
         self._sidebar_collapsed = bool(collapsed)
         try:
             self.sidebar.setVisible(not collapsed)
             self.sidebar_mini.setVisible(bool(collapsed))
+            if hasattr(self, "drag_handle"):
+                self.drag_handle.setVisible(not collapsed)
             self.pet.cfg["chat_sidebar_collapsed"] = bool(collapsed)
             self.pet._save_cfg()
         except Exception as ex:
@@ -2453,6 +2581,8 @@ class ChatWindow(QWidget):
         try:
             self.sidebar.setVisible(not collapsed)
             self.sidebar_mini.setVisible(bool(collapsed))
+            if hasattr(self, "drag_handle"):
+                self.drag_handle.setVisible(not collapsed)
         except Exception:
             pass
 

@@ -1447,8 +1447,12 @@ CHAT_BUBBLE_MAXW = 460
 CHAT_BUBBLE_GAP = 11                   # 气泡之间的间距
 CHAT_AVATAR_SIZE = 30
 CHAT_EMPTY_AVATAR = 150               # 空白状态头像（约 120px 高）
-CHAT_LEFT_WIDTH = 220                 # 左栏固定宽（原 180，加宽以容纳标题）
+CHAT_LEFT_WIDTH = 220                 # 左栏默认宽（旧配置兼容）
 CHAT_LEFT_COLLAPSED = 34              # 收起后的窄条宽
+CHAT_LEFT_MIN = 160                   # 左栏可拖拽的最小宽度
+CHAT_LEFT_MAX = 400                   # 左栏可拖拽的最大宽度
+CHAT_LEFT_DEFAULT = 220               # 左栏默认宽度（可拖拽后）
+CHAT_TOP_BAR_H = 54                   # 聊天顶部栏高度
 CHAT_MIN_WIDTH = 560                  # 窗口最小宽度，避免内容被挤
 CHAT_INPUT_MIN_H = 46                 # 输入框默认约 2 行
 CHAT_INPUT_MAX_LINES = 6              # 最多 6 行自动增高
@@ -1674,8 +1678,28 @@ def chat_qss(t):
     }
 
     /* ---- 左侧会话栏 ---- */
-    QWidget#ChatSidebar { background: %(sidebar)s; border-right: 1px solid %(border)s; }
+    QWidget#ChatSidebar { background: %(sidebar)s; border-right: 1px solid #e8edf6; }
     QWidget#ChatSidebarCollapsed { background: %(sidebar)s; border-right: 1px solid %(border)s; }
+    /* 侧栏拖拽条：4px，hover 变蓝可提示可拖 */
+    QWidget#SidebarDragHandle {
+        background: transparent; border: none;
+    }
+    QWidget#SidebarDragHandleHover {
+        background: #d8e2f5; border: none;
+    }
+    /* 聊天顶部栏 */
+    QWidget#ChatTopBar {
+        background: rgba(255,255,255,0.72);
+        border-bottom: 1px solid #eef1f7;
+    }
+    QLabel#TopBarTitle {
+        font-size: 14px; font-weight: 600; color: #26304a;
+        background: transparent;
+    }
+    QLabel#TopBarSub {
+        font-size: 11.5px; color: #a3abbb;
+        background: transparent;
+    }
     QPushButton#NewChatBtn {
         background: %(accent)s; color: %(accent_fg)s; border: 1px solid %(accent)s;
         font-weight: bold; border-radius: 9px; padding: 7px 8px;
@@ -2876,6 +2900,8 @@ def default_config():
         "reply_style": REPLY_STYLE_DEFAULT,
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 无风格（台词用中性池）
+    "chat_sidebar_width": 220,      # 聊天侧栏宽度（可拖拽 160-400）
+    "chat_sidebar_collapsed": False,  # 聊天侧栏是否折叠
         "animation_tiers": dict(ANIMATION_TIERS_DEFAULT),
         "turn_strength": TURN_STRENGTH_DEFAULT,
         "action_strength": ACTION_STRENGTH_DEFAULT,
@@ -3526,6 +3552,24 @@ def migrate_and_validate(raw):
             cfg["chat_window"] = geo
     elif cw is not None:
         issues.append("chat_window")
+
+    # 4.9) 聊天侧栏宽度 / 折叠状态（UI 偏好，直接透传）
+    _sw = raw.get("chat_sidebar_width")
+    if isinstance(_sw, int) and not isinstance(_sw, bool):
+        cfg["chat_sidebar_width"] = max(CHAT_LEFT_MIN,
+                                        min(CHAT_LEFT_MAX, int(_sw)))
+        if cfg["chat_sidebar_width"] != _sw:
+            changed = True
+    elif _sw is not None:
+        issues.append("chat_sidebar_width")
+        changed = True
+
+    _sc = raw.get("chat_sidebar_collapsed")
+    if isinstance(_sc, bool):
+        cfg["chat_sidebar_collapsed"] = _sc
+    elif _sc is not None:
+        issues.append("chat_sidebar_collapsed")
+        changed = True
 
     # 5) 版本号
     ver = raw.get("config_version")
