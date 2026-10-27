@@ -1992,11 +1992,6 @@ class SettingsWindow(QDialog):
             self.app.cfg.get("reply_style", REPLY_STYLE_DEFAULT),
             lambda v: self._set_reply_style(str(v)))
 
-        self._style_hint = QLabel("")
-        self._style_hint.setWordWrap(True)
-        self._style_hint.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        _body.addWidget(self._style_hint)
-
         # ---- 单次输出上限（滑块 + 数字框）----
         self._max_tokens_field, self.max_tokens_slider, self.max_tokens_spin = \
             self._tokens_field(
@@ -4188,34 +4183,7 @@ class SettingsWindow(QDialog):
         self._refresh_chat_hint()
 
     def _refresh_chat_hint(self):
-        """刷新聊天页提示：风格句 + system 一行摘要。"""
-        try:
-            style = self.app.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
-            suffix = reply_style_suffix(style)
-            mt = int(self.app.cfg.get("max_tokens", MAX_TOKENS_DEFAULT))
-            self._style_hint.setText(
-                "当前风格下，system 末尾会追加：%s"
-                % (("「" + suffix + "」") if suffix else "（不追加，不限长度）"))
-            persona_txt = persona_from_cfg(self.app.cfg)
-            try:
-                mem_n = len(self.app.memory.items)
-            except Exception:
-                mem_n = 0
-            # 一行小字：不重复人设正文，只说明拼了什么
-            if suffix:
-                m = re.search(r"控制在\s*(\d+)\s*字", suffix)
-                length_txt = "当前 %s 字以内" % (m.group(1) if m else "限")
-            else:
-                length_txt = "不限长度"
-            _cp = getattr(self, "_chat_preview", None)
-            if _cp is not None:
-                _cp.setText(
-                    "system = 人设 + 回复长度句（%s）+ %d 条长期记忆"
-                    % (length_txt, mem_n))
-        except Exception as ex:
-            log("[%s] %s 失败: %s: %s"
-                % (__name__, "_refresh_chat_hint", type(ex).__name__, ex),
-                logging.WARNING)
+        """聊天页已无提示行，保留空方法供旧调用点使用。"""
 
     def _build_general_page(self, lay):
         self._title(lay, "通用", "生日、城市、开机自启与版本更新。")
