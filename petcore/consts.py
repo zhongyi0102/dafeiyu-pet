@@ -1605,12 +1605,16 @@ def chat_qss(t):
     """聊天窗口整体样式表（颜色/字体集中在这里）"""
     return """
     QWidget#ChatRoot { background: %(window)s; }
+    /* 输入卡片：极浅灰底、无边框，聚焦才显淡蓝边 */
     QFrame#InputCard {
-        background: %(input_bg)s;
-        border: 1px solid %(border)s;
-        border-radius: 18px;
+        background: #fafbfc;
+        border: 1px solid #eef0f3;
+        border-radius: 20px;
     }
-    QFrame#InputCard[focused="true"] { border: 1px solid %(accent)s; }
+    QFrame#InputCard[focused="true"] {
+        background: #ffffff;
+        border: 1px solid #c5d5f5;
+    }
     QScrollArea { border: none; background: transparent; }
     QWidget#ChatBody { background: transparent; }
     QTextEdit#ChatInput {
@@ -1618,14 +1622,15 @@ def chat_qss(t):
         border: none; border-radius: 0;
         padding: 0 2px; font-family: '%(font)s'; font-size: %(fs)dpx;
     }
-    /* 输入区圆形按钮：默认透明，hover 才显浅底，不再有边框 */
+    /* 输入区加号：极浅灰圆底 + 深灰细笔画（参考 DSH 风格） */
     QPushButton#PlusBtn {
-        background: transparent; color: %(sub)s;
+        background: #f5f6f7; color: #2f3237;
         border: none; border-radius: 14px;
-        font-size: 18px; font-weight: normal; padding: 0;
+        font-size: 16px; font-weight: 300; padding: 0;
+        font-family: 'Segoe UI Symbol', 'Microsoft YaHei UI';
     }
-    QPushButton#PlusBtn:hover { background: %(btn_bg)s; color: %(accent)s; }
-    QPushButton#PlusBtn:pressed { background: %(btn_border)s; }
+    QPushButton#PlusBtn:hover { background: #eceef0; color: #1f2226; }
+    QPushButton#PlusBtn:pressed { background: #e2e5e8; }
     QPushButton {
         background: %(btn_bg)s; color: %(btn_fg)s;
         border: 1px solid %(btn_border)s; border-radius: 9px;
@@ -1633,13 +1638,16 @@ def chat_qss(t):
     }
     QPushButton:hover { background: %(accent)s; color: %(accent_fg)s; border-color: %(accent)s; }
     QPushButton:disabled { color: %(sub)s; }
+    /* 发送键：浅蓝圆底 + 白箭头，hover 加深 */
     QPushButton#SendBtn {
-        background: %(accent)s; color: %(accent_fg)s; border: none;
-        border-radius: 17px; font-size: 16px; font-weight: normal; padding: 0;
+        background: #b3c8f5; color: #ffffff; border: none;
+        border-radius: 14px; font-size: 15px; font-weight: 600; padding: 0;
+        font-family: 'Segoe UI Symbol', 'Microsoft YaHei UI';
     }
-    QPushButton#SendBtn:hover { background: %(accent_hover)s; }
+    QPushButton#SendBtn:hover { background: #9db8f0; }
+    QPushButton#SendBtn:pressed { background: #8aaaf0; }
     QPushButton#SendBtn:disabled {
-        background: %(btn_bg)s; color: %(sub)s;
+        background: #eef0f3; color: #c2c7cf;
     }
     QLabel#UsageLabel {
         color: %(sub)s; font-size: %(usage)dpx; font-family: '%(font)s';

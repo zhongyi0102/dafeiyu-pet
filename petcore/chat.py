@@ -2067,7 +2067,7 @@ class ChatWindow(QWidget):
         # 方案 A：加号嵌进输入框左侧，不再单独占一行
         self.attach_btn = QPushButton("+")
         self.attach_btn.setObjectName("PlusBtn")
-        self.attach_btn.setFixedSize(28, 28)
+        self.attach_btn.setFixedSize(28, 28)   # radius 14 = 真圆
         self.attach_btn.setToolTip("添加图片或文本文件")
         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_btn.clicked.connect(self._show_attach_menu)
@@ -2075,7 +2075,7 @@ class ChatWindow(QWidget):
         self.send_btn = QPushButton("↑")
         self.send_btn.setObjectName("SendBtn")
         self.send_btn.setDefault(True)
-        self.send_btn.setFixedSize(30, 30)
+        self.send_btn.setFixedSize(28, 28)   # radius 14 = 真圆
         self.send_btn.setToolTip("发送")
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
