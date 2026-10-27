@@ -237,13 +237,6 @@ class _PersonaGroup(ChatGroupBox):
         super().__init__("人设", expanded=False, parent=parent)
 
 
-class _DialogGroup(ChatGroupBox):
-    """对话设置：上下文条数 / 温度 / Top P / 流式。默认折叠。"""
-
-    def __init__(self, parent=None):
-        super().__init__("对话设置", expanded=False, parent=parent)
-
-
 class _MemoryGroup(ChatGroupBox):
     """③ 长期记忆：说明 + 打开记忆管理。默认折叠，标题右侧显示「N 条」。"""
 
@@ -2167,144 +2160,6 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._persona_section)
         self._refresh_persona_state()
 
-        # ================= 对话设置（可折叠，参考 Chatbox）=================
-        self._dialog_section = _DialogGroup()
-        _dl = self._dialog_section.body_layout
-        _dl.setSpacing(2)
-
-        # 组内样式：滑块 / 数字框 / 标签
-        self._dialog_section.setStyleSheet("""
-            QLabel#DialogRowLabel {
-                font-size: 12.5px; color: #2c3040; background: transparent;
-            }
-            QLabel#DialogInfo {
-                color: #b0b6c2; font-size: 12px; background: transparent;
-            }
-            QLabel#DialogHint {
-                color: #8a8f9c; font-size: 11px; background: transparent;
-            }
-            QSpinBox, QDoubleSpinBox {
-                background: #ffffff;
-                border: 1px solid #dfe4ee;
-                border-radius: 8px;
-                padding: 4px 6px;
-                min-height: 22px;
-                font-size: 12.5px;
-                color: #2c3040;
-            }
-            QSpinBox:focus, QDoubleSpinBox:focus {
-                border: 1px solid #5686fe;
-            }
-            QSpinBox::up-button, QDoubleSpinBox::up-button,
-            QSpinBox::down-button, QDoubleSpinBox::down-button {
-                width: 16px; border: none; background: transparent;
-            }
-            QSlider::groove:horizontal {
-                height: 4px; background: #e8ecf3; border-radius: 2px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #5686fe; border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                width: 14px; height: 14px; margin: -5px 0;
-                background: #5686fe; border-radius: 7px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: #3f6fe8;
-            }
-        """)
-
-        def _row(label, tip, widget, hint=""):
-            """一行：标签 + ⓘ + 弹簧 + 控件。"""
-            bar = QWidget()
-            h = QHBoxLayout(bar)
-            h.setContentsMargins(0, 6, 0, 6)
-            h.setSpacing(6)
-            lb = QLabel(label)
-            lb.setObjectName("DialogRowLabel")
-            h.addWidget(lb)
-            if tip:
-                # 可点击的说明按钮：点一下弹出说明
-                ic = QPushButton("i")
-                ic.setObjectName("DialogInfoBtn")
-                ic.setFixedSize(16, 16)
-                ic.setCursor(Qt.CursorShape.PointingHandCursor)
-                ic.setToolTip(tip)
-                ic.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                ic.clicked.connect(
-                    lambda _=False, t=tip, n=label:
-                    QMessageBox.information(self, n, t))
-                h.addWidget(ic)
-            h.addStretch(1)
-            h.addWidget(widget, 0)
-            _dl.addWidget(bar)
-            if hint:
-                hp = QLabel(hint)
-                hp.setObjectName("DialogHint")
-                hp.setWordWrap(True)
-                _dl.addWidget(hp)
-            return bar
-
-        # ---- 1) 上下文消息数量上限 ----
-        self.history_spin = QSpinBox()
-        self.history_spin.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
-        self.history_spin.setValue(int(self.app.cfg.get(
-            "history_msg_limit", HISTORY_MSG_LIMIT) or HISTORY_MSG_LIMIT))
-        self.history_spin.setFixedWidth(92)
-        self.history_spin.setAlignment(Qt.AlignmentFlag.AlignRight
-                                       | Qt.AlignmentFlag.AlignVCenter)
-        self.history_spin.valueChanged.connect(self._set_history_limit)
-        _row("上下文的消息数量上限", "每次请求最多携带多少条历史消息",
-             self.history_spin)
-
-        # 滑块独立一行，占满宽度
-        self.history_slider = QSlider(Qt.Orientation.Horizontal)
-        self.history_slider.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
-        self.history_slider.setValue(self.history_spin.value())
-        self.history_slider.valueChanged.connect(self.history_spin.setValue)
-        self.history_spin.valueChanged.connect(self.history_slider.setValue)
-        _sl_row = QHBoxLayout()
-        _sl_row.setContentsMargins(0, 0, 0, 6)
-        _sl_row.addWidget(self.history_slider, 1)
-        _dl.addLayout(_sl_row)
-
-        # ---- 2) 温度 ----
-        self.temp_spin = QDoubleSpinBox()
-        self.temp_spin.setRange(-1.0, 2.0)          # 先设范围
-        self.temp_spin.setDecimals(1)
-        self.temp_spin.setSingleStep(0.1)
-        self.temp_spin.setSpecialValueText("未设置")  # 再设占位文本
-        self.temp_spin.setFixedWidth(92)
-        self.temp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
-                                    | Qt.AlignmentFlag.AlignVCenter)
-        _cur_t = self.app.cfg.get("temperature")
-        self.temp_spin.setValue(-1.0 if _cur_t is None else float(_cur_t))
-        self.temp_spin.valueChanged.connect(self._set_temperature)
-        _row("温度", "越高越随机，越低越稳定。不设置则用 API 默认",
-             self.temp_spin)
-
-        # ---- 3) Top P ----
-        self.topp_spin = QDoubleSpinBox()
-        self.topp_spin.setRange(-1.0, 1.0)
-        self.topp_spin.setDecimals(2)
-        self.topp_spin.setSingleStep(0.05)
-        self.topp_spin.setSpecialValueText("未设置")
-        self.topp_spin.setFixedWidth(92)
-        self.topp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
-                                    | Qt.AlignmentFlag.AlignVCenter)
-        _cur_p = self.app.cfg.get("top_p")
-        self.topp_spin.setValue(-1.0 if _cur_p is None else float(_cur_p))
-        self.topp_spin.valueChanged.connect(self._set_top_p)
-        _row("Top P", "核采样。不设置则用 API 默认", self.topp_spin)
-
-        # ---- 4) 流式输出 ----
-        self.stream_sw = QCheckBox()
-        self.stream_sw.setChecked(bool(self.app.cfg.get("stream_output", True)))
-        self.stream_sw.toggled.connect(self._set_stream_output)
-        _row("流式输出", "关闭后要等整段回复生成完才显示", self.stream_sw)
-
-        lay.addWidget(self._dialog_section)
-
         # ================= ③ 长期记忆（默认折叠）=================
         self._memory_section = _MemoryGroup()
         _mbody = self._memory_section.body_layout
@@ -4166,41 +4021,6 @@ class SettingsWindow(QDialog):
         self._refresh_persona_state()
         self.app.say_main("人设已清空，台词切回中性池")
         self._refresh_chat_hint()
-
-    def _set_history_limit(self, v):
-        try:
-            v = max(HISTORY_MSG_MIN, min(HISTORY_MSG_MAX, int(v)))
-            self.app.cfg["history_msg_limit"] = v
-            self.app.save_cfg()
-        except Exception as ex:
-            log("[设置] 保存上下文条数失败: %s: %s"
-                % (type(ex).__name__, ex), logging.WARNING)
-
-    def _set_temperature(self, v):
-        try:
-            v = float(v)
-            self.app.cfg["temperature"] = None if v < 0 else round(v, 2)
-            self.app.save_cfg()
-        except Exception as ex:
-            log("[设置] 保存温度失败: %s: %s"
-                % (type(ex).__name__, ex), logging.WARNING)
-
-    def _set_top_p(self, v):
-        try:
-            v = float(v)
-            self.app.cfg["top_p"] = None if v < 0 else round(v, 3)
-            self.app.save_cfg()
-        except Exception as ex:
-            log("[设置] 保存 Top P 失败: %s: %s"
-                % (type(ex).__name__, ex), logging.WARNING)
-
-    def _set_stream_output(self, on):
-        try:
-            self.app.cfg["stream_output"] = bool(on)
-            self.app.save_cfg()
-        except Exception as ex:
-            log("[设置] 保存流式开关失败: %s: %s"
-                % (type(ex).__name__, ex), logging.WARNING)
 
     def _set_max_tokens(self, value):
         v = max(MAX_TOKENS_MIN, min(MAX_TOKENS_MAX, int(value)))

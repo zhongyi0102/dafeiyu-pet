@@ -664,6 +664,178 @@ def _needs_time_divider(prev_ts, cur_ts):
         return False
 
 
+class DialogParamsDialog(QDialog):
+    """对话参数弹窗：上下文条数 / 温度 / Top P / 流式输出。
+
+    从聊天窗口的「设置」菜单进入，改完立即写配置生效。
+    """
+
+    def __init__(self, parent, pet):
+        super().__init__(parent)
+        self.pet = pet
+        self.setWindowTitle("对话参数")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setStyleSheet("""
+            QDialog { background: #ffffff; }
+            QLabel#DlgLabel {
+                font-size: 12.5px; color: #2c3040; background: transparent;
+            }
+            QLabel#DlgHint {
+                font-size: 11px; color: #8a8f9c; background: transparent;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background: #ffffff; border: 1px solid #dfe4ee;
+                border-radius: 8px; padding: 4px 6px;
+                min-height: 22px; font-size: 12.5px; color: #2c3040;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #5686fe;
+            }
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                width: 16px; border: none; background: transparent;
+            }
+            QSlider::groove:horizontal {
+                height: 4px; background: #e8ecf3; border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #5686fe; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 14px; height: 14px; margin: -5px 0;
+                background: #5686fe; border-radius: 7px;
+            }
+            QSlider::handle:horizontal:hover { background: #3f6fe8; }
+        """)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(4)
+
+        def _row(label, tip, widget):
+            bar = QHBoxLayout()
+            bar.setContentsMargins(0, 6, 0, 6)
+            bar.setSpacing(6)
+            lb = QLabel(label)
+            lb.setObjectName("DlgLabel")
+            bar.addWidget(lb)
+            if tip:
+                ic = QPushButton("i")
+                ic.setObjectName("DialogInfoBtn")
+                ic.setFixedSize(18, 18)
+                ic.setCursor(Qt.CursorShape.PointingHandCursor)
+                ic.setToolTip(tip)
+                ic.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                ic.clicked.connect(
+                    lambda _=False, t=tip, n=label:
+                    QMessageBox.information(self, n, t))
+                bar.addWidget(ic)
+            bar.addStretch(1)
+            bar.addWidget(widget, 0)
+            lay.addLayout(bar)
+
+        # 1) 上下文条数
+        self.history_spin = QSpinBox()
+        self.history_spin.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
+        self.history_spin.setValue(int(self.pet.cfg.get(
+            "history_msg_limit", HISTORY_MSG_LIMIT) or HISTORY_MSG_LIMIT))
+        self.history_spin.setFixedWidth(92)
+        self.history_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                       | Qt.AlignmentFlag.AlignVCenter)
+        self.history_spin.valueChanged.connect(self._set_history)
+        _row("上下文的消息数量上限", "每次请求最多携带多少条历史消息",
+             self.history_spin)
+
+        self.history_slider = QSlider(Qt.Orientation.Horizontal)
+        self.history_slider.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
+        self.history_slider.setValue(self.history_spin.value())
+        self.history_slider.valueChanged.connect(self.history_spin.setValue)
+        self.history_spin.valueChanged.connect(self.history_slider.setValue)
+        _sl = QHBoxLayout()
+        _sl.setContentsMargins(0, 0, 0, 6)
+        _sl.addWidget(self.history_slider, 1)
+        lay.addLayout(_sl)
+
+        # 2) 温度
+        self.temp_spin = QDoubleSpinBox()
+        self.temp_spin.setRange(-1.0, 2.0)
+        self.temp_spin.setDecimals(1)
+        self.temp_spin.setSingleStep(0.1)
+        self.temp_spin.setSpecialValueText("未设置")
+        self.temp_spin.setFixedWidth(92)
+        self.temp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        _ct = self.pet.cfg.get("temperature")
+        self.temp_spin.setValue(-1.0 if _ct is None else float(_ct))
+        self.temp_spin.valueChanged.connect(self._set_temp)
+        _row("温度", "越高越随机，越低越稳定。不设置则用 API 默认",
+             self.temp_spin)
+
+        # 3) Top P
+        self.topp_spin = QDoubleSpinBox()
+        self.topp_spin.setRange(-1.0, 1.0)
+        self.topp_spin.setDecimals(2)
+        self.topp_spin.setSingleStep(0.05)
+        self.topp_spin.setSpecialValueText("未设置")
+        self.topp_spin.setFixedWidth(92)
+        self.topp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        _cp = self.pet.cfg.get("top_p")
+        self.topp_spin.setValue(-1.0 if _cp is None else float(_cp))
+        self.topp_spin.valueChanged.connect(self._set_topp)
+        _row("Top P", "核采样。不设置则用 API 默认", self.topp_spin)
+
+        # 4) 流式输出
+        self.stream_sw = QCheckBox()
+        self.stream_sw.setChecked(bool(self.pet.cfg.get("stream_output", True)))
+        self.stream_sw.toggled.connect(self._set_stream)
+        _row("流式输出", "关闭后要等整段回复生成完才显示", self.stream_sw)
+
+        lay.addSpacing(8)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.accept)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+
+    def _set_history(self, v):
+        try:
+            v = max(HISTORY_MSG_MIN, min(HISTORY_MSG_MAX, int(v)))
+            self.pet.cfg["history_msg_limit"] = v
+            self.pet.save_cfg()
+        except Exception as ex:
+            log("[聊天] 保存上下文条数失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_temp(self, v):
+        try:
+            v = float(v)
+            self.pet.cfg["temperature"] = None if v < 0 else round(v, 2)
+            self.pet.save_cfg()
+        except Exception as ex:
+            log("[聊天] 保存温度失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_topp(self, v):
+        try:
+            v = float(v)
+            self.pet.cfg["top_p"] = None if v < 0 else round(v, 3)
+            self.pet.save_cfg()
+        except Exception as ex:
+            log("[聊天] 保存 Top P 失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _set_stream(self, on):
+        try:
+            self.pet.cfg["stream_output"] = bool(on)
+            self.pet.save_cfg()
+        except Exception as ex:
+            log("[聊天] 保存流式开关失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+
 class SendButton(QPushButton):
     """发送按钮：圆形底 + 手绘几何箭头。
 
@@ -2069,10 +2241,11 @@ class ChatWindow(QWidget):
         self.settings_menu.setFixedWidth(168)
         # 菜单项顺序：记忆 → ─── → Key → 重命名 → 清空 → ─── → 删除 → 完整设置
         # 文字在 aboutToShow 时刷新（每次打开菜单都重新读 Key 状态）
-        # 菜单只保留「长期记忆」和「完整设置」两个入口，
-        # Key / 重命名 / 清空 / 删除 都移到设置的聊天页。
+        # 菜单：长期记忆 + 对话参数 + 完整设置
         self.memory_action = self.settings_menu.addAction(
             "长期记忆…", lambda: self.pet._open_memory())
+        self.settings_menu.addSeparator()
+        self.settings_menu.addAction("对话参数…", self._open_dialog_params)
         self.settings_menu.addSeparator()
         self.settings_menu.addAction("打开完整设置…",
                                      lambda: self.pet.open_settings())
@@ -2721,6 +2894,16 @@ class ChatWindow(QWidget):
             pass
 
     # ---------- 输入框自动增高 ----------
+    def _open_dialog_params(self):
+        """对话参数弹窗：上下文条数 / 温度 / Top P / 流式输出。"""
+        try:
+            dlg = DialogParamsDialog(self, self.pet)
+            dlg.exec()
+            self._refresh_model_label()
+        except Exception as ex:
+            log("[聊天] 打开对话参数失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def _known_models(self):
         """收集可选模型：用过的历史 + 设置页识别过的 + 当前生效的 + 内置。"""
         out = []
