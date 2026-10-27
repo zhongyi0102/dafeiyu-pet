@@ -2134,107 +2134,149 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._persona_section)
         self._refresh_persona_state()
 
-        # ================= 对话设置（参考 Chatbox）=================
+        # ================= 对话设置（参考 Chatbox 紧凑布局）=================
         _dlg = QFrame()
         _dlg.setObjectName("DialogBox")
-        _dlg.setStyleSheet(
-            "QFrame#DialogBox{background:#fbfcfd;border:1px solid #e8ecf3;"
-            "border-radius:12px;}")
         _dl = QVBoxLayout(_dlg)
-        _dl.setContentsMargins(16, 14, 16, 14)
-        _dl.setSpacing(12)
+        _dl.setContentsMargins(16, 12, 16, 14)
+        _dl.setSpacing(2)
 
+        # 卡片内统一样式：滑块 / 数字框 / 标签
+        _dlg.setStyleSheet("""
+            QFrame#DialogBox {
+                background: #fbfcfd;
+                border: 1px solid #e8ecf3;
+                border-radius: 12px;
+            }
+            QLabel#DialogTitle {
+                font-size: 13px; font-weight: 600; color: #2c3040;
+                background: transparent;
+            }
+            QLabel#DialogRowLabel {
+                font-size: 12.5px; color: #2c3040; background: transparent;
+            }
+            QLabel#DialogInfo {
+                color: #b0b6c2; font-size: 12px; background: transparent;
+            }
+            QLabel#DialogHint {
+                color: #8a8f9c; font-size: 11px; background: transparent;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background: #ffffff;
+                border: 1px solid #dfe4ee;
+                border-radius: 8px;
+                padding: 4px 6px;
+                min-height: 22px;
+                font-size: 12.5px;
+                color: #2c3040;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #5686fe;
+            }
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                width: 16px; border: none; background: transparent;
+            }
+            QSlider::groove:horizontal {
+                height: 4px; background: #e8ecf3; border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #5686fe; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 14px; height: 14px; margin: -5px 0;
+                background: #5686fe; border-radius: 7px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #3f6fe8;
+            }
+        """)
         _dt = QLabel("对话设置")
-        _dt.setStyleSheet("font-size:13px;font-weight:600;color:#2c3040;")
+        _dt.setObjectName("DialogTitle")
         _dl.addWidget(_dt)
+        _dl.addSpacing(6)
 
-        # ---- 上下文消息数量上限 ----
-        _hr = QHBoxLayout()
-        _h1 = QLabel("上下文的消息数量上限")
-        _h1.setStyleSheet("font-size:12.5px;color:#2c3040;")
-        _hr.addWidget(_h1)
-        _hi = QLabel("ⓘ")
-        _hi.setToolTip("每次请求最多携带多少条历史消息")
-        _hi.setStyleSheet("color:#b0b6c2;font-size:12px;")
-        _hr.addWidget(_hi)
-        _hr.addStretch(1)
+        def _row(label, tip, widget, hint=""):
+            """一行：标签 + ⓘ + 弹簧 + 控件。"""
+            bar = QWidget()
+            h = QHBoxLayout(bar)
+            h.setContentsMargins(0, 6, 0, 6)
+            h.setSpacing(6)
+            lb = QLabel(label)
+            lb.setObjectName("DialogRowLabel")
+            h.addWidget(lb)
+            if tip:
+                ic = QLabel("ⓘ")
+                ic.setObjectName("DialogInfo")
+                ic.setToolTip(tip)
+                h.addWidget(ic)
+            h.addStretch(1)
+            h.addWidget(widget, 0)
+            _dl.addWidget(bar)
+            if hint:
+                hp = QLabel(hint)
+                hp.setObjectName("DialogHint")
+                hp.setWordWrap(True)
+                _dl.addWidget(hp)
+            return bar
+
+        # ---- 1) 上下文消息数量上限 ----
         self.history_spin = QSpinBox()
         self.history_spin.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
         self.history_spin.setValue(int(self.app.cfg.get(
             "history_msg_limit", HISTORY_MSG_LIMIT) or HISTORY_MSG_LIMIT))
-        self.history_spin.setFixedWidth(84)
+        self.history_spin.setFixedWidth(92)
+        self.history_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                       | Qt.AlignmentFlag.AlignVCenter)
         self.history_spin.valueChanged.connect(self._set_history_limit)
-        _hr.addWidget(self.history_spin)
-        _dl.addLayout(_hr)
+        _row("上下文的消息数量上限", "每次请求最多携带多少条历史消息",
+             self.history_spin)
 
+        # 滑块独立一行，占满宽度
         self.history_slider = QSlider(Qt.Orientation.Horizontal)
         self.history_slider.setRange(HISTORY_MSG_MIN, HISTORY_MSG_MAX)
         self.history_slider.setValue(self.history_spin.value())
         self.history_slider.valueChanged.connect(self.history_spin.setValue)
         self.history_spin.valueChanged.connect(self.history_slider.setValue)
-        _dl.addWidget(self.history_slider)
+        _sl_row = QHBoxLayout()
+        _sl_row.setContentsMargins(0, 0, 0, 6)
+        _sl_row.addWidget(self.history_slider, 1)
+        _dl.addLayout(_sl_row)
 
-        # ---- 温度 ----
-        _tr = QHBoxLayout()
-        _t1 = QLabel("温度")
-        _t1.setStyleSheet("font-size:12.5px;color:#2c3040;")
-        _tr.addWidget(_t1)
-        _ti = QLabel("ⓘ")
-        _ti.setToolTip("越高越随机，越低越稳定。不设置则用 API 默认")
-        _ti.setStyleSheet("color:#b0b6c2;font-size:12px;")
-        _tr.addWidget(_ti)
-        _tr.addStretch(1)
+        # ---- 2) 温度 ----
         self.temp_spin = QDoubleSpinBox()
-        self.temp_spin.setRange(0.0, 2.0)
-        self.temp_spin.setSingleStep(0.1)
+        self.temp_spin.setRange(-1.0, 2.0)          # 先设范围
         self.temp_spin.setDecimals(1)
-        self.temp_spin.setFixedWidth(84)
-        self.temp_spin.setSpecialValueText("未设置")
-        cur_t = self.app.cfg.get("temperature")
-        self.temp_spin.setValue(-1.0 if cur_t is None else float(cur_t))
-        self.temp_spin.setMinimum(-1.0)
+        self.temp_spin.setSingleStep(0.1)
+        self.temp_spin.setSpecialValueText("未设置")  # 再设占位文本
+        self.temp_spin.setFixedWidth(92)
+        self.temp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        _cur_t = self.app.cfg.get("temperature")
+        self.temp_spin.setValue(-1.0 if _cur_t is None else float(_cur_t))
         self.temp_spin.valueChanged.connect(self._set_temperature)
-        _tr.addWidget(self.temp_spin)
-        _dl.addLayout(_tr)
+        _row("温度", "越高越随机，越低越稳定。不设置则用 API 默认",
+             self.temp_spin)
 
-        # ---- Top P ----
-        _pr = QHBoxLayout()
-        _p1 = QLabel("Top P")
-        _p1.setStyleSheet("font-size:12.5px;color:#2c3040;")
-        _pr.addWidget(_p1)
-        _pi = QLabel("ⓘ")
-        _pi.setToolTip("核采样。不设置则用 API 默认")
-        _pi.setStyleSheet("color:#b0b6c2;font-size:12px;")
-        _pr.addWidget(_pi)
-        _pr.addStretch(1)
+        # ---- 3) Top P ----
         self.topp_spin = QDoubleSpinBox()
         self.topp_spin.setRange(-1.0, 1.0)
-        self.topp_spin.setSingleStep(0.05)
         self.topp_spin.setDecimals(2)
-        self.topp_spin.setFixedWidth(84)
+        self.topp_spin.setSingleStep(0.05)
         self.topp_spin.setSpecialValueText("未设置")
-        cur_p = self.app.cfg.get("top_p")
-        self.topp_spin.setValue(-1.0 if cur_p is None else float(cur_p))
+        self.topp_spin.setFixedWidth(92)
+        self.topp_spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        _cur_p = self.app.cfg.get("top_p")
+        self.topp_spin.setValue(-1.0 if _cur_p is None else float(_cur_p))
         self.topp_spin.valueChanged.connect(self._set_top_p)
-        _pr.addWidget(self.topp_spin)
-        _dl.addLayout(_pr)
+        _row("Top P", "核采样。不设置则用 API 默认", self.topp_spin)
 
-        # ---- 流式输出 ----
-        _sr = QHBoxLayout()
-        _s1 = QLabel("流式输出")
-        _s1.setStyleSheet("font-size:12.5px;color:#2c3040;")
-        _sr.addWidget(_s1)
-        _sr.addStretch(1)
+        # ---- 4) 流式输出 ----
         self.stream_sw = QCheckBox()
         self.stream_sw.setChecked(bool(self.app.cfg.get("stream_output", True)))
         self.stream_sw.toggled.connect(self._set_stream_output)
-        _sr.addWidget(self.stream_sw)
-        _dl.addLayout(_sr)
-
-        _dhint = QLabel("关闭流式后要等整段回复生成完才显示")
-        _dhint.setWordWrap(True)
-        _dhint.setStyleSheet("color:#8a8f9c;font-size:11px;")
-        _dl.addWidget(_dhint)
+        _row("流式输出", "关闭后要等整段回复生成完才显示", self.stream_sw)
 
         lay.addWidget(_dlg)
 
