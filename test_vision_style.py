@@ -163,25 +163,25 @@ if form is not None:
        form.labelAlignment())
 
 
-print("=== 5. 风格灰字（和聊天页写法一致）===")
+print("=== 5. 风格说明（已改为 tooltip）===")
 sw._refresh_vision_style_hint()
-h = sw._vision_style_hint.text()
-ck("灰字非空", bool(h), h)
-ck("灰字含当前追加句", "用 200 字以内描述。" in h, h)
-ck("灰字提到 system", "system" in h, h)
+h = sw._vision_style_hint.toolTip()
+ck("说明非空", bool(h), h)
+ck("说明含当前追加句", "用 200 字以内描述。" in h, h)
+ck("说明提到 system", "system" in h, h)
 
 print("=== 6. 切换风格 → 立即保存 + 灰字更新 ===")
 sw.vision_style.setCurrentIndex(0)   # 简短
 app.processEvents()
 ls = c.cfg.get("look_screen") or {}
 ck("brief 已存", ls.get("style") == "brief", ls.get("style"))
-ck("灰字变 100 字", "用 100 字以内描述。" in sw._vision_style_hint.text(),
-   sw._vision_style_hint.text())
+ck("说明变 100 字", "用 100 字以内描述。" in sw._vision_style_hint.toolTip(),
+   sw._vision_style_hint.toolTip())
 sw.vision_style.setCurrentIndex(2)   # 详细
 app.processEvents()
 ls = c.cfg.get("look_screen") or {}
 ck("detail 已存", ls.get("style") == "detail", ls.get("style"))
-ck("灰字变 400 字", "用 400 字以内描述。" in sw._vision_style_hint.text())
+ck("说明变 400 字", "用 400 字以内描述。" in sw._vision_style_hint.toolTip())
 
 print("=== 7. 改单次上限 → 立即保存 ===")
 s, box = sw.vision_tokens_slider, sw.vision_tokens_spin
