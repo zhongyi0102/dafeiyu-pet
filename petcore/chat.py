@@ -2753,10 +2753,6 @@ class ChatWindow(QWidget):
             act.setChecked(name == cur_model)
             act.triggered.connect(
                 lambda _=False, n=name: self._set_model(n))
-        mm.addSeparator()
-        mm.addAction("自定义…", self._ask_custom_model)
-        mm.addSeparator()
-        mm.addAction("打开设置…", lambda: self.pet.open_settings())
 
         # ---- 推理等级二级菜单 ----
         rm = m.addMenu("推理等级")
@@ -2784,17 +2780,6 @@ class ChatWindow(QWidget):
             log("[聊天] 模型 -> %s" % name)
         except Exception as ex:
             log("[聊天] 切换模型失败: %s: %s"
-                % (type(ex).__name__, ex), logging.WARNING)
-
-    def _ask_custom_model(self):
-        try:
-            cur = (self.pet.cfg.get("chat_model") or "").strip()
-            txt, ok = QInputDialog.getText(
-                self, "自定义模型", "模型名：", text=cur)
-            if ok and (txt or "").strip():
-                self._set_model(txt)
-        except Exception as ex:
-            log("[聊天] 自定义模型失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
     def _set_reasoning(self, key):
