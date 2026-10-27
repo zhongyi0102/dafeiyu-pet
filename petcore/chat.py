@@ -717,16 +717,14 @@ class PersonaDialog(QDialog):
         # 按钮行
         row = QHBoxLayout()
         row.setSpacing(6)
-        for txt, fn, tip in (
-            ("保存人设", settings_win._save_persona, ""),
-            ("恢复默认", settings_win._reset_persona, ""),
-            ("示例人设", settings_win._fill_example_persona, "填入示例文本，不自动保存"),
-        ):
-            b = QPushButton(txt)
-            if tip:
-                b.setToolTip(tip)
-            b.clicked.connect(fn)
-            row.addWidget(b)
+        b_save = QPushButton("保存人设")
+        b_save.clicked.connect(settings_win._save_persona)
+        row.addWidget(b_save)
+        b_import = QPushButton("导入文件")
+        b_import.setToolTip(
+            "从 .md / .txt 等文本文件读入人设（追加到现有内容后面）")
+        b_import.clicked.connect(self._import_persona_file)
+        row.addWidget(b_import)
         self._btn_lines = QPushButton("查看/编辑台词")
         self._btn_lines.setCheckable(True)
         self._btn_lines.setToolTip("在同一窗口内切换到台词编辑")
@@ -734,6 +732,13 @@ class PersonaDialog(QDialog):
         row.addWidget(self._btn_lines)
         row.addStretch(1)
         _pl.addLayout(row)
+
+        # 导入结果提示（人设页专用）
+        self._import_hint = QLabel("")
+        self._import_hint.setWordWrap(True)
+        self._import_hint.setStyleSheet("color:#d08a00;font-size:11px;")
+        self._import_hint.hide()
+        _pl.addWidget(self._import_hint)
 
         # 状态行
         self._status = QLabel("")
@@ -749,6 +754,47 @@ class PersonaDialog(QDialog):
 
         self.resize(620, 440)
         self._refresh_status()
+
+    def _import_persona_file(self):
+        """从文本文件导入人设内容，追加到现有文本后面。"""
+        try:
+            from PySide6.QtWidgets import QFileDialog
+            from petcore import chat_attach as CA
+            exts = " ".join("*" + e for e in CA.TEXT_EXTS)
+            path, _ = QFileDialog.getOpenFileName(
+                self, "导入人设文件", "",
+                "文本文件 (%s);;所有文件 (*)" % exts)
+            if not path:
+                return
+            data, truncated, err = CA.read_text_file(path)
+            if err:
+                QMessageBox.warning(self, "导入失败", err)
+                return
+            text = (data or "").strip()
+            if not text:
+                QMessageBox.information(self, "导入", "文件是空的。")
+                return
+
+            # 追加到现有内容后面（不覆盖，避免误丢已写好的）
+            cur = self._edit.toPlainText().rstrip()
+            if cur:
+                merged = cur + "\n\n" + text
+                self._import_hint.setText(
+                    "已追加 %d 字（原 %d 字，合计 %d 字）%s"
+                    % (len(text), len(cur), len(merged),
+                       "；文件较长已截断" if truncated else ""))
+            else:
+                merged = text
+                self._import_hint.setText(
+                    "已导入 %d 字%s"
+                    % (len(text), "；文件较长已截断" if truncated else ""))
+            self._import_hint.show()
+            self._edit.setPlainText(merged)
+            self._refresh_status()
+        except Exception as ex:
+            log("[人设] 导入失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            QMessageBox.warning(self, "导入失败", str(ex))
 
     def _build_lines_page(self):
         """台词查看/编辑页（内嵌，不弹新窗口）。"""
