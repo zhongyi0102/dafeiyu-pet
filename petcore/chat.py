@@ -2155,23 +2155,36 @@ class ChatWindow(QWidget):
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
 
-        # 输入行容器：三者同一水平线，加号/发送靠底部对齐
+        # ---- 第一行：加号 + 输入框 ----
         _inrow = QHBoxLayout()
-        _inrow.setSpacing(6)
+        _inrow.setSpacing(8)
         _inrow.setContentsMargins(0, 0, 0, 0)
-        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        _inrow.addWidget(self.attach_btn, 0, Qt.AlignmentFlag.AlignTop)
         _inrow.addWidget(self.input, 1)
-        _inrow.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
+
+        # ---- 第二行：模型名 + 发送 ----
+        _botrow = QHBoxLayout()
+        _botrow.setSpacing(8)
+        _botrow.setContentsMargins(0, 0, 0, 0)
+        self.model_label = QLabel("")
+        self.model_label.setObjectName("ModelLabel")
+        self.model_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.model_label.setToolTip("当前聊天模型")
+        _botrow.addWidget(self.model_label, 0)
+        _botrow.addStretch(1)
+        _botrow.addWidget(self.send_btn, 0)
 
         self.input_card = QFrame()
         self.input_card.setObjectName("InputCard")
         self.input_card.setProperty("focused", "false")   # 默认灰边，聚焦才蓝
         _card = QVBoxLayout(self.input_card)
-        _card.setContentsMargins(10, 8, 10, 8)
-        _card.setSpacing(4)
+        _card.setContentsMargins(12, 10, 10, 8)
+        _card.setSpacing(6)
         _card.addWidget(self.attach_bar)
         _card.addLayout(_inrow)
+        _card.addLayout(_botrow)
         rlay.addWidget(self.input_card)
+        self._refresh_model_label()
 
         # 允许拖拽文件进窗口
         self.setAcceptDrops(True)
@@ -2426,6 +2439,12 @@ class ChatWindow(QWidget):
 
     # ---------- 会话栏 ----------
     # ---------- 左栏：会话列表 ----------
+    def _refresh_model_label_safe(self):
+        try:
+            self._refresh_model_label()
+        except Exception:
+            pass
+
     def _refresh_combo(self):
         """把会话按最近更新排序刷进左侧列表（保留方法名，内部已改为 QListWidget）。"""
         try:
@@ -2661,6 +2680,17 @@ class ChatWindow(QWidget):
             pass
 
     # ---------- 输入框自动增高 ----------
+    def _refresh_model_label(self):
+        """刷新底部工具行里的模型名。"""
+        try:
+            name = (self.pet.cfg.get("chat_model") or "").strip()
+            name = name or "未配置模型"
+            if len(name) > 28:
+                name = name[:26] + "…"
+            self.model_label.setText(name)
+        except Exception:
+            pass
+
     def _autosize_input(self):
         """默认 1 行，随内容增高，最多 6 行。"""
         try:
@@ -2668,7 +2698,7 @@ class ChatWindow(QWidget):
             line_h = max(15, fm.lineSpacing())
             doc = self.input.document()
             doc.setTextWidth(max(80, self.input.viewport().width()))
-            lines = max(1, min(CHAT_INPUT_MAX_LINES,
+            lines = max(2, min(CHAT_INPUT_MAX_LINES,
                                doc.size().height() / max(1.0, line_h)))
             h = int(lines * line_h + 12)
             h = max(CHAT_INPUT_MIN_H, h)

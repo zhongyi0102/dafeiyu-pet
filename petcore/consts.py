@@ -1456,7 +1456,7 @@ CHAT_LEFT_MAX = 400                   # 左栏可拖拽的最大宽度
 CHAT_LEFT_DEFAULT = 220               # 左栏默认宽度（可拖拽后）
 CHAT_TOP_BAR_H = 54                   # 聊天顶部栏高度
 CHAT_MIN_WIDTH = 560                  # 窗口最小宽度，避免内容被挤
-CHAT_INPUT_MIN_H = 34                 # 输入框默认 1 行
+CHAT_INPUT_MIN_H = 56                 # 输入框默认 2 行（DSH 风格）
 CHAT_INPUT_MAX_LINES = 6              # 最多 6 行自动增高
 
 # 空白状态的欢迎语（傲娇风，随机取一条）
@@ -1648,6 +1648,10 @@ def chat_qss(t):
     QPushButton#SendBtn:pressed { background: #8aaaf0; }
     QPushButton#SendBtn:disabled {
         background: #eef0f3; color: #c2c7cf;
+    }
+    QLabel#ModelLabel {
+        color: %(sub)s; font-size: 11.5px; font-family: '%(font)s';
+        background: transparent; padding: 0 2px;
     }
     QLabel#UsageLabel {
         color: %(sub)s; font-size: %(usage)dpx; font-family: '%(font)s';
