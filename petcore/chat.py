@@ -1345,7 +1345,9 @@ class SidebarDragHandle(QWidget):
 
 
 class ChatTopBar(QWidget):
-    """聊天顶部栏：标题 + 在线状态。"""
+    """聊天顶部栏：标题 + 在线状态。标题双击可改名。"""
+
+    name_changed = Signal(str)      # 用户改了显示名
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1355,14 +1357,95 @@ class ChatTopBar(QWidget):
         lay.setContentsMargins(16, 0, 16, 0)
         lay.setSpacing(8)
 
-        self.title = QLabel("大肥鱼")
+        self.title = QLabel(PET_NAME_DEFAULT)
         self.title.setObjectName("TopBarTitle")
+        self.title.setToolTip("双击改名")
+        self.title.setCursor(Qt.CursorShape.IBeamCursor)
+        self.title.installEventFilter(self)
         lay.addWidget(self.title)
 
         self.sub = QLabel("在线")
         self.sub.setObjectName("TopBarSub")
         lay.addWidget(self.sub)
         lay.addStretch(1)
+
+        # 双击时临时替换成输入框
+        self._edit = None
+
+    # ---- 改名 ----
+    def set_name(self, name):
+        try:
+            self.title.setText((name or "").strip() or PET_NAME_DEFAULT)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        _ed = getattr(self, "_edit", None)
+        if obj is self.title and event.type() == QEvent.Type.MouseButtonDblClick:
+            self._begin_rename()
+            return True
+        if _ed is not None and obj is _ed and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._commit_rename()
+                return True
+            if key == Qt.Key.Key_Escape:
+                self._cancel_rename()
+                return True
+        if _ed is not None and obj is _ed and event.type() == QEvent.Type.FocusOut:
+            self._commit_rename()
+            return False
+        return super().eventFilter(obj, event)
+
+    def _begin_rename(self):
+        if self._edit is not None:
+            return
+        try:
+            from PySide6.QtWidgets import QLineEdit
+            lay = self.layout()
+            self._edit = QLineEdit(self.title.text(), self)
+            self._edit.setObjectName("TopBarRename")
+            self._edit.setFixedWidth(140)
+            self._edit.selectAll()
+            self._edit.installEventFilter(self)
+            idx = lay.indexOf(self.title)
+            self.title.hide()
+            lay.insertWidget(idx, self._edit)
+            self._edit.setFocus()
+        except Exception as ex:
+            log("[聊天] 开始改名失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            self._edit = None
+
+    def _commit_rename(self):
+        if self._edit is None:
+            return
+        try:
+            new = (self._edit.text() or "").strip()[:20]
+            self._end_edit()
+            if not new:
+                return
+            if new != self.title.text():
+                self.set_name(new)
+                self.name_changed.emit(new)
+        except Exception as ex:
+            log("[聊天] 提交改名失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _cancel_rename(self):
+        self._end_edit()
+
+    def _end_edit(self):
+        try:
+            if self._edit is None:
+                return
+            lay = self.layout()
+            lay.removeWidget(self._edit)
+            self._edit.deleteLater()
+            self._edit = None
+            self.title.show()
+        except Exception:
+            self._edit = None
 
 
 class ChatBubble(QFrame):
@@ -2510,7 +2593,8 @@ class ChatWindow(QWidget):
         except Exception:
             pass
         self.setObjectName("ChatRoot")
-        self.setWindowTitle("大肥鱼 · 聊天")
+        # 窗口标题跟随宠物显示名（顶栏双击改名后同步）
+        self.setWindowTitle("%s · 聊天" % pet_name_from_cfg(app.cfg))
         self.setMinimumSize(CHAT_MIN_WIDTH, 460)
         self.worker = None
         self.summary_worker = None
@@ -2659,8 +2743,10 @@ class ChatWindow(QWidget):
         rlay.setContentsMargins(0, 0, 0, 8)
         rlay.setSpacing(0)
 
-        # 顶部栏：标题 + 在线状态
+        # 顶部栏：标题 + 在线状态（标题双击可改名）
         self.top_bar = ChatTopBar(right)
+        self.top_bar.set_name(pet_name_from_cfg(app.cfg))
+        self.top_bar.name_changed.connect(self._on_pet_name_changed)
         rlay.addWidget(self.top_bar)
 
         # 消息区容器（保留原有内边距）
@@ -3061,6 +3147,20 @@ class ChatWindow(QWidget):
             self._refresh_combo()
             return
         self._switch_session(sid)
+
+    def _on_pet_name_changed(self, name):
+        """顶栏双击改名：写配置 + 同步窗口标题。"""
+        try:
+            n = (name or "").strip()[:20]
+            if not n:
+                return
+            self.pet.cfg["pet_name"] = n
+            self.pet.save_cfg()
+            self.setWindowTitle("%s · 聊天" % n)
+            log("[聊天] 显示名改为：%s" % n)
+        except Exception as ex:
+            log("[聊天] 保存显示名失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _session_context_menu(self, pos):
         """会话项右键：重命名 / 删除。"""

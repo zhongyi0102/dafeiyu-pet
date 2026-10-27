@@ -138,6 +138,17 @@ def persona_from_cfg(cfg):
     return ""
 
 
+def pet_name_from_cfg(cfg):
+    """从配置取宠物显示名。空 → 回落到默认「大肥鱼」。"""
+    try:
+        v = (cfg or {}).get("pet_name")
+    except Exception:
+        v = None
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return PET_NAME_DEFAULT
+
+
 # 兼容旧引用：空人设下的完整 system
 DS_SYSTEM = build_system_prompt()
 
@@ -1449,6 +1460,9 @@ SCREENSHOT_TITLE_HINTS = (
 CHAT_FONT_FAMILY = "Microsoft YaHei UI"
 CHAT_CODE_FONT = "Consolas, 'Cascadia Mono', 'Courier New', monospace"
 
+# 宠物显示名（聊天窗口顶栏可双击改名；这是默认值）
+PET_NAME_DEFAULT = "大肥鱼"
+
 # ===== 设计令牌：三级字号 =====
 CHAT_FONT_SIZE = 13          # 正文
 CHAT_TITLE_SIZE = 15         # 标题（会话名、空状态标题）
@@ -1741,6 +1755,11 @@ def chat_qss(t):
     QLabel#TopBarTitle {
         font-size: 14px; font-weight: 600; color: #26304a;
         background: transparent;
+    }
+    QLineEdit#TopBarRename {
+        font-size: 14px; font-weight: 600; color: #26304a;
+        background: #ffffff; border: 1px solid %(accent)s;
+        border-radius: 6px; padding: 2px 6px;
     }
     QLabel#TopBarSub {
         font-size: 11.5px; color: #a3abbb;
@@ -2990,6 +3009,7 @@ def default_config():
         # reply_style 已移除：回复长度由人设控制
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 无风格（台词用中性池）
+        "pet_name": PET_NAME_DEFAULT,   # 显示名（聊天窗口顶栏可双击改）
     "persona_greeting": "", # 角色卡带来的开场白（新对话第一条）
     "history_msg_limit": 20,        # 上下文消息条数上限
     "temperature": None,            # 温度（None = 不传，用 API 默认）
