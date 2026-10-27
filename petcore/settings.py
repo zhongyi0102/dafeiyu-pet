@@ -2149,6 +2149,23 @@ class SettingsWindow(QDialog):
             QLabel#DialogInfo {
                 color: #b0b6c2; font-size: 12px; background: transparent;
             }
+            QPushButton#DialogInfoBtn {
+                background: #eef1f6;
+                color: #8a90a0;
+                border: none;
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 0;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+            }
+            QPushButton#DialogInfoBtn:hover {
+                background: #5686fe;
+                color: #ffffff;
+            }
+            QPushButton#DialogInfoBtn:pressed {
+                background: #3f6fe8;
+            }
             QLabel#DialogHint {
                 color: #8a8f9c; font-size: 11px; background: transparent;
             }
@@ -2193,9 +2210,16 @@ class SettingsWindow(QDialog):
             lb.setObjectName("DialogRowLabel")
             h.addWidget(lb)
             if tip:
-                ic = QLabel("ⓘ")
-                ic.setObjectName("DialogInfo")
+                # 可点击的说明按钮：点一下弹出说明
+                ic = QPushButton("i")
+                ic.setObjectName("DialogInfoBtn")
+                ic.setFixedSize(16, 16)
+                ic.setCursor(Qt.CursorShape.PointingHandCursor)
                 ic.setToolTip(tip)
+                ic.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                ic.clicked.connect(
+                    lambda _=False, t=tip, n=label:
+                    QMessageBox.information(self, n, t))
                 h.addWidget(ic)
             h.addStretch(1)
             h.addWidget(widget, 0)
