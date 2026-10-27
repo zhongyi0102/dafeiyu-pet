@@ -38,6 +38,10 @@ sprites/anim/_bak_*
 /*_*.py
 test_*.py
 !test_physics.py
+!test_region_select.py
+!test_vision24b.py
+!test_vision_style.py
+!test_lookscreen_e2e.py
 
 # 系统文件
 Thumbs.db
