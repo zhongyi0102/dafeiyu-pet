@@ -237,6 +237,13 @@ class _PersonaGroup(ChatGroupBox):
         super().__init__("人设", expanded=False, parent=parent)
 
 
+class _DialogGroup(ChatGroupBox):
+    """对话设置：上下文条数 / 温度 / Top P / 流式。默认折叠。"""
+
+    def __init__(self, parent=None):
+        super().__init__("对话设置", expanded=False, parent=parent)
+
+
 class _MemoryGroup(ChatGroupBox):
     """③ 长期记忆：说明 + 打开记忆管理。默认折叠，标题右侧显示「N 条」。"""
 
@@ -2134,24 +2141,13 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._persona_section)
         self._refresh_persona_state()
 
-        # ================= 对话设置（参考 Chatbox 紧凑布局）=================
-        _dlg = QFrame()
-        _dlg.setObjectName("DialogBox")
-        _dl = QVBoxLayout(_dlg)
-        _dl.setContentsMargins(16, 12, 16, 14)
+        # ================= 对话设置（可折叠，参考 Chatbox）=================
+        self._dialog_section = _DialogGroup()
+        _dl = self._dialog_section.body_layout
         _dl.setSpacing(2)
 
-        # 卡片内统一样式：滑块 / 数字框 / 标签
-        _dlg.setStyleSheet("""
-            QFrame#DialogBox {
-                background: #fbfcfd;
-                border: 1px solid #e8ecf3;
-                border-radius: 12px;
-            }
-            QLabel#DialogTitle {
-                font-size: 13px; font-weight: 600; color: #2c3040;
-                background: transparent;
-            }
+        # 组内样式：滑块 / 数字框 / 标签
+        self._dialog_section.setStyleSheet("""
             QLabel#DialogRowLabel {
                 font-size: 12.5px; color: #2c3040; background: transparent;
             }
@@ -2191,10 +2187,6 @@ class SettingsWindow(QDialog):
                 background: #3f6fe8;
             }
         """)
-        _dt = QLabel("对话设置")
-        _dt.setObjectName("DialogTitle")
-        _dl.addWidget(_dt)
-        _dl.addSpacing(6)
 
         def _row(label, tip, widget, hint=""):
             """一行：标签 + ⓘ + 弹簧 + 控件。"""
@@ -2278,7 +2270,7 @@ class SettingsWindow(QDialog):
         self.stream_sw.toggled.connect(self._set_stream_output)
         _row("流式输出", "关闭后要等整段回复生成完才显示", self.stream_sw)
 
-        lay.addWidget(_dlg)
+        lay.addWidget(self._dialog_section)
 
         # ================= ③ 长期记忆（默认折叠）=================
         self._memory_section = _MemoryGroup()
@@ -2302,14 +2294,6 @@ class SettingsWindow(QDialog):
         self._vision_section = _VisionGroup()
         self._build_vision_into(self._vision_section.body_layout)
         lay.addWidget(self._vision_section)
-
-        # 聊天 system 摘要（四组下方，全局说明）
-        self._chat_preview = QLabel("")
-        self._chat_preview.setWordWrap(True)
-        self._chat_preview.setStyleSheet(
-            "color:#5a6070;font-size:11px;margin-top:6px;"
-            "background:#f5f7fb;border-radius:6px;padding:8px;")
-        lay.addWidget(self._chat_preview)
 
         lay.addStretch(1)
         self._refresh_chat_hint()
@@ -4223,9 +4207,11 @@ class SettingsWindow(QDialog):
                 length_txt = "当前 %s 字以内" % (m.group(1) if m else "限")
             else:
                 length_txt = "不限长度"
-            self._chat_preview.setText(
-                "system = 人设 + 回复长度句（%s）+ %d 条长期记忆"
-                % (length_txt, mem_n))
+            _cp = getattr(self, "_chat_preview", None)
+            if _cp is not None:
+                _cp.setText(
+                    "system = 人设 + 回复长度句（%s）+ %d 条长期记忆"
+                    % (length_txt, mem_n))
         except Exception as ex:
             log("[%s] %s 失败: %s: %s"
                 % (__name__, "_refresh_chat_hint", type(ex).__name__, ex),
