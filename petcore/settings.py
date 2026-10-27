@@ -427,6 +427,21 @@ class SettingsWindow(QDialog):
         self.setWindowTitle("大肥鱼桌宠 · 设置")
         self.setMinimumSize(760, 560)
         self.resize(820, 600)
+        # 说明图标样式：挂窗口级，所有页面的 i 按钮都生效
+        self.setStyleSheet(
+            "QPushButton#DialogInfoBtn {"
+            "  background: #e3e8f0; color: #5a6376;"
+            "  border: 1px solid #d3dae6; border-radius: 9px;"
+            "  font-size: 12px; font-weight: 700; padding: 0 0 1px 0;"
+            "  font-family: 'Segoe UI', 'Microsoft YaHei UI';"
+            "}"
+            "QPushButton#DialogInfoBtn:hover {"
+            "  background: #5686fe; color: #ffffff;"
+            "  border-color: #5686fe;"
+            "}"
+            "QPushButton#DialogInfoBtn:pressed {"
+            "  background: #3f6fe8; border-color: #3f6fe8;"
+            "}")
         self._build_ui()
         # 视觉识别的跨线程信号（替代在线程里用 QTimer.singleShot）
         self._vbus = _VisionBus(self)
@@ -767,7 +782,7 @@ class SettingsWindow(QDialog):
             log("[设置] 实时生成开关失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
-    def _info_btn(self, title, text, size=16):
+    def _info_btn(self, title, text, size=18):
         """创建一个可点击的说明图标：点开弹出 text。"""
         b = QPushButton("i")
         b.setObjectName("DialogInfoBtn")
@@ -2182,23 +2197,6 @@ class SettingsWindow(QDialog):
             }
             QLabel#DialogInfo {
                 color: #b0b6c2; font-size: 12px; background: transparent;
-            }
-            QPushButton#DialogInfoBtn {
-                background: #eef1f6;
-                color: #8a90a0;
-                border: none;
-                border-radius: 8px;
-                font-size: 11px;
-                font-weight: 700;
-                padding: 0;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
-            }
-            QPushButton#DialogInfoBtn:hover {
-                background: #5686fe;
-                color: #ffffff;
-            }
-            QPushButton#DialogInfoBtn:pressed {
-                background: #3f6fe8;
             }
             QLabel#DialogHint {
                 color: #8a8f9c; font-size: 11px; background: transparent;
