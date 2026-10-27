@@ -4615,9 +4615,8 @@ class PetApp(QObject):
         if not key:
             self._look_fallback(desc, "未配置聊天 Key")
             return
-        style = self.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.cfg)
-        sys_text = build_system_prompt(style, persona)
+        sys_text = build_system_prompt(persona)
         try:
             sys_text = self.memory.system_content(sys_text)
         except Exception as ex:

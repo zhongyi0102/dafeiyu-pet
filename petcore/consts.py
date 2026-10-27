@@ -103,55 +103,27 @@ MAX_TOKENS_MAX = 2000
 
 MAX_TOKENS_MIN = 200
 
-REPLY_STYLES = {
-    "brief":  "每次回复控制在 80 字以内，除非用户明确要求详细回答。",
-    "normal": "每次回复控制在 200 字以内，除非用户明确要求详细回答。",
-    "detail": "",          # 不限，不追加任何长度约束
-}
-REPLY_STYLE_CHOICES = (
-    ("简短（80 字）", "brief"),
-    ("正常（200 字）", "normal"),
-    ("详细（不限）", "detail"),
-)
-REPLY_STYLE_DEFAULT = "brief"
-
-def reply_style_suffix(style):
-    """返回该风格要追加在 system 末尾的固定句（detail 返回空串）。"""
-    return REPLY_STYLES.get(style or REPLY_STYLE_DEFAULT, REPLY_STYLES[REPLY_STYLE_DEFAULT])
-
-
-# 人设里可能自带一句长度约束（默认人设就有），切换风格时要替换它而不是叠加
+# 回复长度不再由程序控制：用户在人设里自己写要求（参考 Chatbox 的 Soul）
+# 人设里若写了「每次回复控制在 N 字以内」，保留原文，不再替换或删除
 _LENGTH_LINE_RE = re.compile(r"每次回复控制在\s*\d+\s*字以内[^\n]*。?")
 
 
-def build_system_prompt(style=None, persona=None):
-    """人设 + 功能规则 + 长度句，拼成最终 system 正文（纯函数，便于测试）。
+def build_system_prompt(persona=None):
+    """人设 + 功能规则，拼成最终 system 正文（纯函数，便于测试）。
 
-    - persona 为空 → 只输出功能规则 + 长度句（无风格）
-    - persona 非空 → 人设 + 功能规则 + 长度句
-    - 人设里若已有「每次回复控制在 N 字以内…」这句，**替换**成当前风格的那句，
-      不叠加（否则会重复两遍）；详细（不限）风格会把它删掉。
-    - 人设里若已包含功能规则的原文，不重复追加。
-    长度句固定、内容恒定 → 同一风格/同一人设下前缀缓存稳定。
+    回复长度完全由人设决定：
+    - 人设里想限制长度，自己写「每次回复控制在 N 字以内」
+    - 人设里没写，就不限制
+    程序不再追加或改写任何长度句，保证 system 内容只随人设变化，
+    前缀缓存稳定。
     """
     base = (persona or "").strip()
-    suffix = reply_style_suffix(style)
     parts = []
     if base:
-        # 人设里自带的长度句先按风格处理
-        if _LENGTH_LINE_RE.search(base):
-            if suffix:
-                base = _LENGTH_LINE_RE.sub(lambda m: suffix, base, count=1)
-                suffix = ""      # 已用掉
-            else:
-                base = _LENGTH_LINE_RE.sub("", base, count=1).rstrip()
         parts.append(base)
     # 功能规则（人设里没写过才加）
     if PERSONA_FUNC_RULES and PERSONA_FUNC_RULES not in base:
         parts.append(PERSONA_FUNC_RULES)
-    # 长度句
-    if suffix:
-        parts.append(suffix)
     return "\n".join(parts)
 
 
@@ -166,8 +138,8 @@ def persona_from_cfg(cfg):
     return ""
 
 
-# 兼容旧引用：默认风格下的完整 system
-DS_SYSTEM = build_system_prompt(REPLY_STYLE_DEFAULT)
+# 兼容旧引用：空人设下的完整 system
+DS_SYSTEM = build_system_prompt()
 
 def _user_data_dir():
     """用户数据目录：LOCALAPPDATA/DaFeiYuPet（exe 单文件模式的素材缓存）"""
@@ -3002,7 +2974,7 @@ def default_config():
                         "max_side": LOOK_SCREEN_SIDE_DEFAULT,
                         "quality": LOOK_SCREEN_QUALITY_DEFAULT,
                         "timeout": LOOK_SCREEN_TIMEOUT_DEFAULT},
-        "reply_style": REPLY_STYLE_DEFAULT,
+        # reply_style 已移除：回复长度由人设控制
         "max_tokens": MAX_TOKENS_DEFAULT,
         "persona": "",          # 空 = 无风格（台词用中性池）
     "history_msg_limit": 20,        # 上下文消息条数上限
@@ -3508,14 +3480,7 @@ def migrate_and_validate(raw):
                 % (_k, _old, _new))
 
 
-    # reply_style：回复长度风格
-    rs = raw.get("reply_style")
-    if rs in REPLY_STYLES:
-        cfg["reply_style"] = rs
-    else:
-        if rs is not None:
-            issues.append("reply_style")
-        changed = True
+    # reply_style 已移除（回复长度由人设控制）；旧配置里的值直接忽略
 
     # max_tokens：单次回复上限
     mt = raw.get("max_tokens")

@@ -4436,9 +4436,8 @@ class ChatWindow(QWidget):
 
     # ---------- 请求（保持原逻辑，只使用当前会话数据） ----------
     def _estimate_tokens(self):
-        _style = self.pet.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         _persona = persona_from_cfg(self.pet.cfg)
-        total = len(build_system_prompt(_style, _persona)) + len(self.summary)
+        total = len(build_system_prompt(_persona)) + len(self.summary)
         for m in self.messages[self.summarized_upto:]:
             total += len(m.get("content") or "")
         return int(total / 1.6)
@@ -4450,9 +4449,8 @@ class ChatWindow(QWidget):
     def _build_request_messages(self):
         # 开头永远是同一段 system（人设 + 长度句 + 长期记忆）。
         # 长度句由「回复风格」决定：同一风格下内容恒定 → 前缀缓存稳定；切换风格时失效一次属正常。
-        style = self.pet.cfg.get("reply_style", REPLY_STYLE_DEFAULT)
         persona = persona_from_cfg(self.pet.cfg)
-        sys_text = build_system_prompt(style, persona)
+        sys_text = build_system_prompt(persona)
         # 唱歌场景：**联网搜真实歌词**，搜到就直接用（跳过模型）
         # 搜不到才回退到"让模型写歌词"
         self._sing_lyrics = None

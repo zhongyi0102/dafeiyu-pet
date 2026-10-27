@@ -2013,15 +2013,10 @@ class SettingsWindow(QDialog):
         _body.addWidget(self._hint_label("更换模型后缓存失效一次属正常"))
         self._chat_fill_from_cfg()
 
-        # ---- 回复风格 ----
+        # 回复长度由人设控制，此处不再提供风格下拉框
         _sep = QFrame()
         _sep.setFrameShape(QFrame.Shape.HLine)
         _body.addWidget(_sep)
-        self._reply_style_box = self._combo_row(
-            _body, "回复风格",
-            [(label, key) for label, key in REPLY_STYLE_CHOICES],
-            self.app.cfg.get("reply_style", REPLY_STYLE_DEFAULT),
-            lambda v: self._set_reply_style(str(v)))
 
         # ---- 单次输出上限（滑块 + 数字框）----
         self._max_tokens_field, self.max_tokens_slider, self.max_tokens_spin = \
@@ -2083,13 +2078,16 @@ class SettingsWindow(QDialog):
             "人设",
             "这段是桌宠风格的唯一来源：作为 system 开头发给模型，"
             "也决定固定台词的语气。留空 = 无风格。\n"
+            "回复的详细程度也由这里决定——想限制长度就写「每次回复控制在 80 字以内」，"
+            "不写则不限制。\n"
             "固定不变才有利于前缀缓存；改完缓存会失效一次，建议新开一个对话。"))
         _pbody.addLayout(_phead)
 
         self.persona_edit = QTextEdit()
         self.persona_edit.setFixedHeight(150)
         self.persona_edit.setPlaceholderText(
-            "留空 = 无风格（台词用中性池）。风格完全由这里决定。")
+            "留空 = 无风格（台词用中性池）。风格和回复长短都由这里决定。\n"
+            "例：你是猫娘，说话简短，每次回复控制在 50 字以内。")
         self.persona_edit.setStyleSheet(
             "QTextEdit{background:#ffffff;border:1px solid #dfe3ec;border-radius:8px;"
             "padding:8px;font-family:'Microsoft YaHei UI';font-size:12px;}")
@@ -4168,16 +4166,6 @@ class SettingsWindow(QDialog):
         self._refresh_persona_state()
         self.app.say_main("人设已清空，台词切回中性池")
         self._refresh_chat_hint()
-
-    def _set_reply_style(self, style):
-        if style not in REPLY_STYLES:
-            return
-        self.app.cfg["reply_style"] = style
-        self.app.save_cfg()
-        label = dict((k, l) for l, k in REPLY_STYLE_CHOICES).get(style, style)
-        self.app.say_main("回复风格：%s" % label)
-        self._refresh_chat_hint()
-        log("[聊天] 回复风格 -> %s" % style)
 
     def _set_history_limit(self, v):
         try:
