@@ -254,6 +254,23 @@ REASONING_LEVELS = (
 )
 REASONING_DEFAULT = ""
 
+# 支持 reasoning_effort 的模型关键字（命中任一即认为支持）
+_REASONING_MODEL_KEYS = (
+    "reasoner", "-r1", "o1", "o3", "o4", "thinking",
+    "reasoning", "deepseek-r",
+)
+
+
+def model_supports_reasoning(model_name):
+    """判断该模型是否支持 reasoning_effort 参数。
+
+    不支持的模型传了只会多一次失败重试，这里提前拦掉。
+    """
+    m = (model_name or "").strip().lower()
+    if not m:
+        return False
+    return any(k in m for k in _REASONING_MODEL_KEYS)
+
 CONTEXT_LIMIT_TOKENS = 60000     # deepseek-chat 上下文上限（保守取值）
 SUMMARIZE_AT_TOKENS = 42000      # 估算超过这个数就先总结旧记录
 KEEP_RECENT_MESSAGES = 12        # 总结时保留最近多少条消息

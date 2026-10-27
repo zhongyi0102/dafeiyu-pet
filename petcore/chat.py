@@ -438,11 +438,17 @@ class ChatWorker(QThread):
                 payload["temperature"] = float(self.temperature)
             if self.top_p is not None:
                 payload["top_p"] = float(self.top_p)
-            if self.reasoning_effort:
+            # 只有支持该参数的模型才传，避免多一次失败重试
+            _use_reasoning = (bool(self.reasoning_effort)
+                              and model_supports_reasoning(self.model))
+            if _use_reasoning:
                 payload["reasoning_effort"] = self.reasoning_effort
+            elif self.reasoning_effort:
+                log("[聊天] %s 不支持推理等级，本次不传"
+                    % self.model, logging.DEBUG)
             r = requests.post(url, headers=headers, json=payload,
                               stream=self.stream, timeout=180)
-            if r.status_code != 200 and self.reasoning_effort:
+            if r.status_code != 200 and _use_reasoning:
                 # 服务端可能不认 reasoning_effort：去掉后重试一次
                 log("[聊天] reasoning_effort 被拒（HTTP %s），去掉后重试"
                     % r.status_code, logging.WARNING)
