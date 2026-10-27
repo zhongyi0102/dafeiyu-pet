@@ -943,15 +943,14 @@ class SettingsWindow(QDialog):
         self._pet_collision_box.toggled.connect(
             lambda on: self.app.set_physics("pet_collision", bool(on)))
         _col_row.addWidget(self._pet_collision_box)
+        _col_row.addWidget(self._info_btn(
+            "宠物互撞",
+            "多只宠物碰到会互相弹开。\n只有一只宠物时此项不可用。"), 0)
         self._collision_hint = QLabel("多只时生效")
         self._collision_hint.setStyleSheet("color:#8a8f9c;font-size:11px;")
         _col_row.addWidget(self._collision_hint)
         _col_row.addStretch(1)
         lay.addLayout(_col_row)
-        _col_desc = QLabel("多只宠物碰到会互相弹开")
-        _col_desc.setWordWrap(True)
-        _col_desc.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:22px;")
-        lay.addWidget(_col_desc)
 
         # ================= ④ 窗口 =================
         line_w = QFrame()
