@@ -1429,15 +1429,25 @@ SCREENSHOT_TITLE_HINTS = (
 # ===== 聊天窗口主题（改这里就能换肤；会自动跟随系统深浅色） =====
 CHAT_FONT_FAMILY = "Microsoft YaHei UI"
 CHAT_CODE_FONT = "Consolas, 'Cascadia Mono', 'Courier New', monospace"
-CHAT_FONT_SIZE = 13
-CHAT_SMALL_SIZE = 11
-CHAT_BUBBLE_RADIUS = 14
+
+# ===== 设计令牌：三级字号 =====
+CHAT_FONT_SIZE = 13          # 正文
+CHAT_TITLE_SIZE = 15         # 标题（会话名、空状态标题）
+CHAT_SMALL_SIZE = 11         # 辅助（时间戳、提示）
+CHAT_USAGE_SIZE = 12         # 用量行（比辅助略大，保证可读）
+
+# ===== 设计令牌：圆角分级 =====
+CHAT_RADIUS_SM = 6           # 小控件（按钮、标签）
+CHAT_RADIUS_MD = 10          # 气泡
+CHAT_RADIUS_LG = 12          # 容器（输入区卡片）
+
+CHAT_BUBBLE_RADIUS = CHAT_RADIUS_MD
 CHAT_BUBBLE_PAD = (13, 10, 13, 10)     # 左 上 右 下
 CHAT_BUBBLE_MAXW = 460
-CHAT_BUBBLE_GAP = 9                   # 气泡之间的间距
+CHAT_BUBBLE_GAP = 11                   # 气泡之间的间距
 CHAT_AVATAR_SIZE = 30
 CHAT_EMPTY_AVATAR = 150               # 空白状态头像（约 120px 高）
-CHAT_LEFT_WIDTH = 180                 # 左栏固定宽
+CHAT_LEFT_WIDTH = 220                 # 左栏固定宽（原 180，加宽以容纳标题）
 CHAT_LEFT_COLLAPSED = 34              # 收起后的窄条宽
 CHAT_MIN_WIDTH = 560                  # 窗口最小宽度，避免内容被挤
 CHAT_INPUT_MIN_H = 46                 # 输入框默认约 2 行
@@ -1465,8 +1475,8 @@ CHAT_THEME_LIGHT = {
     "sub": "#8a8f9c",
     "card": "#ffffff",
     "border": "#e4e7ef",
-    "user_bg": "#d7e7ff",
-    "user_fg": "#173a63",
+    "user_bg": "#e4eefe",
+    "user_fg": "#1b3a5e",
     "pet_bg": "#ffffff",
     "pet_fg": "#2c3040",
     "note_bg": "#fff6de",
@@ -1589,14 +1599,19 @@ def chat_qss(t):
     """聊天窗口整体样式表（颜色/字体集中在这里）"""
     return """
     QWidget#ChatRoot { background: %(window)s; }
+    QFrame#InputCard {
+        background: %(input_bg)s;
+        border: 1px solid %(border)s;
+        border-radius: %(radius_lg)dpx;
+    }
+    QFrame#InputCard[focused="true"] { border: 1px solid %(accent)s; }
     QScrollArea { border: none; background: transparent; }
     QWidget#ChatBody { background: transparent; }
     QTextEdit#ChatInput {
-        background: %(input_bg)s; color: %(fg)s;
-        border: 1px solid %(input_border)s; border-radius: 10px;
-        padding: 8px 10px; font-family: '%(font)s'; font-size: %(fs)dpx;
+        background: transparent; color: %(fg)s;
+        border: none; border-radius: 0;
+        padding: 2px 4px; font-family: '%(font)s'; font-size: %(fs)dpx;
     }
-    QTextEdit#ChatInput:focus { border: 1px solid %(accent)s; }
     QPushButton#PlusBtn {
         background: %(btn_bg)s; color: %(fg)s;
         border: none; border-radius: 14px;
@@ -1616,7 +1631,10 @@ def chat_qss(t):
     }
     QPushButton#SendBtn:hover { background: %(accent_hover)s; }
     QPushButton#SendBtn:disabled { background: %(btn_border)s; color: %(sub)s; }
-    QLabel#UsageLabel { color: %(sub)s; font-size: %(small)dpx; font-family: '%(font)s'; }
+    QLabel#UsageLabel {
+        color: %(sub)s; font-size: %(usage)dpx; font-family: '%(font)s';
+        padding: 2px 2px 0 2px;
+    }
     QComboBox {
         background: %(input_bg)s; color: %(fg)s;
         border: 1px solid %(input_border)s; border-radius: 9px;
@@ -1691,10 +1709,11 @@ def chat_qss(t):
     QPushButton#CollapseBtn:hover { color: %(accent)s; }
     QListWidget#SessionList {
         background: transparent; border: none; outline: none;
-        font-family: '%(font)s'; font-size: 12px;
+        font-family: '%(font)s'; font-size: %(fs)dpx;
     }
     QListWidget#SessionList::item {
-        color: %(fg)s; padding: 8px 9px; border-radius: 8px; margin: 2px 3px;
+        color: %(fg)s; padding: 9px 11px; border-radius: %(radius_sm)dpx;
+        margin: 2px 4px;
     }
     QListWidget#SessionList::item:hover { background: %(sidebar_sel)s; }
     QListWidget#SessionList::item:selected {
@@ -1714,6 +1733,8 @@ def chat_qss(t):
         "secondary_bg": t["secondary_bg"], "secondary_fg": t["secondary_fg"],
         "secondary_border": t["secondary_border"], "danger_fg": t["danger_fg"],
         "font": CHAT_FONT_FAMILY, "fs": CHAT_FONT_SIZE, "small": CHAT_SMALL_SIZE,
+        "radius_sm": CHAT_RADIUS_SM, "radius_md": CHAT_RADIUS_MD,
+        "radius_lg": CHAT_RADIUS_LG, "usage": CHAT_USAGE_SIZE,
         # ---- 新增：底部按钮 / 菜单 ----
         "side_btn_fg": t["side_btn_fg"], "side_btn_hover": t["side_btn_hover"],
         "menu_bg": t["menu_bg"], "menu_border": t["menu_border"],

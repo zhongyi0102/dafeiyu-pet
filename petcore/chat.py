@@ -1965,7 +1965,17 @@ class ChatWindow(QWidget):
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_clicked)
         _inrow.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
-        rlay.addLayout(_inrow)
+
+        # 输入区卡片：把附件条 + 输入行 + 用量行包进一个浅色容器，
+        # 与消息区形成视觉分隔，同时消掉输入框上方的大片空白
+        self.input_card = QFrame()
+        self.input_card.setObjectName("InputCard")
+        _card = QVBoxLayout(self.input_card)
+        _card.setContentsMargins(10, 8, 10, 6)
+        _card.setSpacing(6)
+        _card.addWidget(self.attach_bar)
+        _card.addLayout(_inrow)
+        rlay.addWidget(self.input_card)
 
         # 允许拖拽文件进窗口
         self.setAcceptDrops(True)
@@ -1976,6 +1986,8 @@ class ChatWindow(QWidget):
         self.token_label.setToolTip(self._usage_tooltip())
         self.token_label.setSizePolicy(QSizePolicy.Policy.Ignored,
                                        QSizePolicy.Policy.Preferred)
+        self.token_label.setAlignment(Qt.AlignmentFlag.AlignRight
+                                      | Qt.AlignmentFlag.AlignVCenter)
         self.token_label.setVisible(False)   # 没有用量数据时整行隐藏
         rlay.addWidget(self.token_label)
 
@@ -2226,10 +2238,17 @@ class ChatWindow(QWidget):
             self.session_list.clear()
             ordered = sorted(self.sessions, key=lambda s: s.get("updated") or "", reverse=True)
             cur_row = 0
+            # 侧栏可用宽度 → 单行省略号（保留完整标题在 tooltip）
+            _avail = max(80, CHAT_LEFT_WIDTH - 34)
+            _fm = self.session_list.fontMetrics()
             for i, s in enumerate(ordered):
-                item = QListWidgetItem(s.get("title") or "未命名")
+                _full = s.get("title") or "未命名"
+                _shown = _fm.elidedText(_full, Qt.TextElideMode.ElideRight,
+                                        _avail)
+                item = QListWidgetItem(_shown)
                 item.setData(Qt.ItemDataRole.UserRole, s.get("id"))
-                item.setToolTip(s.get("title") or "未命名")
+                item.setData(Qt.ItemDataRole.UserRole + 1, _full)
+                item.setToolTip(_full)
                 self.session_list.addItem(item)
                 if s.get("id") == self.current_id:
                     cur_row = i
@@ -3180,6 +3199,17 @@ class ChatWindow(QWidget):
 
     def eventFilter(self, obj, event):
         et = event.type()
+        # 输入框聚焦/失焦 → 输入卡片边框高亮
+        if obj is self.input and et in (QEvent.Type.FocusIn,
+                                        QEvent.Type.FocusOut):
+            try:
+                focused = (et == QEvent.Type.FocusIn)
+                self.input_card.setProperty("focused",
+                                            "true" if focused else "false")
+                self.input_card.style().unpolish(self.input_card)
+                self.input_card.style().polish(self.input_card)
+            except Exception:
+                pass
         if obj is self.input and et == QEvent.Type.KeyPress:
             key = event.key()
             mods = event.modifiers()
