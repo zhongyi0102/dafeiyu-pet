@@ -509,10 +509,13 @@ VISION_KEY_PATTERNS = (
 )
 
 # 候选服务商（并行探测 GET {base}/models，谁成功用谁）
+# 顺序即优先级：官方在前，中转站在后（只有官方全失败时才可能命中中转站）
 VISION_PROVIDERS = (
     ("DeepSeek", "https://api.deepseek.com/v1"),
     ("智谱", "https://open.bigmodel.cn/api/paas/v4"),
     ("Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
+    # 中转站（Key 是 sk- 开头、官方地址都不通时命中）
+    ("中转站", "https://xindu.xyz/v1"),
 )
 
 
@@ -556,6 +559,9 @@ VISION_KNOWN_MODELS = {
     "DeepSeek": ("deepseek-v4-flash-vision-exp",),
     "Gemini": ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
                "gemini-1.5-flash", "gemini-1.5-pro"),
+    # 中转站：实测 /v1/models 返回的 Gemini 系列
+    "中转站": ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
+               "gemini-3-flash", "gemini-3.8-flash", "gemini-4-argon"),
 }
 
 

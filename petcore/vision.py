@@ -188,9 +188,30 @@ def detect_provider(key, log=None):
     return "", "", "无法识别这个 Key 属于哪家服务商"
 
 def _provider_name(base):
+    """把地址映射成服务商名。
+
+    先精确匹配（去尾部 /），再按域名包含关系匹配
+    （用户填 https://xindu.xyz 或 .../v1 都能认成「中转站」）。
+    """
     from petcore.consts import VISION_PROVIDERS
+    b = (base or "").rstrip("/").lower()
+    if not b:
+        return ""
+    # 1) 精确匹配
     for name, cand in VISION_PROVIDERS:
-        if cand.rstrip("/") == (base or "").rstrip("/"):
+        if cand.rstrip("/").lower() == b:
+            return name
+    # 2) 域名包含匹配（允许用户少写/多写 /v1）
+    for name, cand in VISION_PROVIDERS:
+        c = cand.rstrip("/").lower()
+        # 取候选地址的 host 部分比较
+        try:
+            from urllib.parse import urlparse
+            ch = urlparse(c).netloc
+            bh = urlparse(b).netloc or b
+        except Exception:
+            ch, bh = c, b
+        if ch and ch == bh:
             return name
     return base
 
