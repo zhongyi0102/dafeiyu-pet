@@ -88,14 +88,14 @@ ck("地址初始为空（未识别）", sw.vision_base.text() == "", repr(sw.vis
 print("=== B2. 三行控件 + 按钮 ===")
 ck("有 视觉 Key（密码）", sw.vision_key.echoMode() == QLineEdit.EchoMode.Password)
 ck("有 显示按钮", sw._eye_btn.text() == "显示")
-ck("有 接口地址（只读）", sw.vision_base.isReadOnly())
+ck("接口地址可编辑", not sw.vision_base.isReadOnly())
 ck("有 视觉模型（下拉）", isinstance(sw.vision_model, QComboBox))
 ck("有 保存", sw._vision_save_btn.text() == "保存")
 ck("有 测试", sw._vision_test_btn.text() == "测试")
 ck("有 取消", sw._vision_cancel_btn.text() == "取消")
 ck("有 清除 Key", sw._vision_clear_btn.text() == "清除 Key")
 ck("Key 无占位提示", not sw.vision_key.placeholderText(), repr(sw.vision_key.placeholderText()))
-ck("地址无占位提示", not sw.vision_base.placeholderText())
+ck("地址有占位提示", bool(sw.vision_base.placeholderText()))
 ck("下拉框为空（模型不再有默认值）",
    sw.vision_model.count() == 0 and sw.vision_model.currentText() == "",
    (sw.vision_model.count(), sw.vision_model.currentText()))
