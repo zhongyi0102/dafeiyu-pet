@@ -4069,8 +4069,12 @@ class ChatWindow(QWidget):
             at_bottom = self._is_at_bottom()
             # 在底部时记住「跟随」状态，离开底部则取消跟随
             self._follow_bottom = at_bottom
-            btn.setVisible(not at_bottom)
-            if not at_bottom:
+            if at_bottom:
+                btn.hide()
+            else:
+                # 先定位再显示（布局可能刚变过）
+                self._place_scroll_bottom_btn()
+                btn.show()
                 btn.raise_()
         except Exception:
             pass
@@ -4106,7 +4110,11 @@ class ChatWindow(QWidget):
         self._update_scroll_btn()
 
     def _place_scroll_bottom_btn(self):
-        """把浮动按钮放到消息区右下角。"""
+        """把浮动按钮放到消息滚动区右下角。
+
+        用 scroll 的实际几何（映射到父级坐标）算位置，
+        不依赖父容器高度（布局未完成时父高度可能还是 0）。
+        """
         try:
             btn = getattr(self, "scroll_bottom_btn", None)
             if btn is None:
@@ -4114,9 +4122,14 @@ class ChatWindow(QWidget):
             host = btn.parentWidget()
             if host is None:
                 return
-            # 距右 18px，距底 14px
-            x = max(0, host.width() - btn.width() - 18)
-            y = max(0, host.height() - btn.height() - 14)
+            # scroll 在 host 坐标系里的矩形
+            r = self.scroll.geometry()
+            # 距滚动区右边缘 20px、下边缘 16px
+            x = r.x() + r.width() - btn.width() - 20
+            y = r.y() + r.height() - btn.height() - 16
+            # 兜底：不越出 host
+            x = max(0, min(x, host.width() - btn.width()))
+            y = max(0, min(y, host.height() - btn.height()))
             btn.move(int(x), int(y))
         except Exception:
             pass
