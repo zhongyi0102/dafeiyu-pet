@@ -3033,7 +3033,7 @@ def load_json(path, default):
 
 # ===== 应用版本（检查更新用）=====
 # 与 GitHub Release 的 tag 对齐（tag 形如 v1.1.4）。发版时同步改这里。
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.3.0"
 
 # 更新源：GitHub Releases latest 接口（项目确实托管在 GitHub 且有 Releases）
 GITHUB_REPO = "zhongyi0102/dafeiyu-pet"
