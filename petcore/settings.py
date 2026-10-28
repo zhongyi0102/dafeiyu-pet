@@ -419,7 +419,9 @@ class SettingsWindow(QDialog):
         self.pet = app.main_pet
         self.setWindowTitle("大肥鱼桌宠 · 设置")
         self.setMinimumSize(760, 560)
-        self.resize(820, 600)
+        # 恢复上次的位置/尺寸（多屏安全，不合法则居中 820x600）
+        restore_window_geometry(app.cfg, "win_settings", self, 820, 600,
+                                min_w=760, min_h=560)
         # 说明图标样式：挂窗口级，所有页面的 i 按钮都生效
         self.setStyleSheet(
             "QPushButton#DialogInfoBtn {"
@@ -459,6 +461,15 @@ class SettingsWindow(QDialog):
             self.app.pet_state_changed.connect(self._on_pet_state_changed)
         except Exception:
             pass
+
+    def _remember_geometry(self):
+        """记住窗口位置/尺寸（closeEvent / hideEvent 共用）。"""
+        try:
+            save_window_geometry(self.app.cfg, "win_settings", self)
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[窗口] 保存设置窗口位置失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _init_persona_widgets(self):
         """预先创建人设编辑框和状态标签。
@@ -5467,7 +5478,7 @@ class SettingsWindow(QDialog):
 
     # ---------- 生命周期：识别状态必须复位 ----------
     def hideEvent(self, e):
-        """隐藏（含关闭）时取消识别，避免下次打开卡在「识别中」。"""
+        """隐藏（含关闭）时取消识别 + 记住窗口位置。"""
         try:
             if getattr(self, "_vision_testing", False):
                 self._reset_vision_test_ui()
@@ -5482,10 +5493,11 @@ class SettingsWindow(QDialog):
         except Exception as ex:
             log("[设置] hideEvent 复位聊天识别失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
+        self._remember_geometry()
         super().hideEvent(e)
 
     def closeEvent(self, e):
-        """关闭时同样复位（视觉 + 聊天）。"""
+        """关闭时同样复位（视觉 + 聊天）+ 记住窗口位置。"""
         try:
             if getattr(self, "_vision_testing", False):
                 self._reset_vision_test_ui()
@@ -5498,6 +5510,7 @@ class SettingsWindow(QDialog):
         except Exception as ex:
             log("[设置] closeEvent 复位聊天识别失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
+        self._remember_geometry()
         super().closeEvent(e)
 
 class PersonaLinesDialog(QDialog):
@@ -5507,7 +5520,9 @@ class PersonaLinesDialog(QDialog):
         super().__init__(parent or app.main_pet)
         self.app = app
         self.setWindowTitle("台词查看 / 编辑")
-        self.resize(720, 560)
+        # 恢复上次位置/尺寸
+        restore_window_geometry(app.cfg, "win_persona_lines", self, 720, 560,
+                                min_w=560, min_h=400)
         lay = QVBoxLayout(self)
         tip = QLabel(
             "这里显示当前人设已生成的台词池。人设为空或某池未生成时，"
@@ -5556,6 +5571,23 @@ class PersonaLinesDialog(QDialog):
         lay.addLayout(btn_row)
 
         self._fill_pools()
+
+    def closeEvent(self, e):
+        """关闭时记住窗口位置/尺寸。"""
+        self._remember_geometry()
+        super().closeEvent(e)
+
+    def hideEvent(self, e):
+        """隐藏也记住（accept() 在已隐藏时不触发 closeEvent）。"""
+        self._remember_geometry()
+        super().hideEvent(e)
+
+    def _remember_geometry(self):
+        try:
+            save_window_geometry(self.app.cfg, "win_persona_lines", self)
+            self.app.save_cfg()
+        except Exception:
+            pass
 
     def _persona(self):
         try:

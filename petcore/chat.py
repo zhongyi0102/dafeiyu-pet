@@ -3975,7 +3975,7 @@ class ChatWindow(QWidget):
 
     # ---------- 位置记忆 ----------
     def _restore_geometry(self):
-        """恢复窗口大小/位置与左栏收起状态。"""
+        """恢复窗口大小/位置与左栏收起状态（多屏安全）。"""
         try:
             g = self.pet.cfg.get("chat_window")
             if isinstance(g, dict):
@@ -3987,8 +3987,15 @@ class ChatWindow(QWidget):
                 w = int(g.get("w", 0))
                 h = int(g.get("h", 0))
                 if w >= CHAT_MIN_WIDTH and h >= self.minimumHeight():
-                    screen = QApplication.primaryScreen().availableGeometry()
-                    if screen.contains(x, y):
+                    # 与任一屏幕有交集就恢复（副屏也支持）
+                    try:
+                        from PySide6.QtCore import QRect
+                        rect = QRect(x, y, w, h)
+                        ok = any(s.availableGeometry().intersects(rect)
+                                 for s in QApplication.screens())
+                    except Exception:
+                        ok = False
+                    if ok:
                         self.setGeometry(x, y, w, h)
                         return
             else:
@@ -6281,7 +6288,9 @@ class MemoryDialog(QDialog):
         super().__init__(app.main_pet)
         self.app = app
         self.setWindowTitle("记忆管理")
-        self.resize(480, 440)
+        # 恢复上次位置/尺寸
+        restore_window_geometry(app.cfg, "win_memory", self, 480, 440,
+                                min_w=380, min_h=320)
         lay = QVBoxLayout(self)
         tip = QLabel(
             "这些记忆会拼在系统提示词末尾；只有新增或修改记忆时，"
@@ -6306,6 +6315,23 @@ class MemoryDialog(QDialog):
         row.addWidget(close)
         lay.addLayout(row)
         self.reload()
+
+    def closeEvent(self, e):
+        """关闭时记住窗口位置/尺寸。"""
+        self._remember_geometry()
+        super().closeEvent(e)
+
+    def hideEvent(self, e):
+        """隐藏也记住（close() 在已隐藏时不触发 closeEvent）。"""
+        self._remember_geometry()
+        super().hideEvent(e)
+
+    def _remember_geometry(self):
+        try:
+            save_window_geometry(self.app.cfg, "win_memory", self)
+            self.app.save_cfg()
+        except Exception:
+            pass
 
     def reload(self):
         """刷新列表：显示 [手动]/[自动]/[★核心] 标记与「淡化中」状态。"""

@@ -149,6 +149,59 @@ def pet_name_from_cfg(cfg):
     return PET_NAME_DEFAULT
 
 
+# ===== 窗口几何记忆（所有顶层窗口共用）=====
+def save_window_geometry(cfg, key, widget):
+    """把窗口位置/尺寸存进 cfg[key]。
+
+    key 建议用 "win_<name>"，例如 "win_settings"。
+    存的是逻辑像素（Qt 坐标），多屏时 x/y 可能是负数。
+    """
+    try:
+        g = widget.geometry()
+        cfg[key] = {"x": int(g.x()), "y": int(g.y()),
+                    "w": max(1, int(g.width())),
+                    "h": max(1, int(g.height()))}
+        return True
+    except Exception:
+        return False
+
+
+def restore_window_geometry(cfg, key, widget, default_w, default_h,
+                            min_w=200, min_h=150):
+    """从 cfg[key] 恢复窗口位置/尺寸；不合法则用默认尺寸居中。
+
+    多屏安全：只要该矩形与任一屏幕有交集就恢复，否则居中到主屏。
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QRect
+        g = (cfg or {}).get(key)
+        if isinstance(g, dict):
+            x, y = int(g.get("x", 0)), int(g.get("y", 0))
+            w, h = int(g.get("w", 0)), int(g.get("h", 0))
+            if w >= min_w and h >= min_h:
+                rect = QRect(x, y, w, h)
+                # 与任一屏幕有交集才恢复（副屏/拔掉副屏都安全）
+                for s in QApplication.screens():
+                    if s.availableGeometry().intersects(rect):
+                        widget.setGeometry(x, y, w, h)
+                        return True
+    except Exception:
+        pass
+    # 回落到默认：居中到主屏
+    try:
+        from PySide6.QtWidgets import QApplication
+        scr = QApplication.primaryScreen().availableGeometry()
+        w = max(min_w, int(default_w))
+        h = max(min_h, int(default_h))
+        widget.setGeometry(scr.x() + (scr.width() - w) // 2,
+                           scr.y() + (scr.height() - h) // 2,
+                           w, h)
+    except Exception:
+        pass
+    return False
+
+
 # 兼容旧引用：空人设下的完整 system
 DS_SYSTEM = build_system_prompt()
 
@@ -3723,6 +3776,24 @@ def migrate_and_validate(raw):
             cfg["chat_window"] = geo
     elif cw is not None:
         issues.append("chat_window")
+
+    # 4.1) 其他窗口的位置/尺寸（设置 / 记忆 / 台词编辑）
+    for _wkey in ("win_settings", "win_memory", "win_persona_lines"):
+        _wg = raw.get(_wkey)
+        if isinstance(_wg, dict):
+            _ok = True
+            _geo = {}
+            for k in ("x", "y", "w", "h"):
+                v = _wg.get(k)
+                if isinstance(v, int) and not isinstance(v, bool):
+                    _geo[k] = v
+                else:
+                    _ok = False
+                    issues.append("%s.%s" % (_wkey, k))
+            if _ok and _geo["w"] > 0 and _geo["h"] > 0:
+                cfg[_wkey] = _geo
+        elif _wg is not None:
+            issues.append(_wkey)
 
     # 4.85) 对话参数（温度 / Top P / 流式 / 上下文条数）
     _hm = raw.get("history_msg_limit")
