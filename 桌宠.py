@@ -2234,6 +2234,11 @@ class PetApp(QObject):
     def _release_remind_rest(self, pet):
         """解除提醒期间的休息锁（回位完成后调用）。"""
         try:
+            # 回位完成 → 解除防重入锁，允许下次提醒确认
+            self._ack_inflight = False
+        except Exception:
+            pass
+        try:
             if pet is None:
                 return
             # 睡觉状态（rest 远大于现在）不要误清
@@ -2273,7 +2278,25 @@ class PetApp(QObject):
 
         节奏：短回话 → 回应动作（没有素材则轻微蹦跳）→ 动作结束再回位。
         rest_until 在回位完成后才解除（见 _return_pet_after_remind）。
+
+        防重入：同一次提醒的确认只处理一次（防 Enter 自动重复 / 按钮与键盘同时触发）。
         """
+        # 防重入：本轮提醒已确认过就直接返回
+        try:
+            if getattr(self, "_ack_inflight", False):
+                log("[提醒] 忽略重复确认（%s）" % kind)
+                return
+            self._ack_inflight = True
+        except Exception:
+            pass
+        try:
+            self._do_acknowledge(kind, todo_id, schedule_id)
+        finally:
+            # 动作播完后才允许下一次确认（由 _ack_action_then_return 清）
+            pass
+
+    def _do_acknowledge(self, kind, todo_id=None, schedule_id=None):
+        """acknowledge_reminder 的实际执行体。"""
         self._care_last_acked = True     # 已处理，不算忽略
         # 关心类：清零连续忽略计数 + 好感 +2（待办/日程不参与）
         try:
@@ -2379,7 +2402,17 @@ class PetApp(QObject):
             pass
 
     def snooze_reminder(self, kind, todo_id=None, schedule_id=None):
-        """点「稍后再提醒」：N 分钟后再来一次（关心类冷却 ×2）。"""
+        """点「稍后再提醒」：N 分钟后再来一次（关心类冷却 ×2）。
+
+        防重入：同一次提醒只处理一次（防 Enter 重复 / 按钮与键盘同时触发）。
+        """
+        try:
+            if getattr(self, "_ack_inflight", False):
+                log("[提醒] 忽略重复延后（%s）" % kind)
+                return
+            self._ack_inflight = True
+        except Exception:
+            pass
         mins = int(self._rem_extras().get("snooze_min") or REMIND_SNOOZE_MIN)
         if kind in self._rem_next:
             self._rem_next[kind] = time.time() + mins * 60
