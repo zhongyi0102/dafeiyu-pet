@@ -1601,6 +1601,13 @@ class PetApp(QObject):
                 return True, "免打扰时段"
         except Exception:
             pass
+        # 4.5) 已有提醒气泡在显示 → 本轮直接跳过，不排队重试
+        try:
+            pet = self.main_pet
+            if pet is not None and getattr(pet, "remind_text", ""):
+                return True, "已有提醒显示中"
+        except Exception:
+            pass
         # 5) 正在翻唱
         try:
             cw = self.chat_window
@@ -2051,6 +2058,9 @@ class PetApp(QObject):
             # 统一静默判断（引擎外再确认一次，双闸门）
             busy, reason = self._care_busy()
             if busy:
+                # 气泡显示中：直接跳过本轮，不算顺延（否则会排队堆积）
+                if reason == "已有提醒显示中":
+                    return
                 log("[关心] %s 顺延（%s）" % (kind, reason))
                 self._care.mark_deferred(kind, cur)
                 return
@@ -2074,7 +2084,9 @@ class PetApp(QObject):
                     pass
             else:
                 # 被 _fire_reminder 二次判断拦住：不消耗次数
-                log("[关心] %s 被二次判断拦住，顺延" % kind)
+                log("[关心] %s 被二次判断拦住，顺延（pet=%s remind_text=%r）"
+                    % (kind, self.main_pet is not None,
+                       getattr(self.main_pet, "remind_text", None)))
                 self._care.mark_deferred(kind, cur)
         except Exception as ex:
             log("[关心] 调度异常: %s: %s"
@@ -2106,6 +2118,20 @@ class PetApp(QObject):
     def _fire_reminder(self, kind, text=None, title=None, icon=None, todo_id=None,
                        schedule_id=None):
         """触发一次提醒：走到屏幕中间 → 动作 + 气泡 + 提示音 + 系统通知。"""
+        # ===== 诊断：记录调用栈（定位重复触发来源，稳定后移除）=====
+        try:
+            import traceback as _tb
+            _st = _tb.extract_stack()
+            # 只取本项目内的帧，跳过 Qt 内部
+            _frames = []
+            for _f in _st[:-1]:
+                if "dafeiyu-pet" in (_f.filename or ""):
+                    _frames.append("%s:%d %s" % (
+                        os.path.basename(_f.filename), _f.lineno, _f.name))
+            log("[诊断] _fire_reminder(%s) 调用栈: %s"
+                % (kind, " <- ".join(reversed(_frames[-6:])) or "(空)"))
+        except Exception:
+            pass
         if not self.is_enabled("reminders"):
             log("[提醒] %s 被跳过（功能关闭）" % kind)
             return False
@@ -2115,6 +2141,26 @@ class PetApp(QObject):
         if self._in_dnd():
             log("[提醒] %s 被跳过（免打扰时段）" % kind)
             return False
+        # 已有提醒气泡在显示，或正在触发流程中 → 不叠加
+        # 注意：气泡是延迟 200ms 才显示的（_begin_remind_at_pet 里 _show），
+        # 所以必须用独立的「触发中」标志，不能只看 remind_text。
+        try:
+            pet0 = self.main_pet
+            if getattr(self, "_remind_firing", False):
+                log("[诊断] %s 被拦：_remind_firing=True" % kind)
+                return False
+            if pet0 is not None and getattr(pet0, "remind_text", ""):
+                log("[诊断] %s 被拦：remind_text=%r"
+                    % (kind, pet0.remind_text[:20]))
+                return False
+        except Exception:
+            pass
+        self._remind_firing = True
+        log("[诊断] %s 通过防叠加检查，_remind_firing 置 True" % kind)
+
+        def _unfire():
+            """解除「触发中」标志（所有提前返回路径都要调）。"""
+            self._remind_firing = False
 
         if text is None:
             # 先试实时生成（开关开启时）；失败/超时/超限一律回落固定台词
@@ -2128,11 +2174,13 @@ class PetApp(QObject):
 
         pet = self.main_pet
         if pet is None:
+            _unfire()
             return False
 
         # 全屏 / 演示模式：不移动、不弹气泡，跳过本轮
         if self._notification_paused():
             log("[提醒] %s 全屏/演示模式 → 跳过" % kind)
+            _unfire()
             return False
 
         # ---- 记录回位原点（所有拦截判断之后，被拦时不留残留）----
@@ -2232,13 +2280,40 @@ class PetApp(QObject):
             log("提醒动作失败: %s" % ex, logging.WARNING)
 
         # 动作先起，200ms 后再弹气泡（让动作先被看见）
+        # 防重入：同一份 ctx 只允许显示一次气泡（防止 singleShot 与
+        # 立即调用、或走动 on_done 与 singleShot 双触发导致连发多条）
+        _shown = {"done": False}
+
         def _show():
+            if _shown["done"]:
+                log("[诊断] %s 重复 _show，已忽略（防重入生效）" % kind)
+                return
+            _shown["done"] = True
+            # 诊断：记录 _show 的调用来源
+            try:
+                import traceback as _tb
+                _st = _tb.extract_stack()
+                _fr = ["%s:%d %s" % (os.path.basename(_f.filename),
+                                     _f.lineno, _f.name)
+                       for _f in _st[:-1]
+                       if "dafeiyu-pet" in (_f.filename or "")]
+                log("[诊断] %s _show 调用来源: %s"
+                    % (kind, " <- ".join(reversed(_fr[-5:])) or "(空)"))
+            except Exception:
+                pass
             try:
                 self._show_remind_bubble(pet, text, icon, kind,
                                          ctx.get("todo_id"),
                                          ctx.get("schedule_id"))
             except Exception as ex:
                 log("提醒气泡失败: %s" % ex, logging.WARNING)
+            finally:
+                # 气泡已显示（或失败）→ 解除「触发中」标志，
+                # 后续由 remind_text 非空继续拦住叠加
+                self._remind_firing = False
+                log("[诊断] %s 气泡显示完成，_remind_firing 置 False，"
+                    "remind_text=%r" % (kind,
+                                        getattr(pet, "remind_text", "")[:20]))
 
         try:
             QTimer.singleShot(200, _show)
