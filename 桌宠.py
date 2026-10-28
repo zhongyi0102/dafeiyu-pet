@@ -2306,8 +2306,14 @@ class PetApp(QObject):
         if pet is None:
             self._return_pet_after_remind()
             return
-        # 上一轮的待回位计时作废（避免多次确认叠加多个回位）
-        self._cancel_pending_return()
+        # 清掉上一轮的计时器，但**不要**置 cancelled（那是打断标记）
+        try:
+            t = getattr(self, "_ack_return_timer", None)
+            if t is not None and t.isActive():
+                t.stop()
+        except Exception:
+            pass
+        self._ack_return_cancelled = False   # 新一轮，重置打断标记
         # 先停掉提醒动作（女仆舞循环）
         try:
             pet._stop_frame_anim()
