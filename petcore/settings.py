@@ -891,7 +891,7 @@ class SettingsWindow(QDialog):
 
     def _build_features_page(self, lay):
         self._title(lay, "功能开关",
-                    "关掉后对应功能不再触发、也不占用定时器。带「重启生效」标记的需要重启程序。")
+                    "关掉的功能不会再触发。带「重启生效」的要重启程序。")
         self._feature_boxes = {}
         groups = {}
         for key, spec in FEATURES.items():
@@ -925,7 +925,7 @@ class SettingsWindow(QDialog):
     def _build_pet_page(self, lay):
         """宠物页：四组 —— 宠物管理 / 选中的宠物 / 物理 / 窗口。"""
         # ================= ① 宠物管理 =================
-        self._title(lay, "宠物管理", "可以养多只大肥鱼；至少保留一只 id 为 main 的宠物。")
+        self._title(lay, "宠物管理", "可以养多只。至少要留一只。")
         self.pet_list = QListWidget()
         self.pet_list.setFixedHeight(120)
         self.pet_list.currentRowChanged.connect(lambda _r: self.refresh_pet_page())
@@ -1236,11 +1236,8 @@ class SettingsWindow(QDialog):
 
     # ---------- 物理·动画页 ----------
     def _build_motion_page(self, lay):
-        self._title(lay, "物理 · 动画",
-                    "上半是物理（拖拽/甩抛/反弹），下半是动画（权重/帧序列/强度）。"
-                    "改完立即生效。"
-                    "「顶部反弹 / 宠物互撞 / 隐藏时暂停动画 / 撞飞彩蛋」"
-                    "四个开关已在「宠物」页。")
+        self._title(lay, "物理 · 动画", "物理：拖拽手感和反弹。动画：动作频率和帧素材。改完立即生效。\n"
+                    "「顶部反弹 / 宠物互撞 / 隐藏时暂停动画 / 撞飞彩蛋」在「宠物」页。")
         ph = self.app._physics_cfg()
         self._physics_sliders = {}
         specs = [
@@ -1615,11 +1612,8 @@ class SettingsWindow(QDialog):
     def _build_reminder_page(self, lay):
         ex = self.app._rem_extras()
 
-        self._title(lay, "提醒",
-                    "每类可单独设间隔；到点会停下来播动作并放大气泡。"
-                    "免打扰时段内不弹。\n"
-                    "右侧「已用/上限」：上限 = 可用时长 ÷ 间隔 × 85%，"
-                    "改间隔或免打扰会自动跟着变。")
+        self._title(lay, "提醒", "到点宠物会走过来提醒你。免打扰时段内不弹。\n"
+                    "右侧「已用/上限」会随间隔和免打扰自动调整。")
 
         # ================= ① 健康提醒 =================
         self._health_section = CollapsibleSection("健康提醒", expanded=True, state_key="sec_health", app=self.app)
@@ -2079,10 +2073,7 @@ class SettingsWindow(QDialog):
 
     # ---------- 聊天页 ----------
     def _build_chat_page(self, lay):
-        self._title(lay, "聊天",
-                    "回复长度与单次输出上限。风格只改 system 末尾那一句固定文字，"
-                    "同一风格下前缀缓存稳定；切换风格时缓存失效一次属正常。"
-                    "下面四组可点标题展开 / 收起。")
+        self._title(lay, "聊天", "选模型、写人设、配视觉。人设决定说话风格。四组可点标题展开。")
 
         # ================= ① 聊天模型（默认展开）=================
         self._chat_section = _ChatModelGroup(app=self.app)
@@ -2360,7 +2351,7 @@ class SettingsWindow(QDialog):
                 lambda v: self._on_vision_tokens_changed(int(v)), "")
         _af.addRow("单次上限", self._vision_tokens_field)
         _af.addRow("", self._sub_hint(
-            "识别结果最长能写多长，太小会被截断。带思考过程的模型请调大。"))
+            "识别结果最多写多少字。太小会截断。"))
 
         # 6) 图片最长边
         self._vision_side_field, self.vision_side_slider, self.vision_side_spin = \
@@ -2371,7 +2362,7 @@ class SettingsWindow(QDialog):
                 lambda v: self._on_vision_limit_changed("max_side", int(v)), "px")
         _af.addRow("图片最长边", self._vision_side_field)
         _af.addRow("", self._sub_hint(
-            "截图缩放后的最长边。越大越清楚，也越慢越费钱；一般 1024 够用。"))
+            "截图缩放后的最长边。越大越清楚，也越慢越贵。1024 一般够用。"))
 
         # 7) 图片质量
         self._vision_quality_field, self.vision_quality_slider, self.vision_quality_spin = \
@@ -2382,7 +2373,7 @@ class SettingsWindow(QDialog):
                 lambda v: self._on_vision_limit_changed("quality", int(v)), "")
         _af.addRow("图片质量", self._vision_quality_field)
         _af.addRow("", self._sub_hint(
-            "越低上传越快，但字会变糊，一般不用动。"))
+            "越低上传越快，字会变糊。一般不用动。"))
 
         # 8) 请求超时（宽度与数字框一致）
         self.vision_timeout_spin = QSpinBox()
@@ -2397,7 +2388,7 @@ class SettingsWindow(QDialog):
             lambda v: self._on_vision_limit_changed("timeout", int(v)))
         _af.addRow("请求超时", self.vision_timeout_spin)
         _af.addRow("", self._sub_hint(
-            "等多久没反应就放弃。带思考过程的模型建议调大。"))
+            "等多久没反应就放弃。慢模型可以调大。"))
 
         self._advanced_section.body_add_layout(_af)
 
@@ -4446,10 +4437,8 @@ class SettingsWindow(QDialog):
 
     # ---------- 语音页 ----------
     def _build_voice_page(self, lay):
-        self._title(lay, "语音",
-                    "让宠物把说的话念出来（日常聊天不出声，只有叫它唱歌/"
-                    "念出来时才发声）。使用前先双击 tools\\启动语音服务.bat，"
-                    "听到 \"Uvicorn running\" 即就绪。")
+        self._title(lay, "语音", "叫它唱歌或念出来时才会出声，日常聊天不出声。\n"
+                    "使用前双击 tools\\启动语音服务.bat，看到 Uvicorn running 即就绪。")
         cfg = self.app.voice_cfg()
 
         self._voice_enabled = self._check(
@@ -4481,7 +4470,7 @@ class SettingsWindow(QDialog):
         erow.addWidget(self._voice_engine, 1)
         lay.addLayout(erow)
         lay.addWidget(self._sub_hint(
-            "Edge-TTS 快但只会朗读；VoxCPM2 音质好、能克隆音色，"
+            "Edge：快，普通音色。VoxCPM2：音质好，能克隆音色。"
             "但 CPU 下一句话要几分钟；\n"
             "GPT-SoVITS(yin1) 离线直出、音色稳定，CPU 下约为音频时长的 1.5 倍，"
             "不需要 Edge-TTS 也不联网。"))
@@ -4499,7 +4488,7 @@ class SettingsWindow(QDialog):
         row.addWidget(self._voice_url, 1)
         lay.addLayout(row)
         lay.addWidget(self._sub_hint(
-            "默认 http://127.0.0.1:9880。服务在另一台机器时改成那台的 IP。"))
+            "默认 127.0.0.1:9880。服务在别的机器上就填那台的 IP。"))
 
         # GPT-SoVITS（yin1）服务地址：仅当引擎选 yin1 时使用
         grow = QHBoxLayout()
@@ -4515,7 +4504,7 @@ class SettingsWindow(QDialog):
         grow.addWidget(self._voice_gpt_url, 1)
         lay.addLayout(grow)
         lay.addWidget(self._sub_hint(
-            "默认 http://127.0.0.1:9882。GPT-SoVITS（yin1 音色）专用，"
+            "默认 127.0.0.1:9882。GPT-SoVITS 专用。"
             "只在引擎选它时生效；本机离线推理，不需要 Edge-TTS。"))
 
         # 音量
@@ -4755,7 +4744,7 @@ class SettingsWindow(QDialog):
         _top.addStretch(1)
         lay.addLayout(_top)
         lay.addWidget(self._sub_hint(
-            "工作时间段内检测到你发呆时，宠物会主动说一句话，"
+            "工作时间段内发现你发呆，宠物会主动说一句。"
             "关闭后不检测、不调用模型"))
 
         # ================= 工作时间段 =================
@@ -4771,14 +4760,14 @@ class SettingsWindow(QDialog):
         _btn.clicked.connect(self._pro_add_session)
         _sec.body_add(_btn)
         _sec.body_add(self._sub_hint(
-            "只在选中的星期、且落在时间段内才检测。可添加多段。"))
+            "只在选中的星期、选中的时段内才检测。可加多段。"))
 
         # ================= 触发与频率 =================
         self._pro_line(lay)
         _sec2 = self._pro_section(lay, "触发与频率", expanded=True)
         self._pro_idle, self._pro_away = self._pro_threshold_pair(_sec2, cfg)
         _sec2.body_add(self._sub_hint(
-            "多久没动就当作在发呆（实际会在 ±20% 内随机浮动）"))
+            "多久没动算发呆（实际有 ±20% 浮动）"))
         # 原「频率控制」控件原样放在下方
         _sec2.body_add(self._pro_sub_title("冷却与上限"))
         self._pro_cool = self._pro_spin_row(
@@ -4861,12 +4850,12 @@ class SettingsWindow(QDialog):
         _l3.addWidget(self._pro_send_title)
         _l3.addWidget(self._sub_hint("关闭后只发进程名，不发标题。"))
         _l3.addWidget(self._pro_sub_title("隐私黑名单"))
-        _l3.addWidget(self._sub_hint("命中这些词的窗口不搭话，标题也不会发出去。"))
+        _l3.addWidget(self._sub_hint("这些词的窗口不搭话，标题也不外发。"))
         self._pro_private = self._pro_word_editor(_l3, cfg.get("private_words") or [],
                                                  self._pro_set_private)
         _l3.addWidget(self._pro_sub_title("跳过关键词"))
         _l3.addWidget(self._sub_hint(
-            "视频、游戏、会议等场景不搭话（命中就不调用模型，不耗额度）。"))
+            "这些场景不搭话，也不调模型。"))
         self._pro_skip = self._pro_word_editor(_l3, cfg.get("skip_words") or [],
                                                self._pro_set_skip)
         _rst = QPushButton("恢复默认跳过词")
@@ -4881,7 +4870,7 @@ class SettingsWindow(QDialog):
         self._pro_line(lay)
         _sec4 = self._pro_section(lay, "测试", expanded=False)
         _sec4.body_add(self._sub_hint(
-            "忽略时间段、阈值和冷却，直接调一次模型；不计入每日次数"))
+            "跳过时段、阈值和冷却，立刻调一次模型。不计次数。"))
         _trow = QHBoxLayout()
         self._pro_test_btn = QPushButton("测试搭话")
         self._pro_test_btn.setToolTip("立刻调一次模型，结果显示在下方")
