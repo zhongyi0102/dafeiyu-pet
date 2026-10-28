@@ -2118,6 +2118,11 @@ class SettingsWindow(QDialog):
         self.chat_model.setEditable(True)
         self.chat_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.chat_model.setFixedHeight(_rowh)
+        # 模型名较长（如 gemini-3.8-flash-tiered），给足宽度避免显示不全
+        self.chat_model.setMinimumWidth(280)
+        self.chat_model.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.chat_model.setMinimumContentsLength(24)
         self.chat_model.currentIndexChanged.connect(self._on_chat_model_changed)
         self.chat_model.editTextChanged.connect(self._on_chat_model_changed)
         _cf.addRow("聊天模型", self.chat_model)
@@ -2268,6 +2273,11 @@ class SettingsWindow(QDialog):
         self.vision_model.setEditable(True)   # 允许手填模型名
         self.vision_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.vision_model.setFixedHeight(_rowh)
+        # 模型名较长，给足宽度避免显示不全
+        self.vision_model.setMinimumWidth(280)
+        self.vision_model.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.vision_model.setMinimumContentsLength(24)
         self.vision_model.currentIndexChanged.connect(self._on_vision_model_changed)
         # 可编辑：手输模型名时也要立即保存
         self.vision_model.editTextChanged.connect(self._on_vision_model_changed)
