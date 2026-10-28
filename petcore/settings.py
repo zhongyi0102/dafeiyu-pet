@@ -1371,29 +1371,31 @@ class SettingsWindow(QDialog):
                 lay, tier_labels[key], cur, 0, 100, 5, None,
                 lambda v, k=key: self._set_tier_weight(k, v), "%")
 
-        # ---- 调试面板 ----
+        # ---- 当前状态（折叠组，默认收起，展开时自动刷新）----
         line5 = QFrame()
         line5.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line5)
-        dbg = QLabel("当前状态")
-        dbg.setStyleSheet("color:#5686fe;font-weight:bold;font-size:11px;margin-top:4px;")
-        lay.addWidget(dbg)
+        self._debug_section = CollapsibleSection(
+            "当前状态", expanded=False, state_key="sec_debug", app=self.app)
+        _dbgbody = self._debug_section.body_layout
         self._idle_state = QLabel("")
         self._idle_state.setWordWrap(True)
-        self._idle_state.setStyleSheet("color:#8a8f9c;font-size:11px;margin-left:8px;")
-        lay.addWidget(self._idle_state)
+        self._idle_state.setStyleSheet(
+            "color:#8a8f9c;font-size:11px;margin-left:8px;")
+        _dbgbody.addWidget(self._idle_state)
         self._action_log = QLabel("")
         self._action_log.setWordWrap(True)
         self._action_log.setStyleSheet(
-            "color:#8a8f9c;font-size:11px;margin-left:8px;font-family:Consolas,monospace;")
-        lay.addWidget(self._action_log)
-        row2 = QHBoxLayout()
-        row2.addSpacing(8)
-        rf = QPushButton("刷新状态")
-        rf.clicked.connect(lambda _=False: self._refresh_debug())
-        row2.addWidget(rf)
-        row2.addStretch(1)
-        lay.addLayout(row2)
+            "color:#8a8f9c;font-size:11px;margin-left:8px;"
+            "font-family:Consolas,monospace;")
+        _dbgbody.addWidget(self._action_log)
+        lay.addWidget(self._debug_section)
+
+        # 自动刷新定时器：只在展开时运行
+        self._debug_timer = QTimer(self)
+        self._debug_timer.setInterval(2000)
+        self._debug_timer.timeout.connect(self._refresh_debug)
+        self._debug_section.toggled.connect(self._on_debug_toggled)
 
         btn = QPushButton("恢复默认（动画）")
         btn.clicked.connect(self._reset_anim)
@@ -1474,17 +1476,42 @@ class SettingsWindow(QDialog):
         self.app.cfg["animation_tiers"] = tiers
         self.app.save_cfg()
 
+    def _on_debug_toggled(self, expanded):
+        """展开时启动自动刷新，收起时停止并只更新标题小字。"""
+        try:
+            if expanded:
+                self._refresh_debug()
+                self._debug_timer.start()
+            else:
+                self._debug_timer.stop()
+                self._refresh_debug()
+        except Exception:
+            pass
+
     def _refresh_debug(self):
-        """显示当前待机状态 + 最近 20 个动作 + 帧动作数与内存。"""
+        """显示当前待机状态 + 最近 20 个动作 + 帧动作数与内存。
+
+        收起时只更新标题右侧的状态小字（省渲染开销）。
+        """
         try:
             pet = self.app.main_pet
             if pet is None:
                 return
             sec = pet._idle_seconds()
+            stage = pet._idle_stage
+            # 标题右侧小字：阶段 · 当前动作
+            try:
+                act = pet.chain_action or pet._combo or ""
+                summary = stage + (" · " + str(act) if act else "")
+                self._debug_section.set_summary(summary)
+            except Exception:
+                pass
+            if not self._debug_section.is_expanded():
+                return          # 收起时不填详细内容
             self._idle_state.setText(
                 "待机状态：%s · 已静默 %d 秒（%d 秒后犯困 / %d 秒后坐下 / %d 秒后睡觉）\n"
                 "当前动作：%s · 连招：%s · 转向中：%s"
-                % (pet._idle_stage, int(sec),
+                % (stage, int(sec),
                    int(IDLE_BORED_AFTER), int(IDLE_SIT_AFTER), int(IDLE_SLEEP_AFTER),
                    pet.chain_action or "-",
                    pet._combo or "-",
