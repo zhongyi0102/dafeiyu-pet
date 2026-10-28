@@ -60,10 +60,12 @@ print("=== A2. 候选服务商表（含完整前缀）===")
 _names = [_n for _n, b in mod.VISION_PROVIDERS] if mod.VISION_PROVIDERS else []
 ck("只留 DeepSeek", "DeepSeek" in _names, _names)
 ck("只留智谱", "智谱" in _names, _names)
-ck("恰好 2 家", len(_names) == 2, _names)
+ck("至少 3 家", len(_names) >= 3, _names)
 ck("含智谱 paas/v4", any("paas/v4" in b for _n, b in mod.VISION_PROVIDERS))
-ck("无 Gemini/阿里等", not any(
-    ("generativelanguage" in b) or ("compatible-mode" in b) or ("openai.com" in b)
+ck("含 Gemini", any("generativelanguage" in b
+                        for _n, b in mod.VISION_PROVIDERS))
+ck("无阿里/OpenAI", not any(
+    ("compatible-mode" in b) or ("openai.com" in b)
     for _n, b in mod.VISION_PROVIDERS))
 ck("有已知视觉模型兜底", hasattr(mod, "VISION_KNOWN_MODELS")
    and "智谱" in mod.VISION_KNOWN_MODELS)
