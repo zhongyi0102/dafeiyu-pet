@@ -2712,6 +2712,22 @@ class SettingsWindow(QDialog):
         if getattr(self, "_chat_filling", False):
             return
         self._refresh_chat_status()
+        # Key 变了 → 旧模型列表不再适用，清空下拉（等重新测试）
+        try:
+            cur_key = (self.chat_key.text() or "").strip()
+            saved_key = (self.app.cfg.get("ds_api_key") or "").strip()
+            if cur_key != saved_key and self.chat_model.count() > 0:
+                self._chat_filling = True
+                self.chat_model.blockSignals(True)
+                self.chat_model.clear()
+                self.chat_model.setCurrentText("")
+                self.chat_model.blockSignals(False)
+                self._chat_filling = False
+                self._set_chat_status(
+                    "Key 已变，点「测试」查看这个 Key 支持的模型", "info")
+        except Exception as ex:
+            log("[聊天] 清空模型列表失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _on_chat_model_changed(self, *_a):
         """切换/手填模型后立即保存。"""
@@ -2989,10 +3005,29 @@ class SettingsWindow(QDialog):
         self._chat_test_btn.setEnabled(True)
         self._chat_cancel_btn.hide()
         if not ok:
+            # 测试失败 → 清空旧列表（旧模型不代表这个 Key 能用）
+            try:
+                self._chat_filling = True
+                self.chat_model.blockSignals(True)
+                self.chat_model.clear()
+                self.chat_model.setCurrentText("")
+                self.chat_model.blockSignals(False)
+                self._chat_filling = False
+            except Exception:
+                pass
             self._set_chat_status("✗ " + (err or "识别失败"), "err")
             return
         n = len(found or [])
         if n == 0:
+            try:
+                self._chat_filling = True
+                self.chat_model.blockSignals(True)
+                self.chat_model.clear()
+                self.chat_model.setCurrentText("")
+                self.chat_model.blockSignals(False)
+                self._chat_filling = False
+            except Exception:
+                pass
             self._set_chat_status("✗ 没有可用的对话模型", "err")
             return
         # 排序后填入
@@ -3003,19 +3038,18 @@ class SettingsWindow(QDialog):
             ranked = list(found)
         if len(ranked) != n:
             ranked = list(found)
-        # 保留用户已选（若仍可用）
-        cur = (self.chat_model.currentText() or "").strip()
-        chosen = cur if cur in ranked else ranked[0]
+        # 填入新列表：不保留旧选中（旧模型可能不属于这个 Key）
         self._chat_filling = True
         self.chat_model.blockSignals(True)
         self.chat_model.clear()
         for m in ranked:
             self.chat_model.addItem(m)
-        self.chat_model.setCurrentText(chosen)
+        self.chat_model.setCurrentIndex(0)      # 默认选排序第一个
         self.chat_model.blockSignals(False)
         self._chat_filling = False
         if base:
             self.chat_base.setText(base)
+        chosen = (self.chat_model.currentText() or "").strip()
         self._set_chat_status("✓ 找到 %d 个可用模型，已选 %s" % (n, chosen), "ok")
         self._save_chat_cfg()
         log("[聊天识别] 完成：%d 个可用，已选 %s" % (n, chosen))
