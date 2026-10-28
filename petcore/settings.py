@@ -85,8 +85,19 @@ class CollapsibleSection(QWidget):
 
     toggled = Signal(bool)   # True=展开
 
-    def __init__(self, title, parent=None, expanded=True):
+    def __init__(self, title, parent=None, expanded=True, state_key=None,
+                 app=None):
         super().__init__(parent)
+        # 状态持久化：给了 state_key 就自己读写 cfg["ui_sections"]
+        self._state_key = state_key
+        self._app = app
+        if state_key and app is not None:
+            try:
+                saved = (app.cfg.get("ui_sections") or {}).get(state_key)
+                if isinstance(saved, bool):
+                    expanded = saved
+            except Exception:
+                pass
         self._expanded = bool(expanded)
         self._title_text = title
         self._state_text = ""
@@ -148,13 +159,24 @@ class CollapsibleSection(QWidget):
     def is_expanded(self):
         return self._expanded
 
-    def set_expanded(self, on, emit=True):
+    def set_expanded(self, on, emit=True, remember=True):
         on = bool(on)
         if on == self._expanded:
             self._apply_visibility()
             return
         self._expanded = on
         self._apply_visibility()
+        # 状态持久化：记住这次展开/收起
+        if remember and self._state_key and self._app is not None:
+            try:
+                sec = self._app.cfg.get("ui_sections")
+                if not isinstance(sec, dict):
+                    sec = {}
+                sec[self._state_key] = bool(on)
+                self._app.cfg["ui_sections"] = sec
+                self._app.save_cfg()
+            except Exception:
+                pass
         if emit:
             self.toggled.emit(on)
 
@@ -197,12 +219,14 @@ class ChatGroupBox(QWidget):
     这样原来的视觉页 / 记忆页控件可以原样搬进来。
     """
 
-    def __init__(self, title, expanded=True, parent=None):
+    def __init__(self, title, expanded=True, parent=None, state_key=None,
+                 app=None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.section = CollapsibleSection(title, expanded=expanded)
+        self.section = CollapsibleSection(title, expanded=expanded,
+                                          state_key=state_key, app=app)
         outer.addWidget(self.section)
 
     @property
@@ -226,22 +250,22 @@ class ChatGroupBox(QWidget):
 class _ChatModelGroup(ChatGroupBox):
     """① 聊天模型：Key / 地址 / 模型 + 单次输出上限。默认展开。"""
 
-    def __init__(self, parent=None):
-        super().__init__("聊天模型", expanded=True, parent=parent)
+    def __init__(self, parent=None, app=None):
+        super().__init__("聊天模型", expanded=True, parent=parent, state_key="chat_model", app=app)
 
 
 class _PersonaGroup(ChatGroupBox):
     """② 人设：风格的唯一来源。默认折叠，标题右侧显示「无风格」或人设摘要。"""
 
-    def __init__(self, parent=None):
-        super().__init__("人设", expanded=False, parent=parent)
+    def __init__(self, parent=None, app=None):
+        super().__init__("人设", expanded=False, parent=parent, state_key="persona", app=app)
 
 
 class _MemoryGroup(ChatGroupBox):
     """③ 长期记忆：说明 + 打开记忆管理。默认折叠，标题右侧显示「N 条」。"""
 
-    def __init__(self, parent=None):
-        super().__init__("长期记忆", expanded=False, parent=parent)
+    def __init__(self, parent=None, app=None):
+        super().__init__("长期记忆", expanded=False, parent=parent, state_key="sec_memory", app=app)
 
 
 class _VisionGroup(ChatGroupBox):
@@ -250,8 +274,8 @@ class _VisionGroup(ChatGroupBox):
     标题右侧显示「模型名 已配置」或「未配置」。
     """
 
-    def __init__(self, parent=None):
-        super().__init__("看屏幕 / 视觉", expanded=False, parent=parent)
+    def __init__(self, parent=None, app=None):
+        super().__init__("看屏幕 / 视觉", expanded=False, parent=parent, state_key="sec_vision", app=app)
 
 
 class _FieldDialog(QDialog):
@@ -1288,7 +1312,7 @@ class SettingsWindow(QDialog):
         fa = self.app.cfg.get("frame_anim")
         if not isinstance(fa, dict):
             fa = {}
-        self._frame_section = CollapsibleSection("帧序列动画", expanded=True)
+        self._frame_section = CollapsibleSection("帧序列动画", expanded=True, state_key="sec_frame", app=self.app)
         _fbody = self._frame_section.body_layout
 
         # 说明改为「启用帧序列动画」右侧的 i 图标
@@ -1571,7 +1595,7 @@ class SettingsWindow(QDialog):
                     "改间隔或免打扰会自动跟着变。")
 
         # ================= ① 健康提醒 =================
-        self._health_section = CollapsibleSection("健康提醒", expanded=True)
+        self._health_section = CollapsibleSection("健康提醒", expanded=True, state_key="sec_health", app=self.app)
         _hbody = self._health_section.body_layout
 
         _hrow = QHBoxLayout()
@@ -1641,7 +1665,7 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._health_section)
 
         # ================= ② 待办与定时（标签页）=================
-        self._todo_section = CollapsibleSection("待办与定时", expanded=True)
+        self._todo_section = CollapsibleSection("待办与定时", expanded=True, state_key="sec_todo", app=self.app)
         _tbody = self._todo_section.body_layout
 
         self._rem_tabs = QTabWidget()
@@ -1710,7 +1734,7 @@ class SettingsWindow(QDialog):
         lay.addWidget(self._todo_section)
 
         # ================= ③ 提醒规则 =================
-        self._rule_rem_section = CollapsibleSection("提醒规则", expanded=True)
+        self._rule_rem_section = CollapsibleSection("提醒规则", expanded=True, state_key="sec_rule_rem", app=self.app)
         _rbody = self._rule_rem_section.body_layout
 
         self._feature_boxes["remind_walk"] = self._check(
@@ -2034,7 +2058,7 @@ class SettingsWindow(QDialog):
                     "下面四组可点标题展开 / 收起。")
 
         # ================= ① 聊天模型（默认展开）=================
-        self._chat_section = _ChatModelGroup()
+        self._chat_section = _ChatModelGroup(app=self.app)
         _body = self._chat_section.body_layout
 
         _rowh = 30
@@ -2171,7 +2195,7 @@ class SettingsWindow(QDialog):
 
         # 长期记忆入口已移到聊天窗口的「设置」菜单
         # ================= ④ 看屏幕 / 视觉（默认折叠）=================
-        self._vision_section = _VisionGroup()
+        self._vision_section = _VisionGroup(app=self.app)
         self._build_vision_into(self._vision_section.body_layout)
         lay.addWidget(self._vision_section)
 
@@ -2246,7 +2270,7 @@ class SettingsWindow(QDialog):
 
         # ---- 识别规则（视觉请求 system，可收缩，默认收起）----
         _r_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_rule", False))
-        self._rule_section = CollapsibleSection("识别规则", expanded=_r_exp)
+        self._rule_section = CollapsibleSection("识别规则", expanded=_r_exp, state_key="vision_rule", app=self.app)
         self._rule_section.toggled.connect(
             lambda on: self._save_section_state("vision_rule", on))
 
@@ -2279,7 +2303,7 @@ class SettingsWindow(QDialog):
 
         # ---- 高级设置（可收缩，默认收起）----
         _a_exp = bool((self.app.cfg.get("ui_sections") or {}).get("vision_advanced", False))
-        self._advanced_section = CollapsibleSection("高级设置", expanded=_a_exp)
+        self._advanced_section = CollapsibleSection("高级设置", expanded=_a_exp, state_key="vision_advanced", app=self.app)
         self._advanced_section.toggled.connect(
             lambda on: self._save_section_state("vision_advanced", on))
 
