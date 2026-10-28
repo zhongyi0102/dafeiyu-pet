@@ -1656,6 +1656,8 @@ CHAT_THEME_LIGHT = {
     "accent_hover": "#477CFE",
     "code_bg": "#f1f3f9",
     "scroll": "#e2e6ef",
+    "scroll_hover": "#c8cedd",
+    "scroll_pressed": "#aeb6ca",
     # ---- 语音卡片 ----
     "vc_card_bg": "rgba(255,255,255,0.88)",
     "vc_card_border": "#e6e9f5",
@@ -1714,6 +1716,8 @@ CHAT_THEME_DARK = {
     "accent_hover": "#5c8bf5",
     "code_bg": "#22252c",
     "scroll": "#3a3e48",
+    "scroll_hover": "#4e5462",
+    "scroll_pressed": "#636a7c",
     # ---- 语音卡片（深色）----
     "vc_card_bg": "rgba(39,42,49,0.92)",
     "vc_card_border": "#3a3f52",
@@ -1958,9 +1962,56 @@ def chat_qss(t):
     QListWidget#SessionList::item:selected {
         background: %(sidebar_sel)s; color: %(accent)s; font-weight: bold;
     }
-    QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-    QScrollBar::handle:vertical { background: %(scroll)s; border-radius: 4px; min-height: 24px; }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    /* 滚动条：滑块 10px，轨道可点击跳转，悬停变深 */
+    QScrollBar:vertical {
+        background: transparent;
+        width: 10px;
+        margin: 0px;
+        border: none;
+    }
+    QScrollBar::handle:vertical {
+        background: %(scroll)s;
+        border-radius: 5px;
+        min-height: 32px;
+        margin: 2px 1px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: %(scroll_hover)s;
+    }
+    QScrollBar::handle:vertical:pressed {
+        background: %(scroll_pressed)s;
+    }
+    /* 轨道：透明但可点击（点空白处翻页） */
+    QScrollBar::add-page:vertical,
+    QScrollBar::sub-page:vertical {
+        background: transparent;
+    }
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {
+        height: 0px;
+        background: transparent;
+        border: none;
+    }
+    QScrollBar:horizontal {
+        background: transparent;
+        height: 10px;
+        margin: 0px;
+        border: none;
+    }
+    QScrollBar::handle:horizontal {
+        background: %(scroll)s;
+        border-radius: 5px;
+        min-width: 32px;
+        margin: 1px 2px;
+    }
+    QScrollBar::handle:horizontal:hover { background: %(scroll_hover)s; }
+    QScrollBar::handle:horizontal:pressed { background: %(scroll_pressed)s; }
+    QScrollBar::add-page:horizontal,
+    QScrollBar::sub-page:horizontal { background: transparent; }
+    QScrollBar::add-line:horizontal,
+    QScrollBar::sub-line:horizontal {
+        width: 0px; background: transparent; border: none;
+    }
     """ % {
         "window": t["window"], "fg": t["fg"], "sub": t["sub"],
         "input_bg": t["input_bg"], "input_border": t["input_border"],
@@ -1968,6 +2019,8 @@ def chat_qss(t):
         "accent": t["accent"], "accent_fg": t["accent_fg"],
         "accent_hover": t.get("accent_hover", t["accent"]),
         "card": t["card"], "border": t["border"], "scroll": t["scroll"],
+        "scroll_hover": t.get("scroll_hover", t["scroll"]),
+        "scroll_pressed": t.get("scroll_pressed", t["scroll"]),
         "sidebar": t["sidebar"], "sidebar_sel": t["sidebar_sel"],
         "secondary_bg": t["secondary_bg"], "secondary_fg": t["secondary_fg"],
         "secondary_border": t["secondary_border"], "danger_fg": t["danger_fg"],
