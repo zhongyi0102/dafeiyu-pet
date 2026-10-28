@@ -31,6 +31,9 @@ DEFAULT_IDLE_MIN = 10          # 发呆阈值（分钟）
 DEFAULT_AWAY_MIN = 30          # 离开阈值（分钟）
 DEFAULT_COOLDOWN_MIN = 20      # 冷却（分钟）
 DEFAULT_DAILY_MAX = 6          # 每日上限
+# 掷骰概率：满足所有触发条件后，实际去问模型的概率（0~1）。
+# 借鉴 dsh-speak-up：先本地掷骰，不中就完全不花 token。
+DEFAULT_FIRE_PROB = 0.65
 
 # 跳过关键词（视频/游戏/会议等）
 DEFAULT_SKIP_WORDS = [
@@ -135,6 +138,7 @@ def default_cfg():
         "away_min": DEFAULT_AWAY_MIN,
         "cooldown_min": DEFAULT_COOLDOWN_MIN,
         "daily_max": DEFAULT_DAILY_MAX,
+        "fire_prob": DEFAULT_FIRE_PROB,
         "send_title": True,
         "private_words": list(DEFAULT_PRIVATE_WORDS),
         "skip_words": list(DEFAULT_SKIP_WORDS),
@@ -185,6 +189,12 @@ def normalize_cfg(raw):
     out["away_min"] = _int("away_min", 2, 240)
     out["cooldown_min"] = _int("cooldown_min", 1, 240)
     out["daily_max"] = _int("daily_max", 1, 50)
+    # 掷骰概率：0~1，非法值回落到默认
+    try:
+        _fp = float(raw.get("fire_prob", d["fire_prob"]))
+    except Exception:
+        _fp = d["fire_prob"]
+    out["fire_prob"] = max(0.0, min(1.0, _fp))
     out["send_title"] = bool(raw.get("send_title", True))
 
     for key in ("private_words", "skip_words"):

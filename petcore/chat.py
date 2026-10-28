@@ -61,7 +61,8 @@ class MemoryStore:
     BASE_HALFLIFE_DAYS = 7.0    # 基础半衰期（天）
     MAX_HALFLIFE_DAYS = 28.0    # 半衰期上限（天）
     DECAY_THRESHOLD = 0.15      # 保留率低于此值不再注入（但不删除）
-    MAX_INJECT = 15             # 每次最多注入多少条
+    MAX_INJECT = 15             # 每次最多注入多少条（旧逻辑，保留兼容）
+    MAX_RELEVANT = 5            # 每轮按相关性最多追加几条
 
     def __init__(self, path):
         self.path = path
@@ -122,6 +123,7 @@ class MemoryStore:
             "origin_time": m.get("origin_time") or None,
             "event_date": ed,
             "revisit_done": bool(m.get("revisit_done", False)),
+            "pinned": bool(m.get("pinned", False)),
         }
 
     def load(self):
@@ -173,8 +175,11 @@ class MemoryStore:
     # ---------- 增删改 ----------
 
     def add(self, text, source="manual", origin_session=None,
-            origin_time=None, event_date=None):
-        """新增一条记忆。source: manual（默认）/ auto（自动提取）。"""
+            origin_time=None, event_date=None, pinned=False):
+        """新增一条记忆。source: manual（默认）/ auto（自动提取）。
+
+        pinned=True 表示「核心记忆」：每轮必定注入，不看相关性、不衰减。
+        """
         text = (text or "").strip()
         if not text:
             return None
@@ -195,6 +200,7 @@ class MemoryStore:
             "origin_time": (origin_time or now) if src == "auto" else None,
             "event_date": ed,
             "revisit_done": False,
+            "pinned": bool(pinned),
         }
         self.next_id += 1
         self.items.append(item)
@@ -212,6 +218,20 @@ class MemoryStore:
                 m["text"] = text
                 self.save()
                 return True
+        return False
+
+    def set_pinned(self, mem_id, pinned=True):
+        """切换「核心记忆」标记：pinned=True 每轮必带，不看相关性。"""
+        try:
+            for m in self.items:
+                if m.get("id") == mem_id:
+                    m["pinned"] = bool(pinned)
+                    self.invalidate_block()
+                    self.save()
+                    return True
+        except Exception as ex:
+            log("[记忆] 切换核心标记失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
         return False
 
     def pending_revisits(self, today_str=None):
@@ -356,31 +376,162 @@ class MemoryStore:
                 % (type(ex).__name__, ex), logging.WARNING)
             return self.sorted_items()
 
-    def block(self, now=None):
-        """拼到 system 消息尾部。
+    # ---------- 相关性打分（方案 B） ----------
 
-        顺序按保留率排序，同一天内结果恒定（按自然日取整），
-        因此同一天内前缀缓存不会因记忆而失效。
+    # 中文虚词/高频字，不参与相关性（否则「的」「了」会命中一切）
+    _STOP_CHARS = set(
+        "的了是在我有和就不人都一个上也很到说要去你会着没有看好自己这"
+        "里么什么那为与但而或及等被把从对向让给还又再已经过")
+    _STOP_WORDS = (
+        "什么", "怎么", "为什么", "可以", "这个", "那个", "一下", "现在",
+        "还是", "就是", "但是", "因为", "所以", "然后", "如果", "虽然",
+        "我们", "你们", "他们", "自己", "时候", "东西", "事情")
+
+    @classmethod
+    def _tokens(cls, text):
+        """把文本切成相关性候选词（子串匹配用）。
+
+        策略：去停用词 → 只留中文/字母/数字 → 按空白切段。
+        每段保留：整段 + 所有 2~4 字滑窗。
+        滑窗只用于「查询侧」，记忆侧用整段匹配即可（见 relevance）。
+        """
+        try:
+            s = str(text or "")
+            for w in cls._STOP_WORDS:
+                s = s.replace(w, " ")
+            s = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]+", " ", s)
+            out = set()
+            for chunk in s.split():
+                low = chunk.lower()
+                if len(low) < 2:
+                    continue
+                out.add(low)
+                # 中文段：滑窗切 2~4 字，覆盖「白屏」这类词
+                if re.search(r"[\u4e00-\u9fa5]", chunk):
+                    n = len(chunk)
+                    for size in (2, 3, 4):
+                        for i in range(n - size + 1):
+                            out.add(chunk[i:i + size].lower())
+            return out
+        except Exception:
+            return set()
+
+    @classmethod
+    def relevance(cls, m, query_tokens):
+        """记忆与当前问题的相关性 ∈ [0, 1]。
+
+        记忆侧用**整段子串匹配**：
+        查询里的每个候选词，只要作为子串出现在记忆原文里就算命中。
+        分数 = 命中词数 / 查询词数。
+        """
+        if not query_tokens:
+            return 0.0
+        try:
+            raw = str(m.get("text") or "").lower()
+            if not raw:
+                return 0.0
+            hit = sum(1 for t in query_tokens if t and t in raw)
+            return hit / float(len(query_tokens))
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def query_tokens(cls, text):
+        """查询侧词表：整段 + 2 字滑窗，去掉纯虚词组合。
+
+        比 _tokens 窄：只取 2 字和整段，避免「屏怎」「怎么解」这类跨词噪音
+        稀释命中率。
+        """
+        try:
+            s = str(text or "")
+            for w in cls._STOP_WORDS:
+                s = s.replace(w, " ")
+            s = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]+", " ", s)
+            out = set()
+            for chunk in s.split():
+                low = chunk.lower()
+                if len(low) < 2:
+                    continue
+                out.add(low)
+                if re.search(r"[\u4e00-\u9fa5]", chunk) and len(chunk) >= 3:
+                    for i in range(len(chunk) - 1):
+                        bg = chunk[i:i + 2]
+                        # 两字都非虚词才算有效词
+                        if not (set(bg) & cls._STOP_CHARS):
+                            out.add(bg.lower())
+            return out
+        except Exception:
+            return set()
+
+    def core_items(self, now=None):
+        """核心记忆：手动记忆 + pinned 标记，按 id 稳定排序（前缀缓存稳定）。"""
+        try:
+            out = []
+            for m in self.sorted_items():
+                if m.get("source") != "auto" or m.get("pinned"):
+                    out.append(m)
+            return out
+        except Exception:
+            return []
+
+    def relevant_items(self, query, now=None, limit=None):
+        """相关记忆：按 (相关性 × 保留率) 排序，排除已在核心里的。"""
+        try:
+            limit = limit if limit is not None else self.MAX_RELEVANT
+            now = now or time.localtime()
+            qt = self.query_tokens(query)
+            if not qt:
+                return []
+            core_ids = {m.get("id") for m in self.core_items(now)}
+            scored = []
+            for m in self.sorted_items():
+                if m.get("id") in core_ids:
+                    continue
+                r = self.retention(m, now)
+                if r < self.DECAY_THRESHOLD:
+                    continue
+                rel = self.relevance(m, qt)
+                if rel <= 0:
+                    continue
+                scored.append((rel * r, rel, m))
+            scored.sort(key=lambda x: (-x[0], -x[1], x[2].get("id", 0)))
+            return [m for _s, _r, m in scored[:limit]]
+        except Exception as ex:
+            log("[记忆] 计算相关记忆失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+            return []
+
+    def block(self, now=None, query=""):
+        """拼到 system 消息尾部（方案 B：固定块 + 相关块）。
+
+        结构：
+          固定块【请长期记住的事】 —— 核心记忆，按 id 排序，同日缓存（前缀稳定）
+          相关块【可能相关的旧事】 —— 按 query 相关性重排，追加在末尾（前缀变动）
+
+        前面的固定块保持恒定 → DeepSeek 前缀缓存仍能命中，只有末尾新增部分重算。
         """
         if not self.items:
             return ""
         try:
             cur = now or time.localtime()
-            day = self.day_index(cur)
-            # 同日缓存：同一天内重复调用直接复用
-            if self._block_cache_day == day and self._block_cache:
-                return self._block_cache
-            picks = self.inject_items(cur)
-            if not picks:
-                self._block_cache_day = day
-                self._block_cache = ""
-                return ""
-            lines = "\n".join("- " + (m.get("text") or "").strip()
-                              for m in picks)
-            out = "\n\n【请长期记住的事】\n" + lines
-            self._block_cache_day = day
-            self._block_cache = out
-            return out
+            parts = []
+
+            # ---- 固定块：核心记忆（同日缓存，前缀稳定）----
+            core = self.core_items(cur)
+            if core:
+                lines = "\n".join("- " + (m.get("text") or "").strip()
+                                  for m in core)
+                parts.append("\n\n【请长期记住的事】\n" + lines)
+
+            # ---- 相关块：按当前问题重排（不缓存，追加在末尾）----
+            if query:
+                rel = self.relevant_items(query, cur)
+                if rel:
+                    lines = "\n".join("- " + (m.get("text") or "").strip()
+                                      for m in rel)
+                    parts.append("\n\n【可能相关的旧事】\n" + lines)
+
+            return "".join(parts)
         except Exception as ex:
             log("[记忆] 生成 block 失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -388,8 +539,8 @@ class MemoryStore:
                               for m in self.sorted_items())
             return "\n\n【请长期记住的事】\n" + lines
 
-    def system_content(self, base):
-        return base + self.block()
+    def system_content(self, base, query=""):
+        return base + self.block(query=query)
 
 
 class ChatWorker(QThread):
@@ -3162,6 +3313,18 @@ class ChatWindow(QWidget):
             log("[聊天] 保存显示名失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
 
+    def _current_user_query(self):
+        """本轮用于记忆相关性匹配的用户问题（最近一条 user 消息）。"""
+        try:
+            for m in reversed(self.messages or []):
+                if m.get("role") == "user":
+                    t = (m.get("content") or "").strip()
+                    if t and not _is_proactive_placeholder(t):
+                        return t[:500]
+            return ""
+        except Exception:
+            return ""
+
     def _session_context_menu(self, pos):
         """会话项右键：重命名 / 删除。"""
         item = self.session_list.itemAt(pos)
@@ -5215,7 +5378,9 @@ class ChatWindow(QWidget):
         except Exception as ex:
             self._sing_lyrics = None
             log("[歌词] 搜索异常: %s" % ex, logging.WARNING)
-        msgs = [{"role": "system", "content": self.pet.memory.system_content(sys_text)}]
+        msgs = [{"role": "system",
+                 "content": self.pet.memory.system_content(
+                     sys_text, query=self._current_user_query())}]
         if self.summary:
             msgs.append({"role": "system",
                          "content": "以下是你和用户更早的聊天摘要（原始记录保留在本地，不再重复发送）：\n" + self.summary})

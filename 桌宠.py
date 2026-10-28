@@ -1146,6 +1146,24 @@ class PetApp(QObject):
             log("[主动] 跳过：%s" % reason)
             return
 
+        # ⑤.5 本地掷骰：决定这次要不要真的问模型（0 token）
+        # 借鉴 dsh-speak-up 的做法——先掷骰，不中直接放弃，
+        # 避免「每次都请求、模型说 SKIP」白花 token。
+        try:
+            _p = float(cfg.get("fire_prob", PRO.DEFAULT_FIRE_PROB))
+        except Exception:
+            _p = PRO.DEFAULT_FIRE_PROB
+        _p = max(0.0, min(1.0, _p))
+        if _p < 1.0:
+            import random as _rnd
+            _roll = _rnd.random()
+            if _roll >= _p:
+                log("[主动] 掷骰未中（%.0f%% < %.0f%%），本轮不请求模型"
+                    % (_roll * 100, _p * 100))
+                tracker.mark_fired()   # 本次发呆不再重试
+                return
+            log("[主动] 掷骰命中（%.0f%% < %.0f%%），继续" % (_roll * 100, _p * 100))
+
         # ⑥ 调模型（先在主线程截全屏，发给视觉模型观察）
         tracker.mark_fired()
         # 计数记入关心引擎（唯一事实来源）
