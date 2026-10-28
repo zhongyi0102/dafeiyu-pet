@@ -6287,7 +6287,8 @@ class MemoryDialog(QDialog):
             "这些记忆会拼在系统提示词末尾；只有新增或修改记忆时，"
             "前缀缓存才会失效一次。\n"
             "标记 [自动] 的记忆由模型从对话中提取，会随时间淡化；"
-            "[手动] 记忆永不淡化。")
+            "[手动] 记忆永不淡化。\n"
+            "标为 ★核心 的记忆每轮都会带上，不看相关性、不淡化。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#777;font-size:11px;")
         lay.addWidget(tip)
@@ -6295,7 +6296,7 @@ class MemoryDialog(QDialog):
         lay.addWidget(self.list, 1)
         row = QHBoxLayout()
         for label, fn in (("添加记忆", self.add_item), ("编辑", self.edit_item),
-                          ("删除", self.delete_item)):
+                          ("★ 核心", self.toggle_pin), ("删除", self.delete_item)):
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -6307,15 +6308,21 @@ class MemoryDialog(QDialog):
         self.reload()
 
     def reload(self):
-        """刷新列表：显示 [手动]/[自动] 标记与「淡化中」状态。"""
+        """刷新列表：显示 [手动]/[自动]/[★核心] 标记与「淡化中」状态。"""
         self.list.clear()
         mem = self.app.memory
         now = time.localtime()
         for m in mem.sorted_items():
-            src = "[手动]" if m.get("source") != "auto" else "[自动]"
+            is_pinned = bool(m.get("pinned"))
+            if is_pinned:
+                src = "[★核心]"
+            elif m.get("source") != "auto":
+                src = "[手动]"
+            else:
+                src = "[自动]"
             text = m.get("text") or ""
             tag = ""
-            if m.get("source") == "auto":
+            if m.get("source") == "auto" and not is_pinned:
                 try:
                     r = mem.retention(m, now)
                     if r < mem.DECAY_THRESHOLD:
@@ -6324,7 +6331,9 @@ class MemoryDialog(QDialog):
                     pass
             item = QListWidgetItem("#%s  %s  %s%s"
                                    % (m["id"], src, text, tag))
-            if m.get("source") == "auto" and tag:
+            if is_pinned:
+                item.setForeground(QColor("#b8860b"))     # 核心：金色
+            elif m.get("source") == "auto" and tag:
                 item.setForeground(QColor("#999999"))
             elif m.get("source") == "auto":
                 item.setForeground(QColor("#2f6fb0"))
@@ -6336,6 +6345,25 @@ class MemoryDialog(QDialog):
         if row < 0 or row >= len(items):
             return None
         return items[row]
+
+    def toggle_pin(self):
+        """切换「核心记忆」标记。"""
+        m = self._current()
+        if not m:
+            QMessageBox.information(self, "核心记忆", "先在列表里选中一条记忆")
+            return
+        new = not bool(m.get("pinned"))
+        self.app.memory.set_pinned(m["id"], new)
+        self.reload()
+        # 保持选中同一行
+        try:
+            items = self.app.memory.sorted_items()
+            for i, x in enumerate(items):
+                if x.get("id") == m["id"]:
+                    self.list.setCurrentRow(i)
+                    break
+        except Exception:
+            pass
 
     def add_item(self):
         text, ok = QInputDialog.getText(self, "添加记忆", "要记住的内容：")

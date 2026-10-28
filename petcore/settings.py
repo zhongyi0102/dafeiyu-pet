@@ -4687,6 +4687,11 @@ class SettingsWindow(QDialog):
         self._pro_daily = self._pro_spin_row(
             _sec2, "每日上限", int(cfg.get("daily_max")), 1, 30, "次",
             "一天最多主动几次，跨天自动重置", "daily_max")
+        # 掷骰概率：满足条件后实际去问模型的概率，不中就完全不花 token
+        self._pro_fire_prob = self._pro_pct_row(
+            _sec2, "触发概率", float(cfg.get("fire_prob", 0.65)),
+            "满足所有条件后再掷一次骰子；没中就直接跳过，不调用模型、不花 token。"
+            "调低更省钱，调高更爱说话。")
 
         # ================= 内容（三个标签页）=================
         self._pro_line(lay)
@@ -4886,6 +4891,35 @@ class SettingsWindow(QDialog):
         idle.valueChanged.connect(on_idle)
         away.valueChanged.connect(on_away)
         return idle, away
+
+    def _pro_pct_row(self, sec, label, value, desc):
+        """百分比滑块（0~100%）+ 说明。用于 fire_prob 这类 0~1 的小数配置。"""
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        s = QSlider(Qt.Orientation.Horizontal)
+        s.setRange(0, 100)
+        s.setSingleStep(5)
+        s.setPageStep(10)
+        s.setValue(int(round(float(value) * 100)))
+        s.setMinimumWidth(160)
+        lab = QLabel("%d%%" % s.value())
+        lab.setFixedWidth(44)
+        lab.setAlignment(Qt.AlignmentFlag.AlignRight
+                         | Qt.AlignmentFlag.AlignVCenter)
+        lab.setStyleSheet("color:#5686fe;font-size:12px;")
+        h.addWidget(s, 1)
+        h.addWidget(lab, 0)
+        sec.body_add(self._pro_form_row(label, wrap))
+        sec.body_add(self._sub_hint(desc))
+
+        def _on(v):
+            lab.setText("%d%%" % v)
+            self._pro_save({"fire_prob": max(0.0, min(1.0, v / 100.0))})
+
+        s.valueChanged.connect(_on)
+        return s
 
     def _pro_spin_row(self, sec, label, value, lo, hi, suffix, desc, key):
         """数字框 + 说明（原「频率控制」控件，去掉滑条）。返回数字框。"""
