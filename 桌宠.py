@@ -3007,13 +3007,15 @@ class PetApp(QObject):
                     label += "  【帧】"
                 a = sub.addAction(label)
                 a.triggered.connect(lambda _=False, n=name, p=pet: self.play_action(p, n))
-        action_menu.addSeparator()
-        n_frames = sum(1 for n in ACTIONS if action_has_frames(n))
-        info = action_menu.addAction("帧动作：%d / %d（设置→动画可开关）"
-                                     % (n_frames, len(ACTIONS)))
-        info.setEnabled(False)
-        action_menu.addAction("释放帧缓存并重扫",
-                              lambda _=False: self._reload_frames_from_menu())
+        # 调试项：源码版显示，打包版隐藏（功能保留，只是不进菜单）
+        if is_dev_mode():
+            action_menu.addSeparator()
+            n_frames = sum(1 for n in ACTIONS if action_has_frames(n))
+            info = action_menu.addAction("帧动作：%d / %d（设置→动画可开关）"
+                                         % (n_frames, len(ACTIONS)))
+            info.setEnabled(False)
+            action_menu.addAction("释放帧缓存并重扫",
+                                  lambda _=False: self._reload_frames_from_menu())
         return action_menu
 
     def _reload_frames_from_menu(self):
