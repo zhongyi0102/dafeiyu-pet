@@ -207,6 +207,16 @@ def suggest_models(provider_name, listed_models):
     listed = list(listed_models or [])
     known = list(VISION_KNOWN_MODELS.get(provider_name or "", ()))
     if not listed and not known:
+        # 未知服务商（中转站等）且 /models 不可用：
+        # 把所有已知模型都当候选，逐个真实验证，能用哪个算哪个。
+        # 注意：这会多发几个请求，但只在「地址填了 + /models 挂掉」时才走到。
+        all_known = []
+        for _v in VISION_KNOWN_MODELS.values():
+            for _m in _v:
+                if _m not in all_known:
+                    all_known.append(_m)
+        if all_known:
+            return filter_and_rank(all_known), True
         return [], True
     if not listed:
         # 只有已知列表：也按规则排一遍

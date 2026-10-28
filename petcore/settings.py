@@ -2806,7 +2806,16 @@ class SettingsWindow(QDialog):
             t0 = _t.time()
             from petcore import vision as V
             try:
-                base, provider, err = V.detect_provider(key, log=log2)
+                # 用户已填地址 -> 直接用，跳过服务商探测（支持中转站）
+                _cur = (self.chat_base.text() or "").strip()
+                if _cur:
+                    base = _cur
+                    provider = V._provider_name(_cur)
+                    err = ""
+                    log2("使用已填地址：%s（服务商：%s，跳过探测）"
+                         % (_cur, provider or "未知"))
+                else:
+                    base, provider, err = V.detect_provider(key, log=log2)
                 if stale():
                     return
                 if not base:
@@ -3459,7 +3468,16 @@ class SettingsWindow(QDialog):
         def work():
             from petcore import vision as V
             log("===== 视觉识别开始（token=%s）=====" % token)
-            base, provider, err = V.detect_provider(key, log=log)
+            # 用户已填地址 -> 直接用，跳过服务商探测（支持中转站）
+            _cur = (self.vision_base.text() or "").strip()
+            if _cur:
+                base = _cur
+                provider = V._provider_name(_cur)
+                err = ""
+                log("使用已填地址：%s（服务商：%s，跳过探测）"
+                    % (_cur, provider or "未知"))
+            else:
+                base, provider, err = V.detect_provider(key, log=log)
             if stale():
                 log("识别已作废，丢弃结果（服务商阶段）")
                 return
