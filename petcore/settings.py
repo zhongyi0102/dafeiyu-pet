@@ -2105,12 +2105,12 @@ class SettingsWindow(QDialog):
         _ckh.addWidget(self._chat_eye_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         _cf.addRow("聊天 Key", _ckw)
 
-        # 2) 接口地址（只读）
+        # 2) 接口地址（可编辑：留空自动识别，填了就用填的）
         self.chat_base = QLineEdit()
-        self.chat_base.setReadOnly(True)
+        self.chat_base.setPlaceholderText(
+            "留空自动识别，或用中转站/自定义地址（如 https://xxx.com/v1）")
         self.chat_base.setFixedHeight(_rowh)
-        self.chat_base.setStyleSheet(
-            "QLineEdit{background:#f2f4f8;color:#5a6070;}")
+        self.chat_base.editingFinished.connect(self._on_chat_base_edited)
         _cf.addRow("接口地址", self.chat_base)
 
         # 3) 聊天模型（可编辑）
@@ -2255,12 +2255,12 @@ class SettingsWindow(QDialog):
         _kh.addWidget(self._eye_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         form.addRow("视觉 Key", _keywrap)
 
-        # 2) 接口地址（只读）
+        # 2) 接口地址（可编辑：留空自动识别，填了就用填的）
         self.vision_base = QLineEdit()
-        self.vision_base.setReadOnly(True)
+        self.vision_base.setPlaceholderText(
+            "留空自动识别，或用中转站/自定义地址（如 https://xxx.com/v1）")
         self.vision_base.setFixedHeight(_rowh)
-        self.vision_base.setStyleSheet(
-            "QLineEdit{background:#f2f4f8;color:#5a6070;}")
+        self.vision_base.editingFinished.connect(self._on_vision_base_edited)
         form.addRow("接口地址", self.vision_base)
 
         # 3) 视觉模型
@@ -2720,6 +2720,32 @@ class SettingsWindow(QDialog):
                 self.app.cfg["chat_base"] = base[:300]
             self.app.save_cfg()
             self._set_chat_status("✓ 模型已保存：%s" % model, "ok")
+
+    def _on_chat_base_edited(self):
+        """手动改接口地址：立即写配置（不必等点保存）。"""
+        try:
+            base = (self.chat_base.text() or "").strip()
+            self.app.cfg["chat_base"] = base[:300]
+            self.app.save_cfg()
+            log("[聊天] 接口地址改为：%s" % (base or "(留空自动识别)"))
+        except Exception as ex:
+            log("[聊天] 保存地址失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _on_vision_base_edited(self):
+        """手动改视觉接口地址：立即写配置。"""
+        try:
+            base = (self.vision_base.text() or "").strip()
+            ls = self.app.cfg.get("look_screen")
+            if not isinstance(ls, dict):
+                ls = {}
+            ls["vision_base"] = base[:300]
+            self.app.cfg["look_screen"] = ls
+            self.app.save_cfg()
+            log("[视觉] 接口地址改为：%s" % (base or "(留空自动识别)"))
+        except Exception as ex:
+            log("[视觉] 保存地址失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _save_chat_cfg(self):
         """三项一起写入配置。"""
