@@ -2920,6 +2920,14 @@ class ChatWindow(QWidget):
         _bd.addWidget(self.scroll, 1)
         rlay.addWidget(_body, 1)
 
+        # 右下角浮动「回到底部」按钮（父级是消息区容器，绝对定位）
+        self._follow_bottom = True
+        self._msg_body = _body          # resizeEvent 里定位按钮用
+        self._build_scroll_bottom_btn(_body)
+        _sb = self.scroll.verticalScrollBar()
+        _sb.valueChanged.connect(lambda _v: self._update_scroll_btn())
+        _sb.rangeChanged.connect(lambda _a, _b: self._update_scroll_btn())
+
         self._build_empty_state()
 
         self.load_more_btn = QPushButton("加载更早消息")
@@ -4022,6 +4030,7 @@ class ChatWindow(QWidget):
         try:
             self._fit_empty_state()
             self._autosize_input()
+            self._place_scroll_bottom_btn()
         except Exception:
             pass
 
@@ -4034,9 +4043,83 @@ class ChatWindow(QWidget):
             pass
 
     # ---------- 消息区 ----------
+    def _is_at_bottom(self, threshold=40):
+        """当前是否贴着底部（阈值内算在底部）。"""
+        try:
+            sb = self.scroll.verticalScrollBar()
+            return (sb.maximum() - sb.value()) <= threshold
+        except Exception:
+            return True
+
     def _scroll_bottom(self):
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _scroll_bottom_if_follow(self):
+        """只有原本就在底部时才跟随到底；用户翻看历史时不打扰。"""
+        if getattr(self, "_follow_bottom", True):
+            self._scroll_bottom()
+
+    def _update_scroll_btn(self):
+        """按当前滚动位置显示/隐藏「回到底部」按钮。"""
+        try:
+            btn = getattr(self, "scroll_bottom_btn", None)
+            if btn is None:
+                return
+            at_bottom = self._is_at_bottom()
+            # 在底部时记住「跟随」状态，离开底部则取消跟随
+            self._follow_bottom = at_bottom
+            btn.setVisible(not at_bottom)
+            if not at_bottom:
+                btn.raise_()
+        except Exception:
+            pass
+
+    def _build_scroll_bottom_btn(self, parent):
+        """右下角浮动「回到底部」圆形按钮。"""
+        btn = QPushButton("∨", parent)
+        btn.setObjectName("ScrollBottomBtn")
+        btn.setFixedSize(32, 32)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip("回到底部")
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setStyleSheet(
+            "QPushButton#ScrollBottomBtn {"
+            "  background:#ffffff; color:#5a6070;"
+            "  border:1px solid #dfe3ec; border-radius:16px;"
+            "  font-size:14px; font-weight:700; padding:0 0 2px 0;"
+            "}"
+            "QPushButton#ScrollBottomBtn:hover {"
+            "  background:#5686fe; color:#ffffff; border-color:#5686fe;"
+            "}"
+            "QPushButton#ScrollBottomBtn:pressed {"
+            "  background:#3f6fe8; border-color:#3f6fe8;"
+            "}")
+        btn.clicked.connect(self._on_scroll_bottom_clicked)
+        btn.hide()
+        self.scroll_bottom_btn = btn
+        return btn
+
+    def _on_scroll_bottom_clicked(self):
+        self._follow_bottom = True
+        self._scroll_bottom()
+        self._update_scroll_btn()
+
+    def _place_scroll_bottom_btn(self):
+        """把浮动按钮放到消息区右下角。"""
+        try:
+            btn = getattr(self, "scroll_bottom_btn", None)
+            if btn is None:
+                return
+            host = btn.parentWidget()
+            if host is None:
+                return
+            # 距右 18px，距底 14px
+            x = max(0, host.width() - btn.width() - 18)
+            y = max(0, host.height() - btn.height() - 14)
+            btn.move(int(x), int(y))
+        except Exception:
+            pass
 
     def _add_bubble(self, role, text, image_path=None, voice_path=None,
                     voice_sec=0.0, ts=None, voice_text="", attachments=None):
@@ -4073,7 +4156,7 @@ class ChatWindow(QWidget):
             self._last_msg_ts = ts
         self.msg_layout.insertWidget(self.msg_layout.count() - 1, wrap)
         self._update_empty_state()
-        self._scroll_bottom()
+        self._scroll_bottom_if_follow()
         return b
 
     def _remove_bubble(self, b):
@@ -5691,7 +5774,7 @@ class ChatWindow(QWidget):
             self.current_bubble = self._add_bubble("assistant", "")
         self.current_text += text
         self.current_bubble.set_text(self.current_text)
-        self._scroll_bottom()
+        self._scroll_bottom_if_follow()
 
     def _on_done(self, full, usage):
         _turn_user = self._turn_user_text or ""
