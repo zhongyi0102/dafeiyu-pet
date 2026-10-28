@@ -1646,10 +1646,20 @@ class PetApp(QObject):
                 continue
             spec = CARE_KINDS.get(kind) or {}
             try:
-                cd = max(60, int(self._rem_minutes(kind)) * 60)
+                mins = int(self._rem_minutes(kind))
+                cd = max(60, mins * 60)
             except Exception:
-                cd = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45) * 60
-            out.append((kind, cd, int(spec.get("daily_max") or 0)))
+                mins = DEFAULT_REMIND_MIN_BY_KIND.get(kind, 45)
+                cd = mins * 60
+            # 方案 B：每日上限按「可用时长 / 间隔」自动算，不再写死
+            try:
+                ex = self._rem_extras()
+                dnd = ex.get("dnd") or {}
+                dmax = calc_daily_max(kind, mins, dnd,
+                                      bool(dnd.get("enabled", True)))
+            except Exception:
+                dmax = int(spec.get("daily_max") or 0)
+            out.append((kind, cd, int(dmax)))
         return out
 
     # ---------- 记忆回访（阶段④）----------

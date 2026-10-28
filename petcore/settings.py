@@ -1555,7 +1555,9 @@ class SettingsWindow(QDialog):
 
         self._title(lay, "提醒",
                     "每类可单独设间隔；到点会停下来播动作并放大气泡。"
-                    "免打扰时段内不弹。")
+                    "免打扰时段内不弹。\n"
+                    "右侧「已用/上限」：上限 = 可用时长 ÷ 间隔 × 85%，"
+                    "改间隔或免打扰会自动跟着变。")
 
         # ================= ① 健康提醒 =================
         self._health_section = CollapsibleSection("健康提醒", expanded=True)
@@ -1598,11 +1600,11 @@ class SettingsWindow(QDialog):
             sp.setAlignment(Qt.AlignmentFlag.AlignRight
                             | Qt.AlignmentFlag.AlignVCenter)
             sp.valueChanged.connect(
-                lambda v, k=kind: self.app.set_reminder_min(k, int(v)))
+                lambda v, k=kind: self._on_rem_min_changed(k, int(v)))
             row.addWidget(sp)
 
             done = QLabel("")
-            done.setFixedWidth(52)
+            done.setFixedWidth(64)      # 容得下「12/12」
             done.setStyleSheet("color:#5686fe;font-size:11px;")
             done.setAlignment(Qt.AlignmentFlag.AlignRight
                               | Qt.AlignmentFlag.AlignVCenter)
@@ -1766,6 +1768,8 @@ class SettingsWindow(QDialog):
         if key == "enabled":
             self.app.cfg.setdefault("features", {})["remind_dnd"] = bool(value)
         self.app.save_cfg()
+        # 免打扰变化会影响可用时长 → 上限跟着变，刷新显示
+        self._refresh_remind_lists()
 
     def _unify_reminder_interval(self):
         cur = self.app._rem_minutes("water")
@@ -1779,6 +1783,14 @@ class SettingsWindow(QDialog):
                 sp.setValue(self.app._rem_minutes(kind))
                 sp.blockSignals(False)
             self.app.say_main("三个提醒间隔都改成 %d 分钟" % v)
+
+    def _on_rem_min_changed(self, kind, mins):
+        """改间隔：写配置 + 刷新上限显示（上限随间隔变化）。"""
+        try:
+            self.app.set_reminder_min(kind, int(mins))
+        except Exception:
+            pass
+        self._refresh_remind_lists()
 
     def _refresh_remind_lists(self):
         """刷新待办/定时列表 + 标签页标题条数 + 三个健康提醒的今日次数。"""
@@ -1807,11 +1819,37 @@ class SettingsWindow(QDialog):
             except Exception:
                 pass
 
-            # 每行右侧的今日确认次数
+            # 每行右侧的今日确认次数 + 动态上限（方案 C：显示 X/N）
             dt = self.app._done_today()
+            try:
+                ex = self.app._rem_extras()
+                dnd = ex.get("dnd") or {}
+                dnd_on = bool(dnd.get("enabled", True))
+            except Exception:
+                dnd, dnd_on = {}, True
             for kind, lab in getattr(self, "_rem_done_labs", {}).items():
-                lab.setText("%d 次" % int(dt.get(kind, 0) or 0))
-                lab.setToolTip("今日已确认 %d 次" % int(dt.get(kind, 0) or 0))
+                used = int(dt.get(kind, 0) or 0)
+                try:
+                    mins = int(self.app._rem_minutes(kind))
+                    cap = calc_daily_max(kind, mins, dnd, dnd_on)
+                except Exception:
+                    cap = 0
+                if cap > 0:
+                    lab.setText("%d/%d" % (used, cap))
+                    lab.setToolTip(
+                        "今日已确认 %d 次，上限 %d 次\n"
+                        "上限 = 可用时长 ÷ 间隔 × 85%%（留出忙碌余量）；"
+                        "改间隔或免打扰时段会自动跟着变" % (used, cap))
+                    # 用满时变灰提示
+                    try:
+                        lab.setStyleSheet(
+                            "color:%s;font-size:11px;"
+                            % ("#c0c4cc" if used >= cap else "#5686fe"))
+                    except Exception:
+                        pass
+                else:
+                    lab.setText("%d 次" % used)
+                    lab.setToolTip("今日已确认 %d 次" % used)
         except Exception as ex:
             log("刷新待办/定时列表失败: %s" % ex, logging.WARNING)
 

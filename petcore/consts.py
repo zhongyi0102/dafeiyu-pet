@@ -780,8 +780,8 @@ PET_MODE_TEXT = {
 
 # ===== 定时提醒 =====
 DEFAULT_REMINDS_MIN = 45
-# 每类独立默认间隔（分钟）：喝水 45 / 起身 60 / 护眼 20
-DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 20}
+# 每类独立默认间隔（分钟）：喝水 45 / 起身 60 / 护眼 30
+DEFAULT_REMIND_MIN_BY_KIND = {"water": 45, "stand": 60, "eyes": 30}
 REMINDERS = {
     "water": "喝水提醒",
     "stand": "起身活动提醒",
@@ -890,6 +890,55 @@ CARE_KINDS = {
     # 记忆回访：模板拼接不调模型，每天最多 2 次
     "memory": {"name": "记忆回访", "priority": 80, "daily_max": 2},
 }
+
+# 每日上限的动态计算（方案 B）：
+#   可用时长 = 24h - 免打扰时长
+#   理论上限 = 可用时长 / 间隔
+#   实际上限 = 理论上限 × 系数（留出忙碌/忽略的余量）
+# 系数取 0.85：留 15% 余量应对忙碌/忽略，同时保证不会半天就用完。
+# （0.6 太小，会让上限在下午就用光，等于没解决问题）
+DAILY_MAX_FACTOR = 0.85       # 用到理论次数的 85%
+DAILY_MAX_MIN = 3             # 下限，太少等于关掉
+DAILY_MAX_CAP = 40            # 上限，避免间隔设很小导致离谱值
+
+
+def _dnd_hours(dnd):
+    """免打扰时长（小时）。跨午夜正确处理。"""
+    try:
+        st = str((dnd or {}).get("start") or "22:00")
+        en = str((dnd or {}).get("end") or "08:00")
+        sh, sm = [int(x) for x in st.split(":")]
+        eh, em = [int(x) for x in en.split(":")]
+        a = sh * 60 + sm
+        b = eh * 60 + em
+        mins = (b - a) % (24 * 60)
+        return mins / 60.0
+    except Exception:
+        return 10.0        # 默认按 10 小时算
+
+
+def calc_daily_max(kind, interval_min, dnd=None, dnd_enabled=True):
+    """按可用时长与间隔算某类的每日上限（方案 B）。
+
+    kind         提醒类型（water/stand/eyes/...）
+    interval_min 间隔分钟数
+    dnd          免打扰配置 {"enabled","start","end"}
+    dnd_enabled  免打扰是否生效
+
+    免打扰以外的可用时长 / 间隔 × DAILY_MAX_FACTOR，夹在 [MIN, CAP]。
+    待办/日程不受此限制（CARE_EXEMPT_KINDS），返回 0 表示不限。
+    """
+    try:
+        if kind in CARE_EXEMPT_KINDS:
+            return 0
+        iv = max(1.0, float(interval_min or 45))
+        avail_h = 24.0 - (_dnd_hours(dnd) if dnd_enabled else 0.0)
+        avail_h = max(1.0, avail_h)
+        theory = (avail_h * 60.0) / iv
+        n = int(round(theory * DAILY_MAX_FACTOR))
+        return max(DAILY_MAX_MIN, min(DAILY_MAX_CAP, n))
+    except Exception:
+        return int((CARE_KINDS.get(kind) or {}).get("daily_max") or 8)
 
 # 待办 / 日程：不受每日上限、降频影响；忙时只延后不丢弃
 CARE_EXEMPT_KINDS = ("todo", "schedule")
