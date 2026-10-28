@@ -492,20 +492,27 @@ def vision_style_suffix(style):
         style or VISION_STYLE_DEFAULT,
         VISION_STYLE_SUFFIXES[VISION_STYLE_DEFAULT])
 
-# ===== 视觉 Key 识别（本版只支持 DeepSeek 与智谱）=====
+# ===== 视觉 Key 识别 =====
 # Key 格式 → 服务商（正则）。智谱格式独特，可精确识别；DeepSeek 的 sk-
 # 与其它厂商无法靠前缀区分，交给下面的探测。
-VISION_KEY_PREFIXES = ()
+VISION_KEY_PREFIXES = (
+    # Google Gemini：AIza 开头，39 字符
+    ("AIza", "https://generativelanguage.googleapis.com/v1beta/openai"),
+)
 VISION_KEY_PATTERNS = (
     # 智谱：32 位 hex + "." + 16~48 位
     (re.compile(r"^[0-9a-fA-F]{32}\.[A-Za-z0-9]{16,48}$"),
      "https://open.bigmodel.cn/api/paas/v4"),
+    # Gemini：AIza + 35 位
+    (re.compile(r"^AIza[0-9A-Za-z_\-]{35}$"),
+     "https://generativelanguage.googleapis.com/v1beta/openai"),
 )
 
 # 候选服务商（并行探测 GET {base}/models，谁成功用谁）
 VISION_PROVIDERS = (
     ("DeepSeek", "https://api.deepseek.com/v1"),
     ("智谱", "https://open.bigmodel.cn/api/paas/v4"),
+    ("Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
 )
 
 
@@ -547,6 +554,8 @@ VISION_PROVIDER_AUTH_PATH = {}   # DeepSeek / 智谱的 /models 都需认证
 VISION_KNOWN_MODELS = {
     "智谱": ("glm-4.6v", "glm-4.5v", "glm-4.6v-flash", "glm-5v-turbo"),
     "DeepSeek": ("deepseek-v4-flash-vision-exp",),
+    "Gemini": ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
+               "gemini-1.5-flash", "gemini-1.5-pro"),
 }
 
 

@@ -2983,6 +2983,8 @@ class SettingsWindow(QDialog):
             return "智谱"
         if "deepseek" in base:
             return "DeepSeek"
+        if "generativelanguage" in base or "gemini" in base:
+            return "Gemini"
         return ""
 
 
