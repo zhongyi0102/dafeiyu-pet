@@ -2210,25 +2210,42 @@ class PetApp(QObject):
         if getattr(pet, "remind_user_moved", False):
             log("[提醒] 用户拖拽过，取消回位")
             pet.remind_origin = None
+            try:
+                pet._suppress_turn_lines = False
+            except Exception:
+                pass
             self._release_remind_rest(pet)
             return
         origin = getattr(pet, "remind_origin", None)
         if not origin:
+            try:
+                pet._suppress_turn_lines = False
+            except Exception:
+                pass
             self._release_remind_rest(pet)
             return
         try:
             tx, ty = origin
             pet.remind_origin = None
+            # 回位期间禁止转身台词，避免盖掉「知道了」的短回话
+            pet._suppress_turn_lines = True
             if not pet._anim_enabled():
                 pet.move(int(tx), int(ty))
                 pet._clamp_into_work_area()
+                pet._suppress_turn_lines = False
                 self._release_remind_rest(pet)
                 return
             # 回位走动完成后解除 rest（用 on_done，而不是立刻清）
-            pet.remind_walk_to(int(tx), int(ty),
-                               on_done=lambda p=pet: self._release_remind_rest(p))
+            def _arrived(p=pet):
+                p._suppress_turn_lines = False
+                self._release_remind_rest(p)
+            pet.remind_walk_to(int(tx), int(ty), on_done=_arrived)
         except Exception as ex:
             log("[提醒] 回位失败: %s" % ex, logging.WARNING)
+            try:
+                pet._suppress_turn_lines = False
+            except Exception:
+                pass
             self._release_remind_rest(pet)
 
     def _release_remind_rest(self, pet):
@@ -2269,6 +2286,8 @@ class PetApp(QObject):
             pet.bubble_text = text
             pet.bubble_until = pet.t * TICK / 1000.0 + max(0.6, float(hold))
             pet.last_line = text
+            # 锁定这段时间：其他来源（转身/动作链/点击回应）不许覆盖这句
+            pet._short_line_lock_until = pet.bubble_until
             pet.update()
         except Exception as ex:
             log("[提醒] 短气泡失败: %s" % ex, logging.DEBUG)

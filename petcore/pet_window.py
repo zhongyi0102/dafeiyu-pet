@@ -189,6 +189,10 @@ class PetWindow(QWidget):
         self._fx = None
         self.bubble_text = ""
         self.bubble_until = 0
+        # 短回话锁：到点之前其他来源不许覆盖气泡（提醒确认用）
+        self._short_line_lock_until = 0.0
+        # 回位期间禁止转身台词，避免盖掉短回话
+        self._suppress_turn_lines = False
         # 提醒气泡状态（加大版，带图标和按钮）
         self.remind_text = ""
         self.remind_icon = ""
@@ -1155,7 +1159,10 @@ class PetWindow(QWidget):
         self._turn_t = self._turn_total
         self._turn_swapped = False
         # 30% 概率冒一句，且不与上一句重复
+        # 提醒回位期间不冒（否则会把「知道了」的短回话盖掉）
         chance = st["line_chance"] if line_chance is None else line_chance
+        if getattr(self, "_suppress_turn_lines", False):
+            chance = 0.0
         if random.random() < chance:
             choices = [l for l in st["lines"] if l != self.last_line] or st["lines"]
             self.say(random.choice(choices))
@@ -2455,6 +2462,12 @@ class PetWindow(QWidget):
     def say(self, text, inner=False):
         if text == self.last_line and not text.startswith("天气"):
             return
+        # 短回话锁定期间，别的来源不许覆盖（提醒确认的「知道了」优先）
+        try:
+            if getattr(self, "_short_line_lock_until", 0.0) > self.t * TICK / 1000.0:
+                return
+        except Exception:
+            pass
         self.last_line = text
         self.bubble_inner = inner
         self.bubble_text = f"（{text}）" if inner else text
