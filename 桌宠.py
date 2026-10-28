@@ -3010,6 +3010,23 @@ class PetApp(QObject):
         # 调试项（帧动作计数 / 释放帧缓存）不再进菜单：
         # 功能方法保留（_reload_frames_from_menu 可被代码调用），
         # 只是不出现在右键菜单里。
+
+        # ---- 时节特效并入动作子菜单（启用开关 + 各特效 + 停止）----
+        action_menu.addSeparator()
+        fc = self._fx_cfg()
+        fe = action_menu.addAction("启用时节特效")
+        fe.setCheckable(True)
+        fe.setChecked(self.is_enabled("seasonal_fx"))
+        fe.triggered.connect(lambda on: self.set_feature("seasonal_fx", on))
+        fa = action_menu.addAction("按日期自动触发")
+        fa.setCheckable(True)
+        fa.setChecked(fc["auto"])
+        fa.triggered.connect(lambda on: self.set_fx_auto(on))
+        fx_sub = action_menu.addMenu("播放特效")
+        for fname, fspec in SEASONAL_EFFECTS.items():
+            fx_sub.addAction(fspec["label"],
+                             lambda _=False, n=fname: self.play_fx(n))
+        action_menu.addAction("停止当前特效", self.stop_fx)
         return action_menu
 
     def _reload_frames_from_menu(self):
@@ -5043,23 +5060,6 @@ class PetApp(QObject):
         m.addAction("看看屏幕", lambda: self._begin_region_select(pet))
         m.addAction("查看天气", lambda: self._get_weather(pet))
         m.addAction("查看余额", lambda: self.query_balance(True))
-
-        fm = m.addMenu("时节特效")
-        fc = self._fx_cfg()
-        fe = fm.addAction("启用时节特效")
-        fe.setCheckable(True)
-        fe.setChecked(self.is_enabled("seasonal_fx"))
-        fe.triggered.connect(lambda on: self.set_feature("seasonal_fx", on))
-        fa = fm.addAction("按日期自动触发")
-        fa.setCheckable(True)
-        fa.setChecked(fc["auto"])
-        fa.triggered.connect(lambda on: self.set_fx_auto(on))
-        fm.addSeparator()
-        for fname, fspec in SEASONAL_EFFECTS.items():
-            fm.addAction(fspec["label"],
-                         lambda _=False, n=fname: self.play_fx(n))
-        fm.addSeparator()
-        fm.addAction("停止当前特效", self.stop_fx)
 
         m.addSeparator()
         m.addAction("设置…", lambda: self.open_settings())
