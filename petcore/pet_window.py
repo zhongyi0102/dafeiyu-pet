@@ -104,6 +104,8 @@ class PetWindow(QWidget):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # 提醒气泡期间需要接键盘（Enter = 知道了），因此允许获取焦点
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setWindowTitle("大肥鱼桌宠" if self.pet_id == "main" else "大肥鱼桌宠-%s" % self.pet_id)
 
         # 精灵加载
@@ -1979,6 +1981,12 @@ class PetWindow(QWidget):
         self._sync_remind_rest()
         # 提示音（三类不同音高）
         self._play_remind_sound()
+        # 抢键盘焦点：让 Enter 能确认（Tool 窗口默认不接键盘）
+        try:
+            self.activateWindow()
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        except Exception:
+            pass
         self.update()
 
     def _sync_remind_rest(self):
@@ -2543,6 +2551,38 @@ class PetWindow(QWidget):
         except Exception:
             return False
 
+    def keyPressEvent(self, e):
+        """提醒气泡期间的键盘操作：Enter = 知道了，Esc = 稍后。"""
+        try:
+            if self.remind_text:
+                k = e.key()
+                if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._ack_via_keyboard("know")
+                    return
+                if k == Qt.Key.Key_Escape:
+                    self._ack_via_keyboard("snooze")
+                    return
+        except Exception as ex:
+            log("[提醒] 键盘处理失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
+        super().keyPressEvent(e)
+
+    def _ack_via_keyboard(self, which):
+        """键盘触发与点按钮完全等价（共用 acknowledge/snooze 逻辑）。"""
+        try:
+            kind = self.remind_kind
+            if not kind:
+                return
+            if which == "know":
+                self.app.acknowledge_reminder(
+                    kind, self.remind_todo_id, self.remind_schedule_id)
+            else:
+                self.app.snooze_reminder(
+                    kind, self.remind_todo_id, self.remind_schedule_id)
+        except Exception as ex:
+            log("[提醒] 键盘确认失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def mousePressEvent(self, e):
         # 主动搭话气泡：点一下 → 进聊天页并把这句话带进上下文
         if (e.button() == Qt.MouseButton.LeftButton
@@ -2556,6 +2596,14 @@ class PetWindow(QWidget):
         if self.remind_origin is not None and e.button() == Qt.MouseButton.LeftButton:
             self.remind_user_moved = True
             self.cancel_remind_walk()
+        # 回应动作播放期间被拖/点 → 打断，取消待回位
+        if e.button() == Qt.MouseButton.LeftButton:
+            try:
+                if hasattr(self.app, "_cancel_pending_return"):
+                    self.app._cancel_pending_return()
+                    self.remind_user_moved = True
+            except Exception:
+                pass
         # 提醒气泡按钮优先（点按钮不触发宠物交互）
         if e.button() == Qt.MouseButton.LeftButton and self.remind_text:
             hit = self._hit_remind_button(e.position().toPoint())

@@ -1594,6 +1594,8 @@ class PetApp(QObject):
             # 关掉当前气泡
             if self.main_pet is not None:
                 self.main_pet.hide_remind_bubble()
+            # 不管哪种回复，都要回原位
+            self._return_pet_after_remind()
         except Exception as ex:
             log("[关心] mute 失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -1617,6 +1619,8 @@ class PetApp(QObject):
             self.say_main("好，%d 小时内不吵你。" % int(hours))
             if self.main_pet is not None:
                 self.main_pet.hide_remind_bubble()
+            # 不管哪种回复，都要回原位
+            self._return_pet_after_remind()
         except Exception as ex:
             log("[关心] 全局静默失败: %s: %s"
                 % (type(ex).__name__, ex), logging.WARNING)
@@ -2295,10 +2299,15 @@ class PetApp(QObject):
         log("[提醒] 已确认 %s" % kind)
 
     def _ack_action_then_return(self, pet):
-        """点「知道了」后的回应动作，结束后再回位。"""
+        """点「知道了」后的回应动作，结束后再回位。
+
+        用户在此期间拖动或再次点击 → 取消回位，以用户操作为准。
+        """
         if pet is None:
             self._return_pet_after_remind()
             return
+        # 上一轮的待回位计时作废（避免多次确认叠加多个回位）
+        self._cancel_pending_return()
         # 先停掉提醒动作（女仆舞循环）
         try:
             pet._stop_frame_anim()
@@ -2335,15 +2344,33 @@ class PetApp(QObject):
             pass
 
         def _done():
+            # 期间被用户打断（拖动/再次点击）→ 不回位
+            if getattr(self, "_ack_return_cancelled", False):
+                self._ack_return_cancelled = False
+                self._release_remind_rest(pet)
+                return
             try:
                 self._return_pet_after_remind()
             except Exception as ex:
                 log("[提醒] 回应动作后回位失败: %s" % ex, logging.WARNING)
 
         try:
-            QTimer.singleShot(delay_ms, _done)
+            self._ack_return_timer = QTimer(self)
+            self._ack_return_timer.setSingleShot(True)
+            self._ack_return_timer.timeout.connect(_done)
+            self._ack_return_timer.start(delay_ms)
         except Exception:
             _done()
+
+    def _cancel_pending_return(self):
+        """取消还没执行的回位（用户拖动或再次操作时调用）。"""
+        try:
+            t = getattr(self, "_ack_return_timer", None)
+            if t is not None and t.isActive():
+                t.stop()
+            self._ack_return_cancelled = True
+        except Exception:
+            pass
 
     def snooze_reminder(self, kind, todo_id=None, schedule_id=None):
         """点「稍后再提醒」：N 分钟后再来一次（关心类冷却 ×2）。"""
