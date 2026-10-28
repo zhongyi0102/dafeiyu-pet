@@ -643,6 +643,9 @@ LOOK_SCREEN_PROMPT = (
 )
 TICK = 20
 
+# 桌宠位置防抖保存：拖动/甩抛结束后延迟这么久再写盘（毫秒）
+POS_SAVE_DEBOUNCE_MS = 2000
+
 LINES = [
     "哼，今天也勉强陪你一会儿。",
     "才、才没有在等你呢。",

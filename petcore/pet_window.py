@@ -239,6 +239,12 @@ class PetWindow(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(TICK)
 
+        # 位置防抖保存：拖动/甩抛结束后延迟 2 秒写盘，避免频繁 IO
+        self._pos_save_timer = QTimer(self)
+        self._pos_save_timer.setSingleShot(True)
+        self._pos_save_timer.setInterval(POS_SAVE_DEBOUNCE_MS)
+        self._pos_save_timer.timeout.connect(self._flush_pet_pos)
+
         self.bubble_font = QFont("Microsoft YaHei UI", 11)
         # 提醒气泡字体：比普通气泡大约 1.3 倍
         self.remind_font = QFont("Microsoft YaHei UI", 0)
@@ -300,6 +306,25 @@ class PetWindow(QWidget):
         """把窗口位置同步进物理体（外部 move 后调用）。"""
         self.body.x = float(self.x())
         self.body.y = float(self.y())
+
+    # ---------- 位置记忆（防抖保存） ----------
+    def _schedule_pos_save(self):
+        """拖动/甩抛结束后调用：重置 2 秒防抖计时器。"""
+        try:
+            self._pos_save_timer.start()
+        except Exception:
+            pass
+
+    def _flush_pet_pos(self):
+        """防抖到期：把当前位置写进 pet 配置并落盘。"""
+        try:
+            if not self.isVisible():
+                return          # 不可见时不记（可能是临时隐藏/提醒中）
+            self.pet["x"], self.pet["y"] = self.x(), self.y()
+            self.app.save_cfg()
+        except Exception as ex:
+            log("[位置] 保存失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
 
     def _apply_body(self):
         """把物理体位置写回窗口。"""
@@ -1713,6 +1738,9 @@ class PetWindow(QWidget):
             self._step_physics(dt)
             self._resolve_pet_collisions()
             self.update()
+            # 甩抛落地（物理体刚睡着）→ 重新开始位置保存防抖
+            if self.body.asleep:
+                self._schedule_pos_save()
             return
 
         # 提醒气泡显示期间：冻结动画链，让提醒动作完整播完且不进冷却
@@ -2628,6 +2656,9 @@ class PetWindow(QWidget):
                     self.say(random.choice(DRAG_LINES))
                 self.app.chat_paused = False
                 self._stroke = None
+                # 位置记忆：松手后 2 秒写盘（甩抛的落点会在物理 tick 里更新，
+                # 防抖期间再动会重置计时，最终记的是稳定后的位置）
+                self._schedule_pos_save()
             elif self._stroke is not None and self._stroke.get("active"):
                 # 抚摸结束
                 self._stroke = None
