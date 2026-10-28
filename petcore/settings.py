@@ -4856,10 +4856,7 @@ class SettingsWindow(QDialog):
         self._pro_line(lay)
         _sec2 = self._pro_section(lay, "触发与频率", expanded=True)
         self._pro_idle, self._pro_away = self._pro_threshold_pair(_sec2, cfg)
-        _sec2.body_add(self._sub_hint(
-            "多久没动算发呆（实际有 ±20% 浮动）"))
-        # 原「频率控制」控件原样放在下方
-        _sec2.body_add(self._pro_sub_title("冷却与上限"))
+        # 原「频率控制」控件原样放在下方（说明都收进 i 图标，不再单独占行）
         self._pro_cool = self._pro_spin_row(
             _sec2, "冷却时间", int(cfg.get("cooldown_min")), 1, 180, "分钟",
             "两次搭话之间至少隔多久", "cooldown_min")
@@ -5030,7 +5027,8 @@ class SettingsWindow(QDialog):
         idle.setFixedWidth(110)
         idle.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         idle.setValue(max(1, int(cfg.get("idle_min") or 10)))
-        sec.body_add(self._pro_form_row("发呆阈值", idle))
+        sec.body_add(self._pro_form_row(
+            "发呆阈值", idle, "多久没动算发呆（实际有 ±20% 浮动）"))
 
         away = QSpinBox()
         away.setRange(2, 180)
@@ -5038,7 +5036,8 @@ class SettingsWindow(QDialog):
         away.setFixedWidth(110)
         away.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         away.setValue(max(2, int(cfg.get("away_min") or 20)))
-        sec.body_add(self._pro_form_row("离开阈值", away))
+        sec.body_add(self._pro_form_row(
+            "离开阈值", away, "多久没动算离开。必须大于发呆阈值，改一个会自动调整另一个。"))
 
         GAP = 5
         guard = {"busy": False}
@@ -5072,7 +5071,7 @@ class SettingsWindow(QDialog):
         return idle, away
 
     def _pro_pct_row(self, sec, label, value, desc):
-        """百分比滑块（0~100%）+ 说明。用于 fire_prob 这类 0~1 的小数配置。"""
+        """百分比滑块（0~100%）+ i 说明图标。用于 fire_prob 这类 0~1 的小数配置。"""
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 0, 0)
@@ -5090,8 +5089,7 @@ class SettingsWindow(QDialog):
         lab.setStyleSheet("color:#5686fe;font-size:12px;")
         h.addWidget(s, 1)
         h.addWidget(lab, 0)
-        sec.body_add(self._pro_form_row(label, wrap))
-        sec.body_add(self._sub_hint(desc))
+        sec.body_add(self._pro_form_row(label, wrap, desc))
 
         def _on(v):
             lab.setText("%d%%" % v)
@@ -5101,7 +5099,7 @@ class SettingsWindow(QDialog):
         return s
 
     def _pro_spin_row(self, sec, label, value, lo, hi, suffix, desc, key):
-        """数字框 + 说明（原「频率控制」控件，去掉滑条）。返回数字框。"""
+        """数字框 + i 说明图标（原「频率控制」控件，去掉滑条）。返回数字框。"""
         box = QSpinBox()
         box.setRange(lo, hi)
         box.setSingleStep(1)
@@ -5109,13 +5107,16 @@ class SettingsWindow(QDialog):
         box.setFixedWidth(110)
         box.setSuffix(" " + suffix)
         box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        sec.body_add(self._pro_form_row(label, box))
-        sec.body_add(self._sub_hint(desc))
+        sec.body_add(self._pro_form_row(label, box, desc))
         box.valueChanged.connect(lambda v: self._pro_save({key: int(v)}))
         return box
 
-    def _pro_form_row(self, label, widget):
-        """一行：左标签（固定宽）+ 右控件。"""
+    def _pro_form_row(self, label, widget, desc=""):
+        """一行：左标签（固定宽）+ 控件 + 可选 i 说明图标。
+
+        desc 非空时在控件右侧加一个 i 图标，点开弹完整说明，
+        不再单独占一行（避免说明文字与控件错位）。
+        """
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -5125,6 +5126,8 @@ class SettingsWindow(QDialog):
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(lab)
         h.addWidget(widget, 1)
+        if desc:
+            h.addWidget(self._info_btn(label, desc), 0)
         return row
 
     def _pro_word_editor(self, lay, words, on_save):
