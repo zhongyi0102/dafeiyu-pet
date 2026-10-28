@@ -429,6 +429,8 @@ _OLD_LOOK_SCREEN_SIDE_DEFAULT = 1024
 _OLD_LOOK_SCREEN_QUALITY_DEFAULT = 85
 _OLD_LOOK_SCREEN_TIMEOUT_DEFAULT = 30
 _OLD_MAX_TOKENS_DEFAULT = 400
+# 提醒间隔的旧默认（值等于旧默认时自动升级到新默认）
+_OLD_REMIND_MIN_BY_KIND = {"eyes": 20}
 
 
 def vision_style_suffix(style):
@@ -3686,9 +3688,16 @@ def migrate_and_validate(raw):
                 cfg["reminders"][kind]["on"] = on
             else:
                 issues.append("reminders.%s.on" % kind)
-            # 每类独立间隔；缺省用该类默认（喝水45/起身60/护眼20）
+            # 每类独立间隔；缺省用该类默认（喝水45/起身60/护眼30）
             m = item.get("min", DEFAULT_REMIND_MIN_BY_KIND[kind])
             if isinstance(m, int) and not isinstance(m, bool) and 1 <= m <= 600:
+                # 旧默认值自动升级：值恰好等于旧默认（说明用户没改过）才升
+                if kind in _OLD_REMIND_MIN_BY_KIND:
+                    old = _OLD_REMIND_MIN_BY_KIND[kind]
+                    new = DEFAULT_REMIND_MIN_BY_KIND.get(kind, old)
+                    if m == old and old != new:
+                        m = new
+                        changed = True
                 cfg["reminders"][kind]["min"] = m
             else:
                 issues.append("reminders.%s.min" % kind)
