@@ -805,6 +805,9 @@ class PetApp(QObject):
         self.memory_dialog = None
         self.rps_panel = None
         self.catch_win = None
+        # 全局键盘拦截：提醒气泡期间 Enter/Esc 优先给「知道了 / 稍后」
+        self._key_filter_installed = False
+        self._install_remind_key_filter()
         self._chat_paused = False
         self.game_active = False
         self.game_had_pet_visible = True
@@ -941,6 +944,75 @@ class PetApp(QObject):
                 pass
 
     # ---------- 配置 ----------
+    # ---------- 提醒气泡的全局键盘拦截 ----------
+    def _install_remind_key_filter(self):
+        """装应用级事件过滤器：提醒气泡出现时 Enter/Esc 优先给提醒。
+
+        不抢焦点（避免打断聊天打字），而是在事件到达任何控件之前拦下来。
+        只拦「有提醒气泡」的情况，其余按键原样放行。
+        """
+        try:
+            app = QApplication.instance()
+            if app is None:
+                return
+            app.installEventFilter(self)
+            self._key_filter_installed = True
+            log("[提醒] 已安装全局键盘过滤器")
+        except Exception as ex:
+            log("[提醒] 安装键盘过滤器失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
+    def _remind_key_active(self):
+        """当前是否有正在显示的提醒气泡。"""
+        try:
+            pet = self.main_pet
+            if pet is None:
+                return False
+            return bool(pet.remind_text) and pet._remind_active()
+        except Exception:
+            return False
+
+    def eventFilter(self, obj, event):
+        """应用级过滤：只在提醒气泡期间截获 Enter / Esc。"""
+        try:
+            if event.type() == QEvent.Type.KeyPress and self._remind_key_active():
+                key = event.key()
+                # 输入框里的组合键放行（Shift/Ctrl/Alt + Enter 不拦）
+                mods = event.modifiers()
+                if mods & (Qt.KeyboardModifier.ShiftModifier
+                           | Qt.KeyboardModifier.ControlModifier
+                           | Qt.KeyboardModifier.AltModifier):
+                    return False
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._ack_via_global_key("know")
+                    return True          # 吞掉，不再传给聊天输入框
+                if key == Qt.Key.Key_Escape:
+                    self._ack_via_global_key("snooze")
+                    return True
+        except Exception as ex:
+            log("[提醒] 全局键盘处理失败: %s: %s"
+                % (type(ex).__name__, ex), logging.DEBUG)
+        return False
+
+    def _ack_via_global_key(self, which):
+        """全局 Enter/Esc：与点按钮等价。"""
+        try:
+            pet = self.main_pet
+            if pet is None:
+                return
+            kind = pet.remind_kind
+            if not kind:
+                return
+            if which == "know":
+                self.acknowledge_reminder(kind, pet.remind_todo_id,
+                                          pet.remind_schedule_id)
+            else:
+                self.snooze_reminder(kind, pet.remind_todo_id,
+                                     pet.remind_schedule_id)
+        except Exception as ex:
+            log("[提醒] 全局键盘确认失败: %s: %s"
+                % (type(ex).__name__, ex), logging.WARNING)
+
     def save_cfg(self):
         try:
             for w in self.pets:

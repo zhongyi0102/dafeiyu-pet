@@ -1988,12 +1988,8 @@ class PetWindow(QWidget):
         self._sync_remind_rest()
         # 提示音（三类不同音高）
         self._play_remind_sound()
-        # 抢键盘焦点：让 Enter 能确认（Tool 窗口默认不接键盘）
-        try:
-            self.activateWindow()
-            self.setFocus(Qt.FocusReason.OtherFocusReason)
-        except Exception:
-            pass
+        # 不抢焦点：Enter/Esc 由 PetApp 的全局事件过滤器处理，
+        # 避免打断用户正在聊天窗口打的字。
         self.update()
 
     def _sync_remind_rest(self):
